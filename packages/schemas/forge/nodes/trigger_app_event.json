@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "forge/nodes/trigger_app_event",
+  "type": "object",
+  "required": ["poll_url"],
+  "properties": {
+    "poll_url": { "type": "string", "x-ui": { "help": "URL polled on each interval; new items fire the workflow." } },
+    "method": { "type": "string", "enum": ["GET", "POST"], "default": "GET" },
+    "interval_minutes": { "type": "integer", "minimum": 1, "default": 5 },
+    "items_path": { "type": "string", "x-ui": { "help": "JMESPath to the list of items in the response (empty = the whole body)." } },
+    "dedupe_key": { "type": "string", "x-ui": { "help": "JMESPath within each item for its unique id (so each item fires once)." } },
+    "message_path": { "type": "string", "x-ui": { "help": "JMESPath within an item for the message text (empty = the whole item as JSON)." } }
+  }
+}

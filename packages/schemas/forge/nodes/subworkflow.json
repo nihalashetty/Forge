@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "forge/nodes/subworkflow",
+  "type": "object",
+  "required": ["workflow_id"],
+  "properties": {
+    "workflow_id": { "type": "string", "x-ui": { "widget": "reference", "refType": "workflow" } },
+    "version": { "type": "integer" },
+    "input_mapping": { "type": "object", "x-ui": { "widget": "rows-table" } },
+    "output_mapping": { "type": "object", "x-ui": { "widget": "rows-table" } }
+  },
+  "$comment": "ports: in:[messages,json], out:[messages,json]"
+}

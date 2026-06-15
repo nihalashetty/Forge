@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "forge/nodes/classifier",
+  "type": "object",
+  "required": ["labels"],
+  "properties": {
+    "labels": { "type": "array", "items": { "type": "string" }, "minItems": 1, "description": "The intent labels to classify into (e.g. return_item, cancel_subscription, get_information)." },
+    "output_key": { "type": "string", "default": "intent", "description": "State field the chosen label is written to — a Router downstream branches on it." },
+    "multi_label": { "type": "boolean", "default": false, "x-ui": { "effect": "Write EVERY applicable label (a list) instead of exactly one — pair with a Router set to 'multi' so a question with several intents fans out to every matching branch in parallel." } },
+    "model": { "$ref": "forge/common#/$defs/ModelRef", "description": "Empty = project default model." },
+    "instructions": { "type": "string", "description": "Optional extra guidance for the classification (domain hints, tie-breaking rules)." }
+  },
+  "$comment": "ports: in:text, out:text. Routing pattern: classifier -> router(expression=output_key, cases per label). multi_label writes list[str]."
+}

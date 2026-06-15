@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "forge/nodes/trigger_schedule",
+  "type": "object",
+  "properties": {
+    "every_minutes": { "type": "integer", "minimum": 1, "x-ui": { "help": "Run every N minutes. Use this OR cron." } },
+    "cron": { "type": "string", "x-ui": { "help": "Cron expression (min hour dom mon dow). Requires croniter; otherwise use every_minutes." } },
+    "message": { "type": "string", "x-ui": { "help": "The input message sent into the workflow on each fire." } }
+  }
+}

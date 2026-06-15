@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "forge/nodes/loop",
+  "type": "object",
+  "required": ["condition", "max_iter"],
+  "properties": {
+    "condition": { "$ref": "forge/common#/$defs/Expression" },
+    "max_iter": { "type": "integer", "default": 10 }
+  },
+  "$comment": "ports: in:any, out:any (allows_cycle = true)"
+}

@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "forge/tool",
+  "type": "object",
+  "required": ["name", "description", "kind"],
+  "properties": {
+    "name": { "$ref": "forge/common#/$defs/Identifier", "x-ui": { "section": "Identity", "modelView": false } },
+    "description": { "type": "string", "x-ui": { "section": "Identity", "widget": "textarea", "modelView": true, "help": "This is what the model reads to decide when to use the tool." } },
+    "kind": { "type": "string", "enum": ["rest_api", "graphql", "code", "sql", "builtin"], "x-ui": { "section": "Identity", "widget": "segmented" } },
+    "auth_provider_id": { "type": "string", "x-ui": { "section": "Auth", "widget": "reference", "refType": "auth_provider" } },
+    "rate_limit": { "type": "object", "properties": { "per_minute": { "type": "integer" } }, "x-ui": { "section": "Reliability" } },
+    "timeout_seconds": { "type": "integer", "default": 30, "x-ui": { "section": "Reliability" } },
+    "retry": { "$ref": "forge/common#/$defs/RetryPolicy", "x-ui": { "section": "Reliability", "advanced": true } },
+    "cache": { "type": "object", "properties": { "ttl_seconds": { "type": "integer", "default": 0 } }, "x-ui": { "section": "Reliability", "advanced": true } }
+  },
+  "allOf": [
+    { "if": { "properties": { "kind": { "const": "rest_api" } } }, "then": { "$ref": "#/$defs/RestConfig" } },
+    { "if": { "properties": { "kind": { "const": "graphql" } } }, "then": { "$ref": "#/$defs/GraphQLConfig" } },
+    { "if": { "properties": { "kind": { "const": "code" } } }, "then": { "$ref": "#/$defs/CodeConfig" } },
+    { "if": { "properties": { "kind": { "const": "sql" } } }, "then": { "$ref": "#/$defs/SqlConfig" } },
+    { "if": { "properties": { "kind": { "const": "builtin" } } }, "then": { "$ref": "#/$defs/BuiltinConfig" } }
+  ],
+  "$defs": {
+    "FieldSpec": {
+      "type": "object",
+      "required": ["path", "type", "in"],
+      "properties": {
+        "path": { "type": "string", "x-ui": { "widget": "mono" } },
+        "type": { "type": "string", "enum": ["string", "integer", "number", "boolean", "object", "array"] },
+        "in": { "type": "string", "enum": ["path", "query", "header", "body"] },
+        "required": { "type": "boolean", "default": false },
+        "llm_visible": { "type": "boolean", "default": true, "x-ui": { "effect": "Model can set this argument" } },
+        "description": { "type": "string", "x-ui": { "modelView": true } },
+        "default": {}
+      }
+    },
+    "ResponseFieldSpec": {
+      "type": "object",
+      "required": ["path"],
+      "properties": {
+        "path": { "type": "string", "x-ui": { "widget": "mono" } },
+        "description": { "type": "string", "x-ui": { "modelView": true } },
+        "include_in_llm": { "type": "boolean", "default": true }
+      }
+    },
+    "RestConfig": {
+      "required": ["request"],
+      "properties": {
+        "request": {
+          "type": "object",
+          "required": ["method", "url_template"],
+          "x-ui": { "section": "Request" },
+          "properties": {
+            "method": { "type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"] },
+            "url_template": { "$ref": "forge/common#/$defs/TemplateString" },
+            "fields": { "type": "array", "items": { "$ref": "#/$defs/FieldSpec" }, "x-ui": { "widget": "rows-table" } },
+            "headers": { "type": "array", "items": { "type": "object", "properties": { "name": { "type": "string" }, "value": { "$ref": "forge/common#/$defs/TemplateString" } } }, "x-ui": { "widget": "rows-table" } },
+            "follow_redirects": { "type": "boolean", "default": false, "x-ui": { "help": "Follow 3xx redirects to the target URL. Each hop is re-checked by the SSRF guard. When off, the redirect's target URL is still reported to the model so it can act on it." } }
+          }
+        },
+        "response": {
+          "type": "object",
+          "x-ui": { "section": "Response shaping" },
+          "properties": {
+            "fields": { "type": "array", "items": { "$ref": "#/$defs/ResponseFieldSpec" }, "x-ui": { "widget": "rows-table" } },
+            "projection_jmespath": { "type": "string", "x-ui": { "widget": "jmespath", "tokenMeter": true, "help": "Cut the payload before it reaches the model. Compare Raw vs Projected tokens." } }
+          }
+        }
+      }
+    },
+    "GraphQLConfig": {
+      "required": ["endpoint", "query"],
+      "properties": {
+        "endpoint": { "type": "string" },
+        "query": { "type": "string", "x-ui": { "widget": "code", "language": "graphql" } },
+        "variables": { "type": "array", "items": { "$ref": "#/$defs/FieldSpec" }, "x-ui": { "widget": "rows-table" } },
+        "follow_redirects": { "type": "boolean", "default": false, "x-ui": { "help": "Follow 3xx redirects to the target endpoint (each hop re-checked by the SSRF guard)." } },
+        "response": { "$ref": "#/$defs/RestConfig/properties/response" }
+      }
+    },
+    "CodeConfig": {
+      "required": ["language", "source"],
+      "properties": {
+        "language": { "type": "string", "enum": ["python"], "default": "python" },
+        "source": { "type": "string", "x-ui": { "widget": "code", "language": "python", "help": "Define def main(**kwargs): return ... (RestrictedPython sandbox; imports limited to pure stdlib)." } },
+        "args_schema": { "type": "object", "description": "JSON Schema of the tool's LLM-visible args." },
+        "timeout_seconds": { "type": "integer", "default": 5 }
+      }
+    },
+    "SqlConfig": {
+      "required": ["query", "connection_ref"],
+      "properties": {
+        "connection_ref": { "type": "string", "x-ui": { "widget": "reference", "refType": "secret", "help": "Secret holding the SQLAlchemy DB URL (e.g. postgresql+psycopg://…)." } },
+        "query": { "type": "string", "x-ui": { "widget": "code", "language": "sql", "help": "Parameterized SELECT using :named binds. Read-only is enforced by default." } },
+        "args_schema": { "type": "object", "description": "JSON Schema of the query's :named parameters (the LLM-visible args)." },
+        "read_only": { "type": "boolean", "default": true },
+        "max_rows": { "type": "integer", "default": 100 }
+      }
+    },
+    "BuiltinConfig": {
+      "required": ["builtin"],
+      "properties": {
+        "builtin": { "type": "string", "enum": ["web_search", "web_fetch", "current_time", "calculator", "knowledge_search", "remember", "recall"] },
+        "options": { "type": "object" }
+      }
+    }
+  }
+}

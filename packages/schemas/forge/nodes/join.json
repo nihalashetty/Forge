@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "forge/nodes/join",
+  "type": "object",
+  "properties": {
+    "reducer": { "type": "string", "enum": ["concat", "merge", "first", "last"], "default": "concat" }
+  },
+  "$comment": "ports: in:control[], out:json"
+}

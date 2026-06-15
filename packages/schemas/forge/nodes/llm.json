@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "forge/nodes/llm",
+  "type": "object",
+  "required": ["model", "prompt"],
+  "properties": {
+    "model": { "$ref": "forge/common#/$defs/ModelRef" },
+    "prompt": { "$ref": "forge/common#/$defs/TemplateString", "x-ui": { "widget": "textarea", "modelView": true } },
+    "model_params": { "type": "object" },
+    "response_format": { "$ref": "forge/nodes/agent#/$defs/ResponseFormat" }
+  },
+  "$comment": "ports: in:[text,json], out:[text,json]"
+}

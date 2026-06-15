@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "forge/nodes/emit_event",
+  "type": "object",
+  "required": ["channel"],
+  "properties": {
+    "channel": { "type": "string" },
+    "payload": { "type": "object" }
+  },
+  "$comment": "ports: in:any, out:any (pushes a custom SSE frame)"
+}

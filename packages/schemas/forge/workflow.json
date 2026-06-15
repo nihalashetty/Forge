@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "forge/workflow",
+  "type": "object",
+  "required": ["id", "version", "state", "entry_node", "nodes", "edges"],
+  "properties": {
+    "id": { "$ref": "forge/common#/$defs/Identifier" },
+    "version": { "type": "integer", "minimum": 1 },
+    "state": {
+      "type": "object",
+      "description": "Map of state field name -> StateFieldSpec. Compiled to a TypedDict (NOT pydantic).",
+      "additionalProperties": { "$ref": "#/$defs/StateFieldSpec" },
+      "x-ui": { "widget": "rows-table", "section": "State schema", "columns": ["__key__", "type", "reducer"] }
+    },
+    "entry_node": { "type": "string" },
+    "global_middleware": {
+      "type": "array",
+      "items": { "$ref": "forge/middleware#/$defs/MiddlewareEntry" },
+      "description": "Prepended to every agent node's stack at compile time.",
+      "x-ui": { "widget": "middleware-stack", "section": "Global middleware" }
+    },
+    "error_policy": { "type": "string", "enum": ["halt", "continue", "route_to_error_node"], "default": "halt" },
+    "on_error": {
+      "type": "object",
+      "description": "Graceful fallback when the run errors: send this message instead of failing silently, and optionally open a human handoff.",
+      "properties": {
+        "message": { "type": "string", "x-ui": { "help": "Customer-facing fallback reply when the workflow errors." } },
+        "escalate": { "type": "boolean", "default": false, "x-ui": { "help": "Also open a human-handoff queue item on error." } }
+      }
+    },
+    "timeout_seconds": { "type": "integer", "default": 600 },
+    "max_concurrency": { "type": "integer", "default": 8 },
+    "nodes": { "type": "array", "items": { "$ref": "#/$defs/NodeInstance" }, "minItems": 1 },
+    "edges": { "type": "array", "items": { "$ref": "#/$defs/Edge" } }
+  },
+  "$defs": {
+    "StateFieldSpec": {
+      "type": "object",
+      "required": ["type", "reducer"],
+      "properties": {
+        "type": { "type": "string", "enum": ["list[message]", "list[str]", "list[json]", "str", "int", "float", "bool", "json"] },
+        "reducer": {
+          "type": "string",
+          "enum": ["add_messages", "add", "last", "merge"],
+          "description": "add_messages for messages; add for accumulating lists; last for overwrite; merge for dict."
+        }
+      }
+    },
+    "NodeInstance": {
+      "type": "object",
+      "required": ["id", "type", "config"],
+      "properties": {
+        "id": { "$ref": "forge/common#/$defs/Identifier" },
+        "type": { "type": "string", "description": "Must exist in the Node Type Registry." },
+        "config": { "type": "object", "description": "Validated against the node type's own schema (Section 3)." },
+        "position": { "type": "object", "properties": { "x": { "type": "number" }, "y": { "type": "number" } } }
+      }
+    },
+    "Edge": {
+      "type": "object",
+      "required": ["source", "target"],
+      "properties": {
+        "source": { "type": "string" },
+        "source_handle": { "type": "string" },
+        "target": { "type": "string", "description": "Target node id or 'END'." },
+        "target_handle": { "type": "string" },
+        "condition": { "$ref": "forge/common#/$defs/Expression", "description": "If present, becomes a conditional edge." },
+        "branches": { "type": "object", "additionalProperties": { "type": "string" }, "description": "value -> target-node-id map for routers." }
+      }
+    }
+  }
+}

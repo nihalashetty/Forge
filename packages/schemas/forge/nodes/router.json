@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "forge/nodes/router",
+  "type": "object",
+  "required": ["expression", "cases"],
+  "properties": {
+    "expression": { "$ref": "forge/common#/$defs/Expression", "x-ui": { "help": "Evaluated over state; result matched against cases." } },
+    "cases": { "type": "object", "additionalProperties": { "type": "string" }, "x-ui": { "widget": "rows-table", "columns": ["value", "target"] } },
+    "default": { "type": "string", "description": "Fallback target node id." },
+    "multi": { "type": "boolean", "default": false, "x-ui": { "effect": "When the expression value is a LIST (multi-label Classifier output), route to EVERY matching case in parallel instead of one." } }
+  },
+  "$comment": "ports: in:any, out: one control port per case + default"
+}

@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "forge/nodes/trigger_chat",
+  "type": "object",
+  "properties": {
+    "channel": { "type": "string", "enum": ["teams", "any"], "default": "any", "x-ui": { "help": "Which chat surface feeds this workflow." } },
+    "greeting": { "type": "string" }
+  }
+}

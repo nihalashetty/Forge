@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "forge/nodes/human_input",
+  "type": "object",
+  "required": ["prompt"],
+  "properties": {
+    "prompt": { "type": "string", "x-ui": { "widget": "textarea" } },
+    "schema": { "type": "object", "description": "Optional structured input schema requested from the human." },
+    "allowed_decisions": { "type": "array", "items": { "type": "string", "enum": ["approve", "edit", "reject"] }, "default": ["approve", "reject"] },
+    "output_key": { "type": "string", "description": "Optional state key the decision string is written to, so a Router can branch approve → continue / reject → end." }
+  },
+  "$comment": "ports: in:any, out:any (calls interrupt(); requires checkpointer)"
+}

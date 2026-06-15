@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "forge/nodes/parallel_fanout",
+  "type": "object",
+  "required": ["over", "child_node", "item_key"],
+  "properties": {
+    "over": { "type": "string", "description": "State key holding a list." },
+    "child_node": { "type": "string", "description": "Node id to run per item via Send." },
+    "item_key": { "type": "string", "description": "State key the item is written to for each child." }
+  },
+  "$comment": "ports: in:json, out:control[]"
+}

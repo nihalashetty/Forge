@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "forge/auth_provider",
+  "type": "object",
+  "required": ["name", "kind"],
+  "properties": {
+    "name": { "$ref": "forge/common#/$defs/Identifier" },
+    "kind": { "type": "string", "enum": ["csrf_session", "oauth2_client_credentials", "oauth2_authorization_code", "bearer", "basic", "api_key", "custom_script"], "x-ui": { "widget": "segmented" } },
+    "credentials_ref": { "$ref": "forge/common#/$defs/SecretRef" },
+    "cache_ttl_seconds": { "type": "integer", "default": 1800 },
+    "refresh_on": { "type": "array", "items": { "type": "integer" }, "default": [401, 403] },
+    "per_user_context_keys": { "type": "array", "items": { "type": "string" }, "description": "Context keys (e.g. csrf, session from the widget) that vary the cache key and feed templates as {{ctx.*}}." }
+  },
+  "allOf": [
+    { "if": { "properties": { "kind": { "const": "csrf_session" } } }, "then": { "$ref": "#/$defs/FetchExtractInject" } },
+    { "if": { "properties": { "kind": { "const": "oauth2_client_credentials" } } }, "then": { "$ref": "#/$defs/OAuth2" } },
+    { "if": { "properties": { "kind": { "const": "oauth2_authorization_code" } } }, "then": { "$ref": "#/$defs/OAuth2AuthCode" } },
+    { "if": { "properties": { "kind": { "const": "bearer" } } }, "then": { "$ref": "#/$defs/Bearer" } },
+    { "if": { "properties": { "kind": { "const": "basic" } } }, "then": { "$ref": "#/$defs/Basic" } },
+    { "if": { "properties": { "kind": { "const": "api_key" } } }, "then": { "$ref": "#/$defs/ApiKey" } },
+    { "if": { "properties": { "kind": { "const": "custom_script" } } }, "then": { "$ref": "#/$defs/CustomScript" } }
+  ],
+  "$defs": {
+    "ExtractRule": {
+      "type": "object",
+      "required": ["name", "from"],
+      "properties": {
+        "name": { "type": "string" },
+        "from": { "type": "string", "enum": ["header", "cookie", "json"] },
+        "header": { "type": "string" },
+        "cookie": { "type": "string" },
+        "json_path": { "type": "string" },
+        "kind": { "type": "string", "enum": ["value", "ttl"], "default": "value" }
+      }
+    },
+    "InjectRule": {
+      "type": "object",
+      "required": ["to", "name", "value"],
+      "properties": {
+        "to": { "type": "string", "enum": ["header", "cookie", "query"] },
+        "name": { "type": "string" },
+        "value": { "$ref": "forge/common#/$defs/TemplateString", "x-ui": { "widget": "token-template", "tokens": ["extracted"] } }
+      }
+    },
+    "FetchExtractInject": {
+      "required": ["token_fetch", "extract", "inject"],
+      "properties": {
+        "token_fetch": {
+          "type": "object",
+          "required": ["method", "url"],
+          "x-ui": { "section": "Token fetch" },
+          "properties": {
+            "method": { "type": "string", "enum": ["GET", "POST"] },
+            "url": { "type": "string" },
+            "headers": { "type": "object", "x-ui": { "widget": "token-template", "tokens": ["cred", "ctx"] } },
+            "body": { "type": "object", "x-ui": { "widget": "token-template", "tokens": ["cred", "ctx"] } }
+          }
+        },
+        "extract": { "type": "array", "items": { "$ref": "#/$defs/ExtractRule" }, "x-ui": { "widget": "rows-table", "section": "Extract" } },
+        "inject": { "type": "array", "items": { "$ref": "#/$defs/InjectRule" }, "x-ui": { "widget": "rows-table", "section": "Inject" } }
+      }
+    },
+    "OAuth2": {
+      "required": ["token_url"],
+      "properties": {
+        "token_url": { "type": "string" },
+        "scope": { "type": "string" },
+        "client_id_ref": { "$ref": "forge/common#/$defs/SecretRef" },
+        "client_secret_ref": { "$ref": "forge/common#/$defs/SecretRef" },
+        "audience": { "type": "string" }
+      }
+    },
+    "OAuth2AuthCode": {
+      "required": ["authorize_url", "token_url"],
+      "properties": {
+        "authorize_url": { "type": "string", "x-ui": { "help": "Provider's authorization endpoint (the user is redirected here to grant access)." } },
+        "token_url": { "type": "string" },
+        "scope": { "type": "string" },
+        "client_id_ref": { "$ref": "forge/common#/$defs/SecretRef" },
+        "client_secret_ref": { "$ref": "forge/common#/$defs/SecretRef" },
+        "redirect_uri": { "type": "string", "description": "Optional override; defaults to {oauth_redirect_base}/v1/oauth/callback." },
+        "header_name": { "type": "string", "default": "Authorization" },
+        "prefix": { "type": "string", "default": "Bearer " },
+        "token_bundle_ref": { "$ref": "forge/common#/$defs/SecretRef", "description": "Where the connected access/refresh tokens are stored (set by the connect flow)." }
+      }
+    },
+    "Bearer": {
+      "properties": {
+        "token_ref": { "$ref": "forge/common#/$defs/SecretRef" },
+        "header_name": { "type": "string", "default": "Authorization" },
+        "prefix": { "type": "string", "default": "Bearer " }
+      }
+    },
+    "Basic": {
+      "properties": {
+        "username_ref": { "$ref": "forge/common#/$defs/SecretRef" },
+        "password_ref": { "$ref": "forge/common#/$defs/SecretRef" }
+      }
+    },
+    "ApiKey": {
+      "required": ["in", "name"],
+      "properties": {
+        "in": { "type": "string", "enum": ["header", "query"] },
+        "name": { "type": "string" },
+        "value_ref": { "$ref": "forge/common#/$defs/SecretRef" }
+      }
+    },
+    "CustomScript": {
+      "required": ["source"],
+      "properties": {
+        "source": { "type": "string", "x-ui": { "widget": "code", "language": "python", "help": "RestrictedPython returning {headers, cookies, ttl}. Advanced — audited." } }
+      }
+    }
+  }
+}

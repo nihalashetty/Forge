@@ -1,0 +1,165 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "forge/nodes/agent",
+  "type": "object",
+  "anyOf": [{ "required": ["model"] }, { "required": ["agent_ref"] }],
+  "properties": {
+    "agent_ref": { "type": "string", "description": "Id of a saved Agent preset this node mirrors. When set, the saved agent's config drives this node (live — edits in the Agents tab apply).", "x-ui": { "widget": "reference", "refType": "agent", "section": "Flavor", "order": 0 } },
+    "flavor": { "type": "string", "enum": ["agent", "deep_agent"], "default": "agent", "x-ui": { "widget": "segmented", "order": 1, "section": "Flavor" } },
+    "name": { "$ref": "forge/common#/$defs/Identifier", "x-ui": { "section": "Flavor" } },
+    "model": { "$ref": "forge/common#/$defs/ModelRef", "x-ui": { "section": "Model", "order": 2 } },
+    "model_params": {
+      "type": "object",
+      "x-ui": { "section": "Model", "advanced": true },
+      "properties": {
+        "temperature": { "type": "number" },
+        "max_tokens": { "type": "integer" },
+        "timeout": { "type": "integer" },
+        "base_url": { "type": "string" }
+      }
+    },
+    "dynamic_model": {
+      "type": "object",
+      "x-ui": { "section": "Model", "advanced": true },
+      "description": "Compiles to a @wrap_model_call middleware.",
+      "properties": {
+        "enabled": { "type": "boolean", "default": false },
+        "rules": {
+          "type": "array",
+          "items": { "type": "object", "required": ["when", "use"], "properties": { "when": { "$ref": "forge/common#/$defs/Expression" }, "use": { "$ref": "forge/common#/$defs/ModelRef" } } },
+          "x-ui": { "widget": "rows-table" }
+        },
+        "default": { "$ref": "forge/common#/$defs/ModelRef" }
+      }
+    },
+    "system_prompt": { "type": "string", "x-ui": { "widget": "textarea", "section": "Instructions", "order": 3, "modelView": true } },
+    "dynamic_prompt": {
+      "type": "object",
+      "x-ui": { "section": "Instructions", "advanced": true },
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "rules": {
+          "type": "array",
+          "items": { "type": "object", "properties": { "when": { "$ref": "forge/common#/$defs/Expression" }, "prompt": { "type": "string" } } },
+          "x-ui": { "widget": "rows-table" }
+        }
+      }
+    },
+    "tools": { "type": "array", "items": { "type": "string" }, "description": "Tool ids (incl. MCP tool ids) available to the agent.", "x-ui": { "widget": "chips", "refType": "tool", "section": "Tools", "order": 4 } },
+    "knowledge": {
+      "type": "object",
+      "description": "Built-in knowledge-base access for the agent (no separate Tool needed). Compiles to agent-callable tools: RAG over documents and/or curated Q&A lookup, each scoped by folders/kinds. Prefer this over a fixed retrieval node for conversational or multi-part agents.",
+      "x-ui": { "section": "Knowledge", "order": 5 },
+      "properties": {
+        "rag": {
+          "type": "object",
+          "description": "Document search (RAG) as a tool the agent calls per sub-question.",
+          "properties": {
+            "enabled": { "type": "boolean", "default": false },
+            "folders": { "type": "array", "items": { "type": "string" }, "x-ui": { "widget": "chips", "refType": "kb_folder" }, "description": "Restrict to these knowledge folders (empty = all)." },
+            "top_k": { "type": "integer", "default": 4, "description": "Document chunks returned per search." }
+          }
+        },
+        "qa": {
+          "type": "object",
+          "description": "FAQ / Q&A lookup as a tool the agent calls for common questions.",
+          "properties": {
+            "enabled": { "type": "boolean", "default": false },
+            "kinds": { "type": "array", "items": { "type": "string" }, "x-ui": { "widget": "chips", "refType": "qa_kind" }, "description": "Restrict to these Q&A kinds/categories (empty = all)." },
+            "threshold": { "type": "number", "default": 0.3, "description": "Minimum similarity for a Q&A pair to be returned." }
+          }
+        }
+      }
+    },
+    "mcp_servers": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Registered MCP servers (by id) this agent can use — each server's enabled tools become agent-callable.",
+      "x-ui": { "widget": "chips", "refType": "mcp_client", "section": "MCP Servers", "order": 5.5 }
+    },
+    "response_format": { "$ref": "#/$defs/ResponseFormat", "x-ui": { "section": "Output", "order": 6 } },
+    "middleware": { "type": "array", "items": { "$ref": "forge/middleware#/$defs/MiddlewareEntry" }, "x-ui": { "widget": "middleware-stack", "section": "Middleware", "order": 6 } },
+    "memory": {
+      "type": "object",
+      "x-ui": { "section": "Memory", "order": 7 },
+      "properties": {
+        "long_term": { "type": "boolean", "default": false, "x-ui": { "effect": "Persist memory across conversations" } },
+        "store_namespace": { "type": "string" },
+        "state_extensions": {
+          "type": "array",
+          "items": { "type": "object", "properties": { "name": { "type": "string" }, "type": { "type": "string" }, "reducer": { "type": "string" } } },
+          "x-ui": { "widget": "rows-table" }
+        }
+      }
+    },
+    "planning": { "type": "boolean", "default": true, "x-ui": { "section": "Deep Agent", "order": 8, "effect": "Adds write_todos planning tool", "showWhen": "flavor=deep_agent" } },
+    "subagents": { "type": "array", "items": { "$ref": "#/$defs/SubAgent" }, "x-ui": { "section": "Deep Agent", "order": 9, "showWhen": "flavor=deep_agent" } },
+    "filesystem": { "$ref": "#/$defs/FilesystemBackend", "x-ui": { "section": "Deep Agent", "order": 10, "showWhen": "flavor=deep_agent" } },
+    "sandbox": { "$ref": "#/$defs/SandboxConfig", "x-ui": { "section": "Deep Agent", "order": 11, "showWhen": "flavor=deep_agent" } },
+    "skills": { "type": "array", "items": { "type": "string" }, "x-ui": { "section": "Deep Agent", "showWhen": "flavor=deep_agent" } },
+    "permissions": {
+      "type": "array",
+      "items": { "type": "object", "properties": { "path": { "type": "string" }, "access": { "type": "string", "enum": ["read", "write", "none"] } } },
+      "x-ui": { "widget": "rows-table", "section": "Deep Agent", "showWhen": "flavor=deep_agent" }
+    }
+  },
+  "$defs": {
+    "ResponseFormat": {
+      "oneOf": [
+        { "type": "object", "properties": { "mode": { "const": "freeform" } } },
+        { "type": "object", "required": ["mode", "schema"], "properties": { "mode": { "const": "structured" }, "strategy": { "type": "string", "enum": ["auto", "provider", "tool"], "default": "auto" }, "schema": { "type": "object", "description": "JSON Schema of the desired structured output." } } }
+      ],
+      "x-ui": { "widget": "kind-switcher", "discriminator": "mode" }
+    },
+    "SubAgent": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["name", "description"],
+          "properties": {
+            "name": { "$ref": "forge/common#/$defs/Identifier" },
+            "description": { "type": "string", "x-ui": { "modelView": true } },
+            "system_prompt": { "type": "string", "x-ui": { "widget": "textarea" } },
+            "tools": { "type": "array", "items": { "type": "string" }, "x-ui": { "widget": "chips", "refType": "tool" } },
+            "model": { "$ref": "forge/common#/$defs/ModelRef" },
+            "middleware": { "type": "array", "items": { "$ref": "forge/middleware#/$defs/MiddlewareEntry" } }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["name", "workflow_ref"],
+          "properties": {
+            "name": { "$ref": "forge/common#/$defs/Identifier" },
+            "description": { "type": "string" },
+            "workflow_ref": { "type": "object", "properties": { "workflow_id": { "type": "string" }, "version": { "type": "integer" } }, "description": "Wrap a compiled workflow as CompiledSubAgent.", "x-ui": { "widget": "reference", "refType": "workflow" } }
+          }
+        }
+      ]
+    },
+    "FilesystemBackend": {
+      "type": "object",
+      "properties": {
+        "kind": { "type": "string", "enum": ["state", "disk", "store", "composite"], "default": "state" },
+        "routes": { "type": "object", "additionalProperties": { "type": "string", "enum": ["state", "disk", "store"] }, "description": "For composite, e.g. {'/memories/':'store'}." }
+      }
+    },
+    "SandboxConfig": {
+      "type": "object",
+      "properties": {
+        "kind": { "type": "string", "enum": ["none", "docker", "remote"], "default": "none" },
+        "provider": { "type": "string", "enum": ["e2b", "modal", "daytona", "runloop", "agentcore"], "x-ui": { "showWhen": "kind=remote" } },
+        "pattern": { "type": "string", "enum": ["agent_in_sandbox", "sandbox_as_tool"], "default": "sandbox_as_tool" },
+        "limits": { "$ref": "#/$defs/Limits" }
+      }
+    },
+    "Limits": {
+      "type": "object",
+      "properties": {
+        "cpu_seconds": { "type": "integer", "default": 10 },
+        "memory_mb": { "type": "integer", "default": 512 },
+        "timeout_seconds": { "type": "integer", "default": 30 },
+        "egress_allowlist": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

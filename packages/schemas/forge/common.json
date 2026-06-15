@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "forge/common",
+  "$defs": {
+    "IOType": {
+      "type": "string",
+      "enum": ["messages", "text", "json", "tool", "embedding", "vector", "any", "control"],
+      "description": "Port data type. Connection valid iff source/target compatible; 'any' matches all; 'control' only connects to 'control'."
+    },
+    "Port": {
+      "type": "object",
+      "required": ["id", "io_type", "direction"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9_]+$" },
+        "label": { "type": "string" },
+        "io_type": { "$ref": "forge/common#/$defs/IOType" },
+        "direction": { "type": "string", "enum": ["in", "out"] },
+        "required": { "type": "boolean", "default": true },
+        "many": { "type": "boolean", "default": false, "description": "Accepts/produces multiple connections (e.g. fanout/join control ports)." }
+      }
+    },
+    "ModelRef": {
+      "type": "string",
+      "description": "Provider-prefixed model id, e.g. 'anthropic:claude-sonnet-4-6', 'openai:gpt-5.4', 'google_genai:gemini-3.1-pro-preview', or a gateway 'litellm:...'/'openrouter:...'.",
+      "x-ui": { "widget": "model-picker" }
+    },
+    "ContextSize": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "prefixItems": [
+        { "type": "string", "enum": ["tokens", "messages", "fraction"] },
+        { "type": "number" }
+      ],
+      "description": "LangChain ContextSize tuple, e.g. ['tokens',4000] or ['fraction',0.8]."
+    },
+    "TemplateString": {
+      "type": "string",
+      "description": "May contain {{...}} token references resolved at runtime."
+    },
+    "Identifier": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9_-]+$",
+      "description": "snake_case/kebab; no spaces (provider compatibility)."
+    },
+    "SecretRef": {
+      "type": "string",
+      "pattern": "^(secret|vault)://.+",
+      "description": "Reference to a stored secret; never a plaintext value.",
+      "x-ui": { "widget": "secret-ref" }
+    },
+    "Expression": {
+      "type": "string",
+      "description": "RestrictedPython expression evaluated over the run state/context. No imports, no attribute escapes."
+    },
+    "RetryPolicy": {
+      "type": "object",
+      "properties": {
+        "max_retries": { "type": "integer", "minimum": 0, "default": 2 },
+        "backoff_factor": { "type": "number", "default": 2.0 },
+        "initial_delay": { "type": "number", "default": 1.0 },
+        "max_delay": { "type": "number", "default": 60.0 },
+        "jitter": { "type": "boolean", "default": true },
+        "retry_on": { "type": "array", "items": { "type": "string" }, "description": "Failure kinds to retry: exception, timeout, connection, http_error, value_error, key_error, runtime_error. Empty = retry any exception." }
+      }
+    }
+  }
+}

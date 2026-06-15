@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "forge/project",
+  "type": "object",
+  "properties": {
+    "default_model": { "$ref": "forge/common#/$defs/ModelRef" },
+    "allowed_models": { "type": "array", "items": { "$ref": "forge/common#/$defs/ModelRef" }, "x-ui": { "widget": "chips" } },
+    "provider_credentials": {
+      "type": "object",
+      "additionalProperties": { "$ref": "forge/common#/$defs/SecretRef" },
+      "description": "provider -> secret ref, e.g. {openai:'secret://proj/openai_key'}"
+    },
+    "budgets": {
+      "type": "object",
+      "properties": {
+        "max_usd_per_run": { "type": "number" },
+        "max_tokens_per_run": { "type": "integer" },
+        "monthly_usd_cap": { "type": "number" },
+        "alert_at_fraction": { "type": "number", "default": 0.8 }
+      }
+    },
+    "default_middleware": { "type": "array", "items": { "$ref": "forge/middleware#/$defs/MiddlewareEntry" }, "x-ui": { "widget": "middleware-stack" } },
+    "data_region": { "type": "string" },
+    "rag_defaults": {
+      "type": "object",
+      "properties": {
+        "embedding_model": { "type": "string", "default": "openai:text-embedding-3-small" },
+        "chunk_size": { "type": "integer", "default": 1000 },
+        "chunk_overlap": { "type": "integer", "default": 200 }
+      }
+    },
+    "features": {
+      "type": "object",
+      "properties": {
+        "code_nodes": { "type": "boolean", "default": false },
+        "remote_sandbox": { "type": "boolean", "default": false },
+        "advanced_scripts": { "type": "boolean", "default": false }
+      }
+    },
+    "tracing": {
+      "type": "object",
+      "properties": {
+        "retention_days": { "type": "integer", "default": 30 },
+        "langfuse_otlp_url": { "type": "string" }
+      }
+    }
+  }
+}

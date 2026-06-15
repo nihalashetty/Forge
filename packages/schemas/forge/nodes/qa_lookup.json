@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "forge/nodes/qa_lookup",
+  "type": "object",
+  "properties": {
+    "threshold": { "type": "number", "default": 0.85 },
+    "kinds": { "type": "array", "items": { "type": "string" }, "x-ui": { "widget": "chips", "refType": "qa_kind" }, "description": "Restrict matching to these Q&A kinds/categories (empty = all kinds). Kinds come from the Knowledge screen." },
+    "kind": { "type": "string", "default": "any", "description": "Legacy single-kind filter ('any' = all); superseded by `kinds`." },
+    "route_key": { "type": "string", "description": "Optional state field to set 'yes'/'no' on (whether a FAQ matched), so a router can branch QA-hit → end vs miss → retrieval." }
+  },
+  "$comment": "ports: in:text, out:text"
+}

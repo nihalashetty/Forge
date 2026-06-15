@@ -1,0 +1,194 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "forge/middleware",
+  "$defs": {
+    "MiddlewareEntry": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "type": "string", "description": "Middleware type key (see config_schemas)." },
+        "enabled": { "type": "boolean", "default": true },
+        "config": { "type": "object", "description": "Validated against the per-type schema in config_schemas." }
+      },
+      "x-ui": {
+        "category-map": {
+          "summarization": "context", "context_editing": "context", "todo": "context",
+          "pii": "safety", "guardrail_regex": "safety", "openai_moderation": "safety",
+          "tool_retry": "reliability", "model_retry": "reliability", "model_fallback": "reliability",
+          "model_call_limit": "cost", "tool_call_limit": "cost", "tenant_budget": "cost", "llm_tool_selector": "cost",
+          "human_in_the_loop": "human",
+          "anthropic_prompt_caching": "provider",
+          "tool_emulator": "testing",
+          "dynamic_model_by_state": "advanced", "tool_filter_by_context": "advanced"
+        }
+      }
+    }
+  },
+  "config_schemas": {
+    "summarization": {
+      "type": "object",
+      "properties": {
+        "model": { "$ref": "forge/common#/$defs/ModelRef" },
+        "trigger": { "oneOf": [{ "$ref": "forge/common#/$defs/ContextSize" }, { "type": "array", "items": { "$ref": "forge/common#/$defs/ContextSize" } }] },
+        "keep": { "$ref": "forge/common#/$defs/ContextSize" },
+        "summary_prompt": { "type": "string", "x-ui": { "widget": "textarea", "advanced": true } }
+      },
+      "x-ui": { "help": "Summarize older messages when the conversation grows past the trigger; keep the most recent." }
+    },
+    "human_in_the_loop": {
+      "type": "object",
+      "required": ["interrupt_on"],
+      "properties": {
+        "interrupt_on": {
+          "type": "object",
+          "additionalProperties": {
+            "oneOf": [
+              { "type": "boolean" },
+              { "type": "object", "properties": { "allowed_decisions": { "type": "array", "items": { "type": "string", "enum": ["approve", "edit", "reject"] } } } }
+            ]
+          },
+          "x-ui": { "widget": "rows-table", "columns": ["tool", "allowed_decisions"] }
+        }
+      },
+      "x-ui": { "help": "Pause for human approval before chosen tools run. Requires a checkpointer." }
+    },
+    "model_call_limit": {
+      "type": "object",
+      "properties": {
+        "thread_limit": { "type": "integer" },
+        "run_limit": { "type": "integer" },
+        "exit_behavior": { "type": "string", "enum": ["end", "error"], "default": "end" }
+      }
+    },
+    "tool_call_limit": {
+      "type": "object",
+      "properties": {
+        "tool_name": { "type": "string", "x-ui": { "widget": "reference", "refType": "tool" } },
+        "thread_limit": { "type": "integer" },
+        "run_limit": { "type": "integer" },
+        "exit_behavior": { "type": "string", "enum": ["continue", "error", "end"], "default": "continue" }
+      }
+    },
+    "model_fallback": {
+      "type": "object",
+      "required": ["models"],
+      "properties": {
+        "models": { "type": "array", "items": { "$ref": "forge/common#/$defs/ModelRef" }, "minItems": 1, "x-ui": { "widget": "chips", "help": "Tried in order if the primary model fails." } }
+      }
+    },
+    "pii": {
+      "type": "object",
+      "required": ["pii_type"],
+      "properties": {
+        "pii_type": { "type": "string", "description": "email|credit_card|ip|mac_address|url|<custom>" },
+        "strategy": { "type": "string", "enum": ["block", "redact", "mask", "hash"], "default": "redact" },
+        "detector": { "type": "string", "description": "Regex pattern for custom types.", "x-ui": { "widget": "mono", "advanced": true } },
+        "apply_to_input": { "type": "boolean", "default": true },
+        "apply_to_output": { "type": "boolean", "default": false },
+        "apply_to_tool_results": { "type": "boolean", "default": false }
+      }
+    },
+    "todo": {
+      "type": "object",
+      "properties": { "system_prompt": { "type": "string", "x-ui": { "widget": "textarea", "advanced": true } } }
+    },
+    "llm_tool_selector": {
+      "type": "object",
+      "properties": {
+        "model": { "$ref": "forge/common#/$defs/ModelRef" },
+        "max_tools": { "type": "integer" },
+        "always_include": { "type": "array", "items": { "type": "string" }, "x-ui": { "widget": "chips", "refType": "tool" } }
+      },
+      "x-ui": { "help": "Pre-select relevant tools before the main model call (saves tokens when many tools exist)." }
+    },
+    "tool_retry": {
+      "allOf": [{ "$ref": "forge/common#/$defs/RetryPolicy" }],
+      "properties": {
+        "tools": { "type": "array", "items": { "type": "string" }, "x-ui": { "widget": "chips", "refType": "tool" } },
+        "on_failure": { "type": "string", "enum": ["return_message", "raise", "continue"], "default": "return_message" }
+      }
+    },
+    "model_retry": {
+      "allOf": [{ "$ref": "forge/common#/$defs/RetryPolicy" }],
+      "properties": { "on_failure": { "type": "string", "enum": ["continue", "error"], "default": "continue" } }
+    },
+    "tool_emulator": {
+      "type": "object",
+      "properties": {
+        "tools": { "type": "array", "items": { "type": "string" }, "x-ui": { "widget": "chips", "refType": "tool" } },
+        "model": { "$ref": "forge/common#/$defs/ModelRef" }
+      },
+      "x-ui": { "help": "Emulate tool outputs with an LLM (no real calls). For testing." }
+    },
+    "context_editing": {
+      "type": "object",
+      "properties": {
+        "edits": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "trigger": { "type": "integer", "default": 100000 },
+              "keep": { "type": "integer", "default": 3 },
+              "clear_at_least": { "type": "integer", "default": 0 },
+              "clear_tool_inputs": { "type": "boolean", "default": false },
+              "exclude_tools": { "type": "array", "items": { "type": "string" } },
+              "placeholder": { "type": "string", "default": "[cleared]" }
+            }
+          }
+        }
+      },
+      "x-ui": { "help": "Clear older tool outputs once the conversation passes the trigger; keep the most recent N." }
+    },
+    "anthropic_prompt_caching": {
+      "type": "object",
+      "properties": { "ttl": { "type": "string", "enum": ["5m", "1h"], "default": "5m" } },
+      "x-ui": { "help": "Cache the system prompt block on Anthropic models (cost/latency).", "showWhen": "model.startsWith(anthropic)" }
+    },
+    "openai_moderation": {
+      "type": "object",
+      "properties": {
+        "apply_to_input": { "type": "boolean", "default": true },
+        "apply_to_output": { "type": "boolean", "default": true }
+      }
+    },
+    "dynamic_model_by_state": {
+      "type": "object",
+      "required": ["rules"],
+      "properties": {
+        "rules": {
+          "type": "array",
+          "items": { "type": "object", "properties": { "when": { "$ref": "forge/common#/$defs/Expression" }, "use": { "$ref": "forge/common#/$defs/ModelRef" } } },
+          "x-ui": { "widget": "rows-table" }
+        },
+        "default": { "$ref": "forge/common#/$defs/ModelRef" }
+      },
+      "x-ui": { "help": "Switch model at runtime based on state (compiles to @wrap_model_call)." }
+    },
+    "tool_filter_by_context": {
+      "type": "object",
+      "properties": {
+        "expose_when": { "type": "object", "description": "e.g. {role:['admin']} matched against runtime.context." },
+        "tools": { "type": "array", "items": { "type": "string" }, "x-ui": { "widget": "chips", "refType": "tool" } }
+      },
+      "x-ui": { "help": "Show/hide tools at runtime by context (auth state, role, flags)." }
+    },
+    "guardrail_regex": {
+      "type": "object",
+      "properties": {
+        "patterns": { "type": "array", "items": { "type": "string" }, "x-ui": { "widget": "chips" } },
+        "on_match": { "type": "string", "enum": ["block", "redact", "flag"], "default": "block" },
+        "apply_to": { "type": "string", "enum": ["input", "output", "both"], "default": "output" }
+      }
+    },
+    "tenant_budget": {
+      "type": "object",
+      "properties": {
+        "max_usd_per_thread": { "type": "number" },
+        "max_tokens_per_run": { "type": "integer" },
+        "on_exceed": { "type": "string", "enum": ["end", "error"], "default": "end" }
+      },
+      "x-ui": { "help": "Stop the run when accumulated cost/tokens exceed the cap (before_model)." }
+    }
+  }
+}

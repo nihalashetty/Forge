@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "forge/nodes/trigger_email",
+  "type": "object",
+  "properties": {
+    "mailbox": { "type": "string", "x-ui": { "help": "Address/label this trigger handles (informational; routing is per inbound-mailbox config)." } },
+    "include_subject": { "type": "boolean", "default": true },
+    "reply": { "type": "boolean", "default": true, "x-ui": { "help": "Send the workflow's answer back as a threaded email reply." } }
+  }
+}

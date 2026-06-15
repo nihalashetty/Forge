@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "forge/nodes/tool_call",
+  "type": "object",
+  "required": ["tool_id"],
+  "properties": {
+    "tool_id": { "type": "string", "x-ui": { "widget": "reference", "refType": "tool" } },
+    "input_mapping": { "type": "object", "description": "Maps state/inputs -> tool args (JMESPath/templates).", "x-ui": { "widget": "rows-table" } },
+    "handle_tool_errors": { "oneOf": [{ "type": "boolean" }, { "type": "string" }], "default": true }
+  },
+  "$comment": "ports: in:json, out:json"
+}

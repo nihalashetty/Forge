@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "forge/nodes/transform",
+  "type": "object",
+  "required": ["expression"],
+  "properties": {
+    "engine": { "type": "string", "enum": ["jmespath", "jq"], "default": "jmespath" },
+    "expression": { "type": "string", "x-ui": { "widget": "jmespath", "tokenMeter": false } },
+    "input_key": { "type": "string", "description": "State key to read as input (omit to use whole state)." },
+    "output_key": { "type": "string", "default": "data", "description": "State key to write the result to (must be a declared state field)." }
+  },
+  "$comment": "ports: in:json, out:json"
+}

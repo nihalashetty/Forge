@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "forge/nodes/end",
+  "type": "object",
+  "properties": {},
+  "additionalProperties": false,
+  "$comment": "ports: in:control"
+}

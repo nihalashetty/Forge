@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "forge/nodes/handoff",
+  "type": "object",
+  "properties": {
+    "reason": { "type": "string", "default": "Escalated to a human agent.", "x-ui": { "help": "Why the conversation is being handed off (shown in the agent inbox)." } },
+    "ack_message": { "type": "string", "x-ui": { "help": "Optional message sent to the customer while they wait for a human." } }
+  }
+}

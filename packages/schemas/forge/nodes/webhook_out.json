@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "forge/nodes/webhook_out",
+  "type": "object",
+  "required": ["url", "method"],
+  "properties": {
+    "url": { "$ref": "forge/common#/$defs/TemplateString" },
+    "method": { "type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"] },
+    "auth_provider_id": { "type": "string", "x-ui": { "widget": "reference", "refType": "auth_provider" } },
+    "body": { "type": "object" },
+    "headers": { "type": "object" },
+    "output_key": { "type": "string", "default": "webhook_result", "description": "State key to write the response to (must be a declared state field)." }
+  },
+  "$comment": "ports: in:json, out:json"
+}

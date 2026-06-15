@@ -1,0 +1,36 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# --- Node / Next ---
+node_modules/
+.next/
+out/
+dist/
+build/
+*.tsbuildinfo
+.turbo/
+
+# --- Forge runtime data & secrets ---
+apps/api/.data/
+*.db
+*.sqlite
+*.sqlite3
+.env
+.env.local
+master.key
+
+# --- Editors / OS / tooling ---
+.vscode/
+.idea/
+.claude/settings.local.json
+.DS_Store
+Thumbs.db
+
+# --- WebFetch / temp artifacts ---
+*.bin
