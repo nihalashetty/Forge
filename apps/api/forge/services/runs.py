@@ -212,8 +212,8 @@ class RunService:
                     yield {"event": "interrupt", "data": payload}
                 else:
                     # The authoritative final answer comes from run state — this covers
-                    # answers produced by non-LLM nodes (qa_lookup deflection) that never
-                    # stream as message tokens, so the UI can always render a final bubble.
+                    # answers produced by non-LLM nodes that never stream as message
+                    # tokens, so the UI can always render a final bubble.
                     yield {
                         "event": "done",
                         "data": {

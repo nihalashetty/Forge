@@ -57,7 +57,9 @@
           "properties": {
             "enabled": { "type": "boolean", "default": false },
             "folders": { "type": "array", "items": { "type": "string" }, "x-ui": { "widget": "chips", "refType": "kb_folder" }, "description": "Restrict to these knowledge folders (empty = all)." },
-            "top_k": { "type": "integer", "default": 4, "description": "Document chunks returned per search." }
+            "top_k": { "type": "integer", "default": 4, "description": "Document chunks returned per search." },
+            "min_score": { "type": "number", "default": 0.18, "description": "Drop chunks below this similarity so off-topic queries surface nothing." },
+            "hybrid": { "type": "boolean", "default": false, "description": "Blend lexical BM25 keyword ranking with vector search (RRF) so exact terms — codes, names, SKUs — aren't missed." }
           }
         },
         "qa": {
@@ -66,7 +68,8 @@
           "properties": {
             "enabled": { "type": "boolean", "default": false },
             "kinds": { "type": "array", "items": { "type": "string" }, "x-ui": { "widget": "chips", "refType": "qa_kind" }, "description": "Restrict to these Q&A kinds/categories (empty = all)." },
-            "threshold": { "type": "number", "default": 0.3, "description": "Minimum similarity for a Q&A pair to be returned." }
+            "threshold": { "type": "number", "default": 0.3, "description": "Minimum similarity for a Q&A pair to be returned." },
+            "top_k": { "type": "integer", "default": 3, "description": "Q&A pairs returned per lookup." }
           }
         }
       }

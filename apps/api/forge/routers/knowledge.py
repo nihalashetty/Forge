@@ -26,7 +26,7 @@ async def list_sources(project_id: str, session: AsyncSession = Depends(get_sess
 
 @router.post("/sources", response_model=KbSourceOut, status_code=201)
 async def add_source(project_id: str, body: KbSourceCreate, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id)):
-    src = await KnowledgeService.create_source(session, tenant_id, project_id, kind=body.kind, name=body.name, uri=body.uri, text=body.text, folder=body.folder)
+    src = await KnowledgeService.create_source(session, tenant_id, project_id, kind=body.kind, name=body.name, uri=body.uri, text=body.text, folder=body.folder, chunking_strategy=body.chunking_strategy)
     return await KnowledgeService.ingest(session, src)  # synchronous ingest for the slice
 
 
@@ -35,6 +35,7 @@ async def upload_source(
     project_id: str,
     file: UploadFile = File(...),
     folder: str = Form(""),
+    chunking_strategy: str = Form(""),
     session: AsyncSession = Depends(get_session),
     tenant_id: str = Depends(current_tenant_id),
 ):
@@ -61,7 +62,7 @@ async def upload_source(
             text = raw.decode("latin-1", errors="replace")
         if not text.strip():
             raise HTTPException(422, "File is empty or not a readable text format.")
-    src = await KnowledgeService.create_source(session, tenant_id, project_id, kind="file", name=name, text=text, folder=folder)
+    src = await KnowledgeService.create_source(session, tenant_id, project_id, kind="file", name=name, text=text, folder=folder, chunking_strategy=(chunking_strategy or None))
     return await KnowledgeService.ingest(session, src)
 
 

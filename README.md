@@ -52,7 +52,7 @@ it is already git-ignored.
 ```bash
 cd apps/api
 python -m venv .venv && .venv\Scripts\activate     # source .venv/bin/activate on *nix
-pip install -e ".[dev]"
+pip install -e ".[dev,all]"                         # engine + tests + vectors/providers/knowledge/MCP
 pytest                                              # optional: validate the engine (offline)
 uvicorn forge.main:app --reload --port 8000         # http://localhost:8000/docs
 ```

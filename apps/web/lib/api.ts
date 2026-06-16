@@ -100,7 +100,7 @@ export interface Agent {
   created_by_email?: string | null;
 }
 
-export interface KbSource { id: string; project_id: string; kind: string; name: string; folder?: string; uri?: string | null; status: string; chunks: number; embedding_model?: string | null; }
+export interface KbSource { id: string; project_id: string; kind: string; name: string; folder?: string; uri?: string | null; status: string; chunks: number; embedding_model?: string | null; chunking_strategy?: string | null; }
 export interface QaPair { id: string; question: string; answer: string; kind: string; tags: string[]; upvotes: number; }
 export interface SearchHit { text: string; score: number; source_id?: string; }
 export interface Trace { id: string; run_id: string; workflow_id?: string | null; name: string; status: string; started_at?: string | null; ended_at?: string | null; latency_ms: number; total_tokens: number; total_cost_usd: number; }
@@ -270,12 +270,13 @@ export const api = {
   // knowledge
   listSources: (pid: string) => json<KbSource[]>(`/v1/projects/${pid}/knowledge/sources`),
   listFolders: (pid: string) => json<string[]>(`/v1/projects/${pid}/knowledge/folders`),
-  addSource: (pid: string, body: { kind: string; name: string; folder?: string; uri?: string; text?: string }) =>
+  addSource: (pid: string, body: { kind: string; name: string; folder?: string; uri?: string; text?: string; chunking_strategy?: string }) =>
     notifyCounts(json<KbSource>(`/v1/projects/${pid}/knowledge/sources`, { method: "POST", body: JSON.stringify(body) })),
-  uploadSource: async (pid: string, file: globalThis.File, folder?: string) => {
+  uploadSource: async (pid: string, file: globalThis.File, folder?: string, chunkingStrategy?: string) => {
     const fd = new FormData();
     fd.append("file", file);
     if (folder) fd.append("folder", folder);
+    if (chunkingStrategy) fd.append("chunking_strategy", chunkingStrategy);
     const res = await fetch(`${BASE}/v1/projects/${pid}/knowledge/sources/upload`, { method: "POST", body: fd, headers: authHeader() });
     if (!res.ok) {
       const detail = await res.json().then((d) => d?.detail).catch(() => null);

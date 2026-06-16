@@ -93,8 +93,7 @@ live; **Run** (or the Playground) to test.
 |---|---|
 | **Tool Call** | Invokes one specific tool with fixed/mapped arguments (deterministic). |
 | **Transform** | Reshapes state with a JMESPath expression (no model). |
-| **Retrieval** | Pulls top‑K knowledge chunks (+ Q&A) into context — place before a grounded agent. |
-| **Q&A Lookup** | Instant FAQ deflection — exact stored answer if a question matches closely. |
+| **Retrieval** | Pulls knowledge into context — documents (RAG) and/or curated Q&A pairs, each toggleable. Place before a grounded agent. |
 | **Human Input** | Pauses the run for approve/reject in the Playground. |
 | **Human Handoff** | Escalates to a person via the **Agent inbox**; their reply becomes the answer and is delivered over the channel. |
 | **Webhook Out** | POSTs run data to an external URL. |
@@ -165,9 +164,9 @@ referenced (never pasted into config) as `secret://proj/<name>` — set the valu
 - **Re‑ingest (↻)** a source to re‑fetch/re‑crawl or re‑embed under your current model.
 - **Health banner:** if you switch embedding models, Forge flags sources that need
   re‑embedding (otherwise they'd silently vanish from search) — click **Re‑embed all**.
-- **Use it:** add a **Retrieval** node before an agent, or enable **knowledge** directly on an
-  Agent node so it searches per sub‑question. **Q&A Lookup** deflects exact FAQ matches with
-  no model call.
+- **Use it:** add a **Retrieval** node before an agent (it grounds on documents and/or Q&A
+  pairs, each toggleable), or enable **knowledge** directly on an Agent node so it searches
+  per sub‑question.
 
 ---
 

@@ -227,6 +227,7 @@ class KbSourceOut(ORMModel):
     status: str
     chunks: int
     embedding_model: str | None = None
+    chunking_strategy: str | None = None
 
 
 class KbSourceCreate(BaseModel):
@@ -235,6 +236,9 @@ class KbSourceCreate(BaseModel):
     folder: str = ""  # "" = unfiled; free-form folder names organize sources
     uri: str | None = None
     text: str | None = None
+    # How to split this source into chunks: recursive (default) | section | sentence.
+    # None -> falls back to the project's rag_defaults.chunking_strategy, then "recursive".
+    chunking_strategy: str | None = None
 
 
 class QaPairOut(ORMModel):

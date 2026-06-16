@@ -1,7 +1,7 @@
 """Built-in node factories. Importing this package registers every node type.
 
 Registered: start, end, router, agent, deep_agent, llm, classifier, transform,
-human_input, handoff, webhook_out, emit_event, tool_call, retrieval, qa_lookup,
+human_input, handoff, webhook_out, emit_event, tool_call, retrieval,
 subworkflow, parallel_fanout, join, loop, and the triggers (webhook_in, schedule,
 email_in, chat_in).
 """

@@ -166,8 +166,8 @@ def build_knowledge_capability_tools(knowledge: dict | None, ctx) -> list:
     - Q&A  (`lookup_faq`): semantic match over curated FAQ / Q&A pairs, scoped to the
       configured kinds (empty = all).
 
-    Unlike the fixed `retrieval`/`qa_lookup` nodes (one search per run, before the agent),
-    these are agent-driven: the agent decides when to search and rewrites the query per
+    Unlike the fixed `retrieval` node (one search per run, before the agent), these are
+    agent-driven: the agent decides when to search and rewrites the query per
     sub-question — which is what lets ONE agent answer multi-part questions.
     """
     tools: list = []
@@ -180,6 +180,7 @@ def build_knowledge_capability_tools(knowledge: dict | None, ctx) -> list:
         folders = rag.get("folders") or None
         top_k = int(rag.get("top_k") or 4)
         min_score = rag.get("min_score", 0.18)
+        hybrid = bool(rag.get("hybrid", False))
         scope = f" (folders: {', '.join(folders)})" if folders else ""
 
         async def search_knowledge_base(query: str) -> str:
@@ -192,7 +193,7 @@ def build_knowledge_capability_tools(knowledge: dict | None, ctx) -> list:
                     vec = await embedder.aembed_query(query)
                     hits = await KnowledgeService.search(
                         s, ctx.tenant_id, ctx.project_id, query, top_k=top_k,
-                        folders=folders, embedder=embedder, embedding=vec,
+                        folders=folders, embedder=embedder, embedding=vec, hybrid=hybrid,
                     )
                 except Exception:  # noqa: BLE001 - store empty / not ready
                     hits = []

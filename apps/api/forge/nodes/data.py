@@ -4,8 +4,8 @@ Convention: data nodes read from an optional `input_key` (else the whole state)
 and write to `output_key` (which MUST be a declared state field, else LangGraph
 rejects the update). `human_input` writes the decision into `messages`.
 
-(`tool_call` and the RAG nodes land next: tool_call needs per-user context
-plumbing for auth'd tools; retrieval/qa_lookup need the Chroma store.)
+(`tool_call` and the RAG node land next: tool_call needs per-user context
+plumbing for auth'd tools; retrieval needs the Chroma store.)
 """
 
 from __future__ import annotations

@@ -36,11 +36,11 @@ Rules:
 - Triage first (almost every support/chatbot graph): right after `start`, classify the
   message into at least `general` vs `support`, then `router` it. Send `general` (greetings,
   smalltalk, "what can you do?", capability/meta questions) to a small friendly agent that
-  answers directly and goes to `end`; route only `support` into the qa_lookup/retrieval/
-  ticket pipeline. Without this, greetings and meta questions fall through retrieval, miss,
+  answers directly and goes to `end`; route only `support` into the retrieval/ticket
+  pipeline. Without this, greetings and meta questions fall through retrieval, miss,
   and dead-end at a "no relevant data → create a ticket" path — a bad first impression.
   Shape: start → classify(general|support) → router → {general: greeter_agent → end,
-  support: qa_lookup → … → end}. (Simpler alt: one front agent with a knowledge_search tool
+  support: retrieval → … → end}. (Simpler alt: one front agent with a knowledge_search tool
   that both chats and answers.)
 - Single intent: `classifier` (labels, output_key=intent) → `router`
   (expression=intent, cases {label: node_id}, default=fallback_node). Case KEYS are the
@@ -55,7 +55,7 @@ Rules:
 - Simpler multi-intent alternative (preferred for support bots): ONE agent with
   `config.knowledge` enabled (rag and/or qa) plus any REST tools. The agent searches the KB
   once per sub-question and composes one answer itself. Fewer nodes, no fan-out needed.
-- Conditional on retrieval success: retrieval/qa_lookup `route_key` writes "yes"/"no";
+- Conditional on retrieval success: retrieval `route_key` writes "yes"/"no";
   human decisions: human_input `output_key` writes the decision string.
 
 ## Knowledge
@@ -63,11 +63,10 @@ Rules:
 - Sources (documents) live in folders (free-form names; "" = unfiled). retrieval node
   `folders: ["Manuals"]` and the `knowledge_search` tool's `folder` arg filter by folder.
 - Q&A pairs have a free-form `kind` (faq, error_workaround, or custom kinds the user
-  creates) + tags. qa_lookup `kind` filters matching; "any" = all kinds.
+  creates) + tags. The retrieval node (include_qa) and agent Q&A filter by `kinds`; empty = all.
 - Three ways to ground an agent, pick by how much control you need:
-  1. `retrieval`/`qa_lookup` NODES = fixed pre-step grounding (one search per run, before
-     the agent; structurally guaranteed). Use when grounding MUST happen or to deflect FAQs
-     before the LLM runs.
+  1. `retrieval` NODE = fixed pre-step grounding (one search over BOTH docs + Q&A per run,
+     before the agent; structurally guaranteed). Use when grounding MUST happen.
   2. Agent `config.knowledge` (PREFERRED for conversational/multi-part agents) = built-in,
      agent-driven KB access, no separate Tool needed:
      ```json

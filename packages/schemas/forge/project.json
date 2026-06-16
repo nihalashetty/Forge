@@ -26,7 +26,8 @@
       "properties": {
         "embedding_model": { "type": "string", "default": "openai:text-embedding-3-small" },
         "chunk_size": { "type": "integer", "default": 1000 },
-        "chunk_overlap": { "type": "integer", "default": 200 }
+        "chunk_overlap": { "type": "integer", "default": 200 },
+        "chunking_strategy": { "type": "string", "enum": ["recursive", "section", "sentence"], "default": "recursive", "x-ui": { "effect": "Default chunking when a source doesn't specify one: recursive (general), section (Markdown headings), sentence (sentence-aware)." } }
       }
     },
     "features": {

@@ -66,7 +66,7 @@ function Files({ project }: { project: any }) {
   // The modal never asks for a folder — sources land in the folder open at the time
   // ("" = Unfiled, e.g. from the All files view).
   const [targetFolder, setTargetFolder] = useState<string>("");
-  const [form, setForm] = useState<{ kind: string; name: string; text: string; uri: string; file: globalThis.File | null }>({ kind: "text", name: "", text: "", uri: "", file: null });
+  const [form, setForm] = useState<{ kind: string; name: string; text: string; uri: string; file: globalThis.File | null; chunkStrategy: string }>({ kind: "text", name: "", text: "", uri: "", file: null, chunkStrategy: "recursive" });
 
   const [health, setHealth] = useState<{ needs_reembed: boolean; current_model: string; mismatched: { id: string; name: string }[] } | null>(null);
   const reload = useCallback(() => {
@@ -103,14 +103,15 @@ function Files({ project }: { project: any }) {
     try {
       if (form.kind === "file") {
         if (!form.file) { setAddErr("Choose a file to upload."); return; }
-        await api.uploadSource(project.id, form.file, targetFolder || undefined);
+        await api.uploadSource(project.id, form.file, targetFolder || undefined, form.chunkStrategy);
       } else {
         await api.addSource(project.id, {
           kind: form.kind, name: form.name || "Untitled", folder: targetFolder || undefined,
           text: form.kind === "text" ? form.text : undefined, uri: (form.kind === "url" || form.kind === "crawl") ? form.uri : undefined,
+          chunking_strategy: form.chunkStrategy,
         });
       }
-      setOpen(false); setForm({ kind: "text", name: "", text: "", uri: "", file: null }); reload();
+      setOpen(false); setForm({ kind: "text", name: "", text: "", uri: "", file: null, chunkStrategy: "recursive" }); reload();
     } catch (e: any) {
       setAddErr(String(e?.message || e));
     } finally { setBusy(false); }
@@ -182,7 +183,7 @@ function Files({ project }: { project: any }) {
         </div>
         <div className="card" style={{ overflow: "hidden" }}>
           <table className="tbl">
-            <thead><tr><th>Name</th><th>Kind</th>{showFolderCol && <th>Folder</th>}<th>Status</th><th>Chunks</th><th /></tr></thead>
+            <thead><tr><th>Name</th><th>Kind</th>{showFolderCol && <th>Folder</th>}<th>Status</th><th>Chunks</th><th>Chunking</th><th /></tr></thead>
             <tbody>
               {visible.map((s) => (
                 <tr key={s.id}>
@@ -203,6 +204,7 @@ function Files({ project }: { project: any }) {
                   )}
                   <td><StatusPill status={s.status} /></td>
                   <td className="mono-sm">{s.chunks}</td>
+                  <td><span className="typechip">{s.chunking_strategy || "recursive"}</span></td>
                   <td style={{ textAlign: "right" }}>
                     <div className="row gap1" style={{ justifyContent: "flex-end" }}>
                       {(s.kind === "url" || s.kind === "crawl" || s.kind === "text") && <button className="iconbtn" title="Re-fetch & re-embed" onClick={() => reingest(s.id)}><Icon name="refresh" size={14} /></button>}
@@ -211,7 +213,7 @@ function Files({ project }: { project: any }) {
                   </td>
                 </tr>
               ))}
-              {visible.length === 0 && <tr><td colSpan={showFolderCol ? 6 : 5}><div className="fg-2" style={{ padding: 22, textAlign: "center" }}>{rows.length === 0 ? "No sources yet. Add text or a URL to feed your agents." : "No files in this folder yet."}</div></td></tr>}
+              {visible.length === 0 && <tr><td colSpan={showFolderCol ? 7 : 6}><div className="fg-2" style={{ padding: 22, textAlign: "center" }}>{rows.length === 0 ? "No sources yet. Add text or a URL to feed your agents." : "No files in this folder yet."}</div></td></tr>}
             </tbody>
           </table>
         </div>
@@ -239,6 +241,13 @@ function Files({ project }: { project: any }) {
             {form.file && <div className="t-caption fg-2" style={{ marginTop: 6 }}>{form.file.name} · {(form.file.size / 1024).toFixed(1)} KB</div>}
           </Field>
         )}
+        <Field label="Chunking" help="How this source is split before embedding. Recursive suits most documents; By section keeps each Markdown heading’s content together; By sentence groups whole sentences (good for FAQs and transcripts).">
+          <Segmented
+            options={[{ value: "recursive", label: "Recursive" }, { value: "section", label: "By section" }, { value: "sentence", label: "By sentence" }]}
+            value={form.chunkStrategy}
+            onChange={(v) => setForm((f) => ({ ...f, chunkStrategy: v }))}
+          />
+        </Field>
         {addErr && <div className="t-caption" style={{ color: "var(--danger, #c00)", marginTop: 4 }}>⚠ {addErr}</div>}
       </Modal>
     </div>
@@ -321,7 +330,7 @@ function QA({ project }: { project: any }) {
           />
         )}
         <div className="t-caption fg-2" style={{ padding: "6px 10px 2px" }}>
-          Kinds are free-form categories. qa_lookup nodes can filter by kind.
+          Kinds are free-form categories. Retrieval nodes (and agent Q&A) can filter by kind.
         </div>
       </div>
 

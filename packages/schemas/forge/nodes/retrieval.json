@@ -3,9 +3,12 @@
   "$id": "forge/nodes/retrieval",
   "type": "object",
   "properties": {
-    "top_k": { "type": "integer", "default": 5, "description": "How many knowledge-base document chunks to retrieve." },
+    "include_docs": { "type": "boolean", "default": true, "x-ui": { "effect": "Search the knowledge-base DOCUMENTS (RAG). Turn off for a Q&A-only node that pulls only curated FAQ pairs." } },
+    "top_k": { "type": "integer", "default": 5, "description": "How many knowledge-base document chunks to retrieve (only when include_docs is true)." },
+    "hybrid": { "type": "boolean", "default": false, "x-ui": { "effect": "Hybrid search: blend lexical BM25 keyword matching with semantic vectors (RRF). Catches exact terms — codes, names, SKUs — that pure vector search can miss." } },
     "include_qa": { "type": "boolean", "default": false, "x-ui": { "effect": "Also pull matching Q&A pairs into context — retrieval then grounds the agent on BOTH KB docs and Q&A." } },
     "qa_threshold": { "type": "number", "default": 0.3, "description": "Minimum similarity for a Q&A pair to be included (only when include_qa is true)." },
+    "qa_top_k": { "type": "integer", "default": 3, "description": "How many Q&A pairs to retrieve (only when include_qa is true)." },
     "qa_kinds": { "type": "array", "items": { "type": "string" }, "x-ui": { "widget": "chips", "refType": "qa_kind" }, "description": "Only include Q&A pairs of these kinds/categories (empty = all; only when include_qa is true)." },
     "min_score": { "type": "number", "default": 0.18, "description": "Drop document chunks below this similarity so off-topic queries surface nothing." },
     "announce_empty": { "type": "boolean", "default": false, "x-ui": { "effect": "When nothing relevant is found, inject a note so a grounded agent says it doesn't know instead of guessing." } },

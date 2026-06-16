@@ -12,9 +12,9 @@ import { Icon } from "../icons";
 import { type FlowEdge, type FlowNode } from "@/lib/graph";
 
 const NODE_HEIGHT: Record<string, number> = {
-  start: 36, end: 36, retrieval: 36, qa_lookup: 36,
+  start: 36, end: 36,
   agent: 90, deep_agent: 90, llm: 80, human_input: 80, classifier: 80,
-  transform: 64, tool_call: 64, webhook_out: 64, emit_event: 64,
+  transform: 64, tool_call: 64, webhook_out: 64, emit_event: 64, retrieval: 64,
 };
 const NODE_WIDTH = 230;
 // Router case-row geometry — must mirror ForgeNode's router body (header + expr line + rows).

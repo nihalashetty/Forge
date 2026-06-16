@@ -14,6 +14,7 @@ export function AgentConfig({ config, onChange, tools = [], agents = [], folders
   const set = (patch: Cfg) => onChange({ ...config, ...patch });
   const flavor = config.flavor || "agent";
   const selectedTools: string[] = config.tools || [];
+  const mwCount = (config.middleware || []).filter((m: MW) => m.enabled !== false).length;
 
   const toggleTool = (id: string) =>
     set({ tools: selectedTools.includes(id) ? selectedTools.filter((t) => t !== id) : [...selectedTools, id] });
@@ -92,7 +93,8 @@ export function AgentConfig({ config, onChange, tools = [], agents = [], folders
         <textarea className="textarea" rows={4} value={config.system_prompt || ""} placeholder="You are a helpful support agent…" onChange={(e) => set({ system_prompt: e.target.value })} />
       </Section>
 
-      <Section label="Tools" hint={tools.length ? undefined : "No tools in this project yet — add them on the Tools screen."}>
+      <CollapsibleSection label="Tools" badge={selectedTools.length ? `${selectedTools.length} selected` : undefined}
+        hint={tools.length ? undefined : "No tools in this project yet — add them on the Tools screen."}>
         <div className="row gap2 wrap">
           {tools.map((t) => {
             const on = selectedTools.includes(t.id);
@@ -104,38 +106,66 @@ export function AgentConfig({ config, onChange, tools = [], agents = [], folders
             );
           })}
         </div>
-      </Section>
+      </CollapsibleSection>
 
-      <Section label="Knowledge" hint="Give this agent built-in access to the project knowledge base — no separate tool needed. The agent searches per sub-question, so one agent can answer multi-part questions.">
-        <div className="col gap3">
-          <div className="col gap2">
-            <label className="row gap2" style={{ cursor: "pointer" }}>
-              <Toggle on={!!knowledge.rag?.enabled} onChange={(on) => setKnowledge("rag", { enabled: on })} />
-              <span className="t-body-sm">Search knowledge base (RAG over documents)</span>
-            </label>
-            {knowledge.rag?.enabled && (
-              <div style={{ paddingLeft: 6 }}>
-                <Field label="Folders" help="Limit document search to these folders (none selected = all).">
-                  <MultiSelectChips value={knowledge.rag?.folders || []} options={folders} onChange={(items) => setKnowledge("rag", { folders: items })} />
+      <CollapsibleSection label="Knowledge" badge={knowledge.rag?.enabled ? "enabled" : undefined}
+        hint="Give this agent built-in RAG over your documents — it searches per sub-question, so one agent can answer multi-part questions.">
+        <div className="col gap2">
+          <label className="row gap2" style={{ cursor: "pointer" }}>
+            <Toggle on={!!knowledge.rag?.enabled} onChange={(on) => setKnowledge("rag", { enabled: on })} />
+            <span className="t-body-sm">Search knowledge base (RAG over documents)</span>
+          </label>
+          {knowledge.rag?.enabled && (
+            <div className="col gap2" style={{ paddingLeft: 6 }}>
+              <Field label="Folders" help="Limit document search to these folders (none selected = all).">
+                <MultiSelectChips value={knowledge.rag?.folders || []} options={folders} onChange={(items) => setKnowledge("rag", { folders: items })} />
+              </Field>
+              <div className="row gap3 wrap">
+                <Field label="Documents (top K)" help="Chunks returned per search.">
+                  <input className="input" type="number" min={1} max={20} step={1} style={{ width: 92 }}
+                    value={knowledge.rag?.top_k ?? 4} onChange={(e) => setKnowledge("rag", { top_k: Number(e.target.value) || 1 })} />
+                </Field>
+                <Field label="Min score" help="Drop chunks below this similarity (0–1).">
+                  <input className="input" type="number" min={0} max={1} step={0.02} style={{ width: 92 }}
+                    value={knowledge.rag?.min_score ?? 0.18} onChange={(e) => setKnowledge("rag", { min_score: Number(e.target.value) })} />
                 </Field>
               </div>
-            )}
-          </div>
-          <div className="col gap2">
-            <label className="row gap2" style={{ cursor: "pointer" }}>
-              <Toggle on={!!knowledge.qa?.enabled} onChange={(on) => setKnowledge("qa", { enabled: on })} />
-              <span className="t-body-sm">Look up FAQ / Q&amp;A answers</span>
-            </label>
-            {knowledge.qa?.enabled && (
-              <div style={{ paddingLeft: 6 }}>
-                <Field label="Kinds" help="Limit Q&A lookup to these kinds/categories (none selected = all).">
-                  <MultiSelectChips value={knowledge.qa?.kinds || []} options={kinds} onChange={(items) => setKnowledge("qa", { kinds: items })} />
-                </Field>
-              </div>
-            )}
-          </div>
+              <label className="row gap2" style={{ cursor: "pointer" }}>
+                <Toggle on={!!knowledge.rag?.hybrid} onChange={(on) => setKnowledge("rag", { hybrid: on })} />
+                <span className="t-body-sm">Hybrid search (BM25 + vector)</span>
+              </label>
+              <div className="field-help">Blend lexical keyword (BM25) ranking with semantic vectors so exact terms — codes, names, SKUs — aren’t missed.</div>
+            </div>
+          )}
         </div>
-      </Section>
+      </CollapsibleSection>
+
+      <CollapsibleSection label="FAQs / Q&amp;A" badge={knowledge.qa?.enabled ? "enabled" : undefined}
+        hint="Let the agent look up curated FAQ / Q&amp;A pairs and prefer those approved answers.">
+        <div className="col gap2">
+          <label className="row gap2" style={{ cursor: "pointer" }}>
+            <Toggle on={!!knowledge.qa?.enabled} onChange={(on) => setKnowledge("qa", { enabled: on })} />
+            <span className="t-body-sm">Look up FAQ / Q&amp;A answers</span>
+          </label>
+          {knowledge.qa?.enabled && (
+            <div className="col gap2" style={{ paddingLeft: 6 }}>
+              <Field label="Kinds" help="Limit Q&A lookup to these kinds/categories (none selected = all).">
+                <MultiSelectChips value={knowledge.qa?.kinds || []} options={kinds} onChange={(items) => setKnowledge("qa", { kinds: items })} />
+              </Field>
+              <div className="row gap3 wrap">
+                <Field label="Pairs (top K)" help="Q&A pairs returned per lookup.">
+                  <input className="input" type="number" min={1} max={20} step={1} style={{ width: 92 }}
+                    value={knowledge.qa?.top_k ?? 3} onChange={(e) => setKnowledge("qa", { top_k: Number(e.target.value) || 1 })} />
+                </Field>
+                <Field label="Match threshold" help="Min similarity for a Q&A pair (0–1).">
+                  <input className="input" type="number" min={0} max={1} step={0.05} style={{ width: 92 }}
+                    value={knowledge.qa?.threshold ?? 0.3} onChange={(e) => setKnowledge("qa", { threshold: Number(e.target.value) })} />
+                </Field>
+              </div>
+            </div>
+          )}
+        </div>
+      </CollapsibleSection>
 
       {mcpServers.length > 0 && (
         <Section label="MCP servers" hint="Grant this agent the enabled tools from these MCP servers. Manage servers + per-tool toggles in Build → External MCP.">
@@ -155,9 +185,10 @@ export function AgentConfig({ config, onChange, tools = [], agents = [], folders
         </Section>
       )}
 
-      <Section label="Middleware stack" hint="Order = execution order (the onion). Drag-free reorder with the arrows.">
+      <CollapsibleSection label="Middleware stack" badge={mwCount ? `${mwCount} active` : undefined}
+        hint="Order = execution order (the onion). Drag-free reorder with the arrows.">
         <MiddlewareStack stack={config.middleware || []} onChange={(mw) => set({ middleware: mw })} />
-      </Section>
+      </CollapsibleSection>
 
       {flavor === "deep_agent" && (
         <Section label="Deep Agent">
@@ -179,6 +210,25 @@ function Section({ label, hint, children }: { label: string; hint?: string; chil
       <div className="t-micro">{label}</div>
       {children}
       {hint && <div className="field-help">{hint}</div>}
+    </div>
+  );
+}
+
+/* Collapsible section for the agent panel only (Tools / Knowledge / FAQs / Middleware),
+   so a dense agent config can be folded down to just the parts being edited. Open/closed
+   is transient UI state kept local — it never flows into the config via onChange. */
+export function CollapsibleSection({ label, hint, badge, defaultOpen = false, children }: { label: string; hint?: string; badge?: string; defaultOpen?: boolean; children: React.ReactNode }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="col" style={{ gap: 8 }}>
+      <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open}
+        className="row gap2" style={{ alignItems: "center", background: "none", border: "none", padding: 0, margin: 0, cursor: "pointer", textAlign: "left", color: "inherit", width: "100%" }}>
+        <Icon name="chevdown" size={12} style={{ color: "var(--fg-2)", flex: "none", transform: open ? "none" : "rotate(-90deg)", transition: "transform .12s" }} />
+        <span className="t-micro">{label}</span>
+        {badge && <span className="t-caption fg-2" style={{ fontWeight: 400 }}>· {badge}</span>}
+      </button>
+      {open && children}
+      {open && hint && <div className="field-help">{hint}</div>}
     </div>
   );
 }

@@ -228,7 +228,7 @@ def build_assistant_tools(tenant_id: str, project_id: str, mutated: list) -> lis
     async def add_qa_pair(question: str, answer: str, kind: str = "faq") -> str:
         """Add a Q&A pair to the knowledge base so the workflow can answer this question with
         this exact answer. `kind` is a free-form category — 'faq', 'error_workaround', or any
-        custom kind the user wants (qa_lookup nodes can filter by it)."""
+        custom kind the user wants (retrieval nodes and agent Q&A can filter by it)."""
         async with SessionLocal() as s:
             qa = await KnowledgeService.create_qa(s, tenant_id, project_id, question=question, answer=answer, kind=kind or "faq")
         mutated.append({"kind": "qa", "name": question[:40]})
@@ -257,7 +257,7 @@ def build_assistant_tools(tenant_id: str, project_id: str, mutated: list) -> lis
             written: list[tuple[str, str]] = []
             if t == "classifier":
                 written.append((cfg.get("output_key", "intent"), "list[str]" if cfg.get("multi_label") else "str"))
-            elif t in ("qa_lookup", "retrieval") and cfg.get("route_key"):
+            elif t == "retrieval" and cfg.get("route_key"):
                 written.append((cfg["route_key"], "str"))
             elif t == "human_input" and cfg.get("output_key"):
                 written.append((cfg["output_key"], "str"))
@@ -382,39 +382,6 @@ def build_assistant_tools(tenant_id: str, project_id: str, mutated: list) -> lis
         if err:
             return "ERROR: " + err
         return f"{verb} intent-router workflow '{name}': classifier → router → one specialist per intent ({', '.join(labels)}) + a general fallback.{_warn_note(warns)} Test each intent in the Playground."
-
-    async def create_qa_rag_workflow(name: str = "QA then RAG support", instructions: str = "", model: str = "", qa_threshold: float = 0.82) -> str:
-        """Create OR UPDATE a workflow that FIRST tries an exact Q&A/FAQ deflection and ONLY if no
-        FAQ matches falls back to RAG retrieval + a grounded agent. This is the pattern for
-        'search the Q&A pairs first, and if not found search the knowledge base, then let the AI
-        agent respond'. Shape: start → qa_lookup → router → (FAQ hit → end) / (miss → retrieval →
-        agent → end). Idempotent by name. `instructions`/`model` configure the fallback agent;
-        `qa_threshold` (0-1) is how close a FAQ must match to deflect (default 0.82)."""
-        async with SessionLocal() as s:
-            mdl = model or await _default_agent_model(s, tenant_id, project_id)
-            nodes = [
-                _node("start", "start", {}, 40, 180),
-                _node("qa_lookup_1", "qa_lookup", {"threshold": qa_threshold, "route_key": "qa_hit"}, 240, 180),
-                _node("router_1", "router", {"expression": "qa_hit", "cases": {"yes": "end", "no": "retrieval_1"}, "default": "retrieval_1"}, 440, 180),
-                _node("retrieval_1", "retrieval", {"top_k": 4, "include_qa": True, "announce_empty": True, "min_score": 0.18}, 640, 300),
-                _node("agent_1", "agent", {"flavor": "agent", "name": "support_agent", "model": mdl, "system_prompt": instructions or GROUNDING_PROMPT}, 860, 300),
-                _node("end", "end", {}, 1080, 180),
-            ]
-            # Router routing comes from its config.cases (compiler ignores a router's out-edges);
-            # the labeled router edges below are only for the canvas picture.
-            edges = [
-                {"source": "start", "target": "qa_lookup_1"},
-                {"source": "qa_lookup_1", "target": "router_1"},
-                {"source": "router_1", "target": "end", "label": "FAQ hit"},
-                {"source": "router_1", "target": "retrieval_1", "label": "miss"},
-                {"source": "retrieval_1", "target": "agent_1"},
-                {"source": "agent_1", "target": "end"},
-            ]
-            state = {**_CHAT_STATE, "qa_hit": {"type": "str", "reducer": "last"}}
-            verb, err, warns = await _save_workflow(s, name=name, description="Q&A deflection first; RAG + grounded agent fallback.", nodes=nodes, edges=edges, state=state)
-        if err:
-            return "ERROR: " + err
-        return f"{verb} workflow '{name}': start → qa_lookup → router → (FAQ hit: answer & end) / (miss: retrieval → agent → end).{_warn_note(warns)} Test it in the Playground."
 
     async def add_human_review(workflow_name_or_id: str, prompt: str = "Review the draft reply and approve or reject.") -> str:
         """Insert a REAL human-approval pause (a human_input interrupt node) into an EXISTING
@@ -662,7 +629,6 @@ def build_assistant_tools(tenant_id: str, project_id: str, mutated: list) -> lis
         mk(add_qa_pair, "add_qa_pair"),
         mk(add_knowledge_text, "add_knowledge_text"),
         mk(create_grounded_workflow, "create_grounded_workflow"),
-        mk(create_qa_rag_workflow, "create_qa_rag_workflow"),
         mk(create_intent_router_workflow, "create_intent_router_workflow"),
         mk(create_custom_workflow, "create_custom_workflow"),
         mk(add_human_review, "add_human_review"),
@@ -681,18 +647,17 @@ What you can do (use your tools to actually do these — don't just describe the
 - Create tools (create_rest_tool, create_builtin_tool — builtins include knowledge_search, which lets an agent search the knowledge base itself), reusable agent presets (create_agent_preset — takes instructions/model/tools), and auth providers (create_auth_provider).
 - Grow the knowledge base (add_qa_pair — `kind` is a free-form category; add_knowledge_text — `folder` organizes documents).
 - Build workflows (all idempotent by name):
-  • create_grounded_workflow — start → retrieval (BOTH docs + Q&A) → grounded agent → end. Use for "answer from my knowledge base" chatbots. HITL options: review_before_reply=True (human approves the draft before it's final) and approve_tools='a, b' (those tool calls pause for approval).
-  • create_qa_rag_workflow — start → qa_lookup → router → (FAQ hit: end) / (miss: retrieval → agent → end). Use when Q&A/FAQs should be checked FIRST with RAG as fallback.
+  • create_grounded_workflow — start → retrieval (BOTH docs + Q&A) → grounded agent → end. Use for "answer from my knowledge base" chatbots, including "check my Q&A/FAQs and the knowledge base" — the retrieval step pulls both. HITL options: review_before_reply=True (human approves the draft before it's final) and approve_tools='a, b' (those tool calls pause for approval).
   • create_intent_router_workflow — start → classifier (structured output picks ONE intent) → router (one case per intent) → a specialist agent per intent + a general fallback. Use when different request types need different handling AND each request has a single intent.
   • create_custom_workflow — ANY other shape, from a full definition JSON (state/entry_node/nodes/edges). It validates and returns field-pointer errors you must fix. Use for multi-intent fan-out (classifier multi_label + router multi + synthesizer agent), tool_call pipelines, webhook flows, or anything the canned builders can't express. Read the forge-platform skill first.
-- GIVE AGENTS KNOWLEDGE DIRECTLY. An agent node can search the project knowledge base itself — set its config.knowledge: {"rag": {"enabled": true, "folders": [...], "top_k": 4}, "qa": {"enabled": true, "kinds": [...]}}. This compiles to agent-callable tools (search_knowledge_base for documents, lookup_faq for curated answers), each toggled and scoped independently. PREFER this over wiring a separate retrieval/qa_lookup node OR creating a knowledge_search Tool whenever the agent is conversational or may get multi-part questions — the agent searches per sub-question with its own phrasing instead of one fixed search on the whole message. Use the fixed retrieval/qa_lookup NODES only when grounding must be guaranteed (the agent can't skip it) or to deflect FAQs before the LLM runs.
+- GIVE AGENTS KNOWLEDGE DIRECTLY. An agent node can search the project knowledge base itself — set its config.knowledge: {"rag": {"enabled": true, "folders": [...], "top_k": 4}, "qa": {"enabled": true, "kinds": [...]}}. This compiles to agent-callable tools (search_knowledge_base for documents, lookup_faq for curated answers), each toggled and scoped independently. PREFER this over wiring a separate retrieval node OR creating a knowledge_search Tool whenever the agent is conversational or may get multi-part questions — the agent searches per sub-question with its own phrasing instead of one fixed search on the whole message. Use the fixed retrieval NODE only when grounding must be guaranteed (the agent can't skip it).
 - MULTI-INTENT questions ("one message asks two things"): prefer ONE agent with config.knowledge enabled (rag and/or qa) — it searches each sub-question separately and composes one answer — over a classifier→router, which answers only one part. For parallel specialists, use classifier multi_label=true + router multi=true + a synthesizer agent before end (see the forge-platform skill).
 - Verify and judge your own work (test_workflow, then evaluate_build).
 - Delete a workflow to clean up duplicates (delete_workflow — the run PAUSES for human approval before deleting).
 
 How Forge concepts work, so you can explain them:
 - A WORKFLOW is a graph of nodes wired start → … → end. Messages flow through. Common nodes: \
-'retrieval' (RAG — pulls relevant knowledge-base docs + Q&A for the question), 'qa_lookup' (deflects exact FAQ hits), \
+'retrieval' (RAG — pulls relevant knowledge-base docs + Q&A pairs for the question), \
 'agent' (a model with tools and a system prompt that reasons and replies), 'classifier' (structured output picks one \
 intent label into state), 'router' (branches on a state value via cases), 'human_input' (PAUSES the run with a real \
 LangGraph interrupt until a human approves/rejects in the Playground). The recommended grounded chatbot is \
@@ -710,8 +675,8 @@ pauses (nodes_visited ends in '__interrupt__').
 Rules:
 - When the user asks you to build/add/create something, CALL the appropriate tool, then confirm in one or two plain sentences what you did and what to do next (e.g. 'Test it in the Playground').
 - WORK UNTIL IT'S CORRECT. For any build or change: (1) plan the steps with write_todos, (2) inspect what exists with list_resources, (3) build with the right tool, (4) VERIFY with test_workflow — try a realistic question, a greeting, an off-topic question, and EVERY branch/intent, (5) JUDGE with evaluate_build (pass it the user's request, what you built, and the test results) — if the verdict is 'fail', fix the issues and re-verify. Do not report success until both verification and the judge passed.
-- MATCH THE REQUEST. Read what the user actually described and pick the right builder + parameters — do NOT default everything to create_grounded_workflow. If they say "check Q&A/FAQ first then fall back to the knowledge base", use create_qa_rag_workflow. If they give specific agent instructions, persona, or a model, pass them via `instructions`/`model`. Name the workflow after what they asked for.
-- TRIAGE FIRST (design for real conversations). Real users open with greetings and meta questions ("hi", "what can you do?", "how can you help me?") as often as real support questions. Do NOT pipe those straight into qa_lookup/retrieval — they miss and dead-end at a "no relevant data → create a ticket" path, which is a terrible first impression. For any support/Q&A/RAG/ticketing workflow you design with create_custom_workflow, put a triage step right after start: a classifier (e.g. labels: general, support) → router that sends greetings/smalltalk/meta/capability questions to a small friendly agent that answers directly ("here's what I can help with…") and ends, and routes ONLY genuine product/support questions into the qa_lookup/retrieval/ticket pipeline. (A single front agent with config.knowledge enabled — so it both chats AND searches the KB per sub-question — is an acceptable, often simpler, alternative.) When you VERIFY, always test a greeting and a "what can you do?" message and confirm they get a friendly direct reply — never the ticket path.
+- MATCH THE REQUEST. Read what the user actually described and pick the right builder + parameters — do NOT default everything to create_grounded_workflow. If they say "use my Q&A/FAQs and the knowledge base", that's still create_grounded_workflow — its retrieval step already pulls BOTH Q&A pairs and documents. If they give specific agent instructions, persona, or a model, pass them via `instructions`/`model`. Name the workflow after what they asked for.
+- TRIAGE FIRST (design for real conversations). Real users open with greetings and meta questions ("hi", "what can you do?", "how can you help me?") as often as real support questions. Do NOT pipe those straight into retrieval — they miss and dead-end at a "no relevant data → create a ticket" path, which is a terrible first impression. For any support/Q&A/RAG/ticketing workflow you design with create_custom_workflow, put a triage step right after start: a classifier (e.g. labels: general, support) → router that sends greetings/smalltalk/meta/capability questions to a small friendly agent that answers directly ("here's what I can help with…") and ends, and routes ONLY genuine product/support questions into the retrieval/ticket pipeline. (A single front agent with config.knowledge enabled — so it both chats AND searches the KB per sub-question — is an acceptable, often simpler, alternative.) When you VERIFY, always test a greeting and a "what can you do?" message and confirm they get a friendly direct reply — never the ticket path.
 - AVOID DUPLICATES. Before creating a workflow, call list_resources to see what already exists. If a suitable workflow is already there, UPDATE it (reuse the same name — the builders update in place) or point the user to it. Only create a new one when the user clearly wants an additional, distinct workflow. Never create the same workflow twice in a session.
 - When the user asks how something works or to explain their setup, call list_resources / describe_workflow first, then explain clearly and briefly.
 - If the user wants to remove something or clean up duplicates, use delete_workflow (by exact name or id). Confirm the specific target first if the name is ambiguous.

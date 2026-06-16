@@ -20,8 +20,8 @@ The default local stack needs **no Docker, Postgres, or Redis**:
 cd apps/api
 python -m venv .venv
 .venv\Scripts\activate            # Windows  (source .venv/bin/activate on *nix)
-pip install -e ".[dev]"           # core + test deps
-pip install -e ".[dev,vectors,providers,mcp,deep]"  # full stack
+pip install -e ".[dev]"           # core + test deps only
+pip install -e ".[dev,all]"       # full local stack (vectors + providers + knowledge + MCP)
 
 cp ../../.env.example .env
 uvicorn forge.main:app --reload --port 8000

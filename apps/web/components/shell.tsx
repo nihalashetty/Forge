@@ -229,7 +229,6 @@ const TOOL_LABELS: Record<string, string> = {
   add_qa_pair: "Adding a Q&A pair",
   add_knowledge_text: "Adding knowledge",
   create_grounded_workflow: "Building the workflow",
-  create_qa_rag_workflow: "Building the workflow",
   create_intent_router_workflow: "Building the workflow",
   create_custom_workflow: "Building the workflow",
   add_human_review: "Adding a human-approval step",

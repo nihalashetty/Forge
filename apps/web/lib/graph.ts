@@ -83,7 +83,6 @@ function normalizeRouterConfigFromEdges(node: FlowNode, edges: FlowEdge[]): Reco
 function nodeWrittenKeys(nodeType: string, c: Record<string, any>): [string, string][] {
   switch (nodeType) {
     case "classifier": return [[c.output_key || "intent", c.multi_label ? "list[str]" : "str"]];
-    case "qa_lookup": return c.route_key ? [[c.route_key, "str"]] : [];
     case "retrieval": return c.route_key ? [[c.route_key, "str"]] : [];
     case "human_input": return c.output_key ? [[c.output_key, "str"]] : [];
     case "transform": return [[c.output_key || "data", "json"]];

@@ -9,11 +9,11 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties }
 import { Icon } from "../icons";
 import { StatusPill, Tile } from "../primitives";
 import { ForgeNode, NodeTypesContext } from "../canvas/ForgeNode";
-import { AgentConfig } from "../canvas/AgentConfig";
+import { AgentConfig, CollapsibleSection } from "../canvas/AgentConfig";
 import { EdgeOverlay } from "../canvas/EdgeOverlay";
 import { WorkflowTestPanel } from "../canvas/WorkflowTestPanel";
-import { FieldsForm, ModelSelect, type FieldSpec } from "../canvas/ConfigForm";
-import { Field } from "../primitives";
+import { FieldsForm, ModelSelect, MultiSelectChips, type FieldSpec } from "../canvas/ConfigForm";
+import { Field, Toggle } from "../primitives";
 import { api, openSSE, Agent, McpClientT, NodeType, Tool, Workflow } from "@/lib/api";
 import { NODE_META, NODE_HELP, IO_COLOR, fmtUSD } from "@/lib/data";
 import { canvasToExecutable, canvasToFlow, ioCompatible, newNodeId, starterWorkflow, type FlowEdge, type FlowNode } from "@/lib/graph";
@@ -217,7 +217,7 @@ function CanvasInner({ project, workflowId, onWorkflowChange, onBack, onRun }: {
   // Saved agent presets (from the Agents tab) — loadable into an agent node.
   const [agents, setAgents] = useState<Agent[]>([]);
   const [mcpServers, setMcpServers] = useState<McpClientT[]>([]);
-  // Live KB folders + Q&A kinds drive the dropdowns in retrieval/qa_lookup node config.
+  // Live KB folders + Q&A kinds drive the dropdowns in the retrieval node config.
   const [kbFolders, setKbFolders] = useState<string[]>([]);
   const [qaKinds, setQaKinds] = useState<string[]>([]);
   const [nodes, setNodes] = useNodesState<FlowNode>([]);
@@ -394,8 +394,7 @@ function CanvasInner({ project, workflowId, onWorkflowChange, onBack, onRun }: {
       type === "agent" || type === "deep_agent" ? { flavor: type === "deep_agent" ? "deep_agent" : "agent", model: "openai:gpt-4o-mini", middleware: [], tools: [] }
       : type === "router" ? { expression: "intent", cases: {}, default: "" }
       : type === "llm" ? { model: "openai:gpt-4o-mini", prompt: "" }
-      : type === "retrieval" ? { top_k: 4, include_qa: true, qa_threshold: 0.3, min_score: 0.18, announce_empty: true }
-      : type === "qa_lookup" ? { threshold: 0.85, kind: "any" }
+      : type === "retrieval" ? { top_k: 4, include_docs: true, hybrid: false, include_qa: true, qa_threshold: 0.3, qa_top_k: 3, min_score: 0.18, announce_empty: true }
       : type === "classifier" ? { labels: ["question", "request", "complaint"], output_key: "intent" }
       : {};
     setNodes((nds) => [...nds, { id, type: "forge", position: { x: 360 + (n % 4) * 36, y: 140 + (n % 4) * 36 }, data: { nodeType: type, config: defConfig } }]);
@@ -743,6 +742,8 @@ function NodeInspector({
 
       {(type === "agent" || type === "deep_agent") && <AgentConfig config={c} onChange={onChange} tools={tools} agents={agents} mcpServers={mcpServers} folders={dynamic?.kb_folders || []} kinds={dynamic?.qa_kinds || []} />}
 
+      {type === "retrieval" && <RetrievalForm c={c} set={set} folders={dynamic?.kb_folders || []} kinds={dynamic?.qa_kinds || []} />}
+
       {type === "router" && (
         <RouterForm
           nodeId={node.id}
@@ -794,21 +795,6 @@ function NodeInspector({
    merges only its own keys, so any extra config is preserved. Mirrors the node config schemas.
    (Widgets + FieldSpec live in canvas/ConfigForm.tsx, shared with the middleware stack.) */
 const NODE_FIELDS: Record<string, FieldSpec[]> = {
-  retrieval: [
-    { key: "top_k", label: "Documents to retrieve (top K)", widget: "number", min: 1, max: 20, step: 1, help: "How many knowledge-base chunks to pull." },
-    { key: "include_qa", label: "Include Q&A pairs", widget: "toggle", help: "Also pull matching Q&A pairs — grounds the agent on BOTH docs and Q&A." },
-    { key: "qa_threshold", label: "Q&A match threshold", widget: "number", min: 0, max: 1, step: 0.05, help: "Min similarity for a Q&A pair (0–1). Only used when Include Q&A is on." },
-    { key: "qa_kinds", label: "Q&A kinds (optional)", widget: "multiselect", dynamicOptions: "qa_kinds", help: "Only include Q&A pairs of these kinds (none selected = all). Only used when Include Q&A is on." },
-    { key: "min_score", label: "Min document score", widget: "number", min: 0, max: 1, step: 0.02, help: "Drop chunks below this similarity so off-topic queries surface nothing." },
-    { key: "announce_empty", label: "Announce when empty", widget: "toggle", help: "Tell a grounded agent when nothing relevant was found so it says 'I don't know' instead of guessing." },
-    { key: "folders", label: "Folders (optional)", widget: "multiselect", dynamicOptions: "kb_folders", help: "Only search sources in these knowledge folders (none selected = all). Folders are managed on the Knowledge screen." },
-    { key: "route_key", label: "Route flag (state key)", widget: "text", placeholder: "data_found", help: "Optional: writes 'yes'/'no' (anything found?) to this state field so a Router can branch found vs not-found." },
-  ],
-  qa_lookup: [
-    { key: "threshold", label: "Match threshold", widget: "number", min: 0, max: 1, step: 0.05, help: "How close a question must match a Q&A pair to answer directly (0–1)." },
-    { key: "kinds", label: "Pair kinds", widget: "multiselect", dynamicOptions: "qa_kinds", help: "Restrict matching to these Q&A kinds/categories — none selected = all kinds. Kinds come from the Knowledge screen." },
-    { key: "route_key", label: "Route flag (state key)", widget: "text", placeholder: "qa_hit", help: "Optional: writes 'yes'/'no' to this state field so a Router can branch (hit → end, miss → retrieval)." },
-  ],
   transform: [
     { key: "input_key", label: "Input state key", widget: "text", placeholder: "messages", help: "Which state field to read." },
     { key: "output_key", label: "Output state key", widget: "text", placeholder: "result", help: "Which state field to write." },
@@ -883,7 +869,7 @@ const NODE_FIELDS: Record<string, FieldSpec[]> = {
   ],
 };
 // Node types that render a real form (agent/router/llm/tool_call have bespoke forms; the rest come from NODE_FIELDS).
-const FORM_NODES = new Set<string>(["agent", "deep_agent", "router", "llm", "tool_call", "start", "end", ...Object.keys(NODE_FIELDS)]);
+const FORM_NODES = new Set<string>(["agent", "deep_agent", "router", "llm", "tool_call", "retrieval", "start", "end", ...Object.keys(NODE_FIELDS)]);
 
 /** State keys written by upstream-capable nodes, with the values they can take —
  *  shown in the router form so users branch on real values, not made-up labels. */
@@ -900,11 +886,99 @@ function stateWriters(nodes: FlowNode[]): { key: string; values: string[]; from:
     const cfg = n.data.config || {};
     const t = n.data.nodeType;
     if (t === "classifier") out.push({ key: cfg.output_key || "intent", values: valuesOf(cfg.labels), from: n.id });
-    if (t === "qa_lookup" && cfg.route_key) out.push({ key: cfg.route_key, values: ["yes", "no"], from: n.id });
     if (t === "retrieval" && cfg.route_key) out.push({ key: cfg.route_key, values: ["yes", "no"], from: n.id });
     if (t === "human_input" && cfg.output_key) out.push({ key: cfg.output_key, values: valuesOf(cfg.allowed_decisions, ["approve", "reject"]), from: n.id });
   }
   return out;
+}
+
+/* Retrieval node config — toggleable Knowledge (RAG over documents) + FAQs / Q&A sections,
+   mirroring the agent panel's Knowledge sections (AgentConfig). Document search (include_docs)
+   and Q&A lookup (include_qa) are independent: use either or both. The flat retrieval config is
+   read/written directly. */
+function RetrievalForm({ c, set, folders, kinds }: { c: Record<string, any>; set: (p: Record<string, any>) => void; folders: string[]; kinds: string[] }) {
+  const ragOn = c.include_docs !== false; // RAG on unless explicitly turned off
+  const qaOn = !!c.include_qa;
+  return (
+    <div className="col" style={{ gap: 18 }}>
+      <CollapsibleSection label="Knowledge" badge={ragOn ? "enabled" : undefined}
+        hint="Pull the most relevant document chunks from your knowledge base into context for a grounded agent.">
+        <div className="col gap2">
+          <label className="row gap2" style={{ cursor: "pointer" }}>
+            <Toggle on={ragOn} onChange={(on) => set({ include_docs: on })} />
+            <span className="t-body-sm">Search knowledge base (RAG over documents)</span>
+          </label>
+          {ragOn && (
+            <div className="col gap2" style={{ paddingLeft: 6 }}>
+              <Field label="Folders" help="Limit document search to these folders (none selected = all).">
+                <MultiSelectChips value={c.folders || []} options={folders} onChange={(items) => set({ folders: items })} />
+              </Field>
+              <div className="row gap3 wrap">
+                <Field label="Documents (top K)" help="Chunks returned per search.">
+                  <input className="input" type="number" min={1} max={20} step={1} style={{ width: 92 }}
+                    value={c.top_k ?? 5} onChange={(e) => set({ top_k: Number(e.target.value) || 1 })} />
+                </Field>
+                <Field label="Min score" help="Drop chunks below this similarity (0–1).">
+                  <input className="input" type="number" min={0} max={1} step={0.02} style={{ width: 92 }}
+                    value={c.min_score ?? 0.18} onChange={(e) => set({ min_score: Number(e.target.value) })} />
+                </Field>
+              </div>
+              <label className="row gap2" style={{ cursor: "pointer" }}>
+                <Toggle on={!!c.hybrid} onChange={(on) => set({ hybrid: on })} />
+                <span className="t-body-sm">Hybrid search (BM25 + vector)</span>
+              </label>
+              <div className="field-help">Blend lexical keyword (BM25) ranking with semantic vectors so exact terms — codes, names, SKUs — aren’t missed.</div>
+            </div>
+          )}
+        </div>
+      </CollapsibleSection>
+
+      <CollapsibleSection label="FAQs / Q&amp;A" badge={qaOn ? "enabled" : undefined}
+        hint="Also pull curated FAQ / Q&amp;A pairs into context alongside the documents.">
+        <div className="col gap2">
+          <label className="row gap2" style={{ cursor: "pointer" }}>
+            <Toggle on={qaOn} onChange={(on) => set({ include_qa: on })} />
+            <span className="t-body-sm">Include FAQ / Q&amp;A answers</span>
+          </label>
+          {qaOn && (
+            <div className="col gap2" style={{ paddingLeft: 6 }}>
+              <Field label="Kinds" help="Limit Q&A to these kinds/categories (none selected = all).">
+                <MultiSelectChips value={c.qa_kinds || []} options={kinds} onChange={(items) => set({ qa_kinds: items })} />
+              </Field>
+              <div className="row gap3 wrap">
+                <Field label="Pairs (top K)" help="Q&A pairs returned per lookup.">
+                  <input className="input" type="number" min={1} max={20} step={1} style={{ width: 92 }}
+                    value={c.qa_top_k ?? 3} onChange={(e) => set({ qa_top_k: Number(e.target.value) || 1 })} />
+                </Field>
+                <Field label="Match threshold" help="Min similarity for a Q&A pair (0–1).">
+                  <input className="input" type="number" min={0} max={1} step={0.05} style={{ width: 92 }}
+                    value={c.qa_threshold ?? 0.3} onChange={(e) => set({ qa_threshold: Number(e.target.value) })} />
+                </Field>
+              </div>
+            </div>
+          )}
+        </div>
+      </CollapsibleSection>
+
+      <div className="col gap2">
+        <div className="t-micro">When nothing is found</div>
+        <label className="row gap2" style={{ cursor: "pointer" }}>
+          <Toggle on={!!c.announce_empty} onChange={(on) => set({ announce_empty: on })} />
+          <span className="t-body-sm">Announce when empty</span>
+        </label>
+        <div className="field-help">Tells a grounded agent nothing relevant was found, so it says “I don’t know” instead of guessing.</div>
+        <Field label="Route flag (state key)" help="Optional: writes 'yes'/'no' (anything found?) to this state field so a Router can branch found vs not-found.">
+          <input className="input mono" value={c.route_key ?? ""} placeholder="data_found" onChange={(e) => set({ route_key: e.target.value || undefined })} />
+        </Field>
+      </div>
+
+      {!ragOn && !qaOn && (
+        <div className="field-help" style={{ color: "var(--warn)" }}>
+          ⚠ Both sources are off — this node will retrieve nothing. Turn on Knowledge and/or Q&amp;A above.
+        </div>
+      )}
+    </div>
+  );
 }
 
 function RouterForm({
@@ -969,7 +1043,7 @@ function RouterForm({
           </div>
         ) : (
           <div className="field-help" style={{ color: "var(--warn)" }}>
-            ⚠ No node in this workflow writes a routable state key yet. Add a Classifier (writes a label), or set a route/decision flag on Q&A Lookup, Retrieval, or Human Input — otherwise every run takes the Default path.
+            ⚠ No node in this workflow writes a routable state key yet. Add a Classifier (writes a label), or set a route/decision flag on Retrieval or Human Input — otherwise every run takes the Default path.
           </div>
         )}
       </div>

@@ -200,7 +200,7 @@ def _state_writers(nodes: list) -> dict[str, set[str]]:
         t = n.get("type")
         if t == "classifier":
             writers.setdefault(cfg.get("output_key", "intent"), set()).update(cfg.get("labels") or [])
-        elif t in ("qa_lookup", "retrieval") and cfg.get("route_key"):
+        elif t == "retrieval" and cfg.get("route_key"):
             writers.setdefault(cfg["route_key"], set()).update({"yes", "no"})
         elif t == "human_input" and cfg.get("output_key"):
             writers.setdefault(cfg["output_key"], set()).update(cfg.get("allowed_decisions") or ["approve", "reject"])

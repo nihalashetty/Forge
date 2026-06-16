@@ -50,8 +50,7 @@ export const NODE_CATALOG = [
     { type: "code", icon: "n_code", label: "Code", desc: "Sandboxed transform" },
   ]},
   { group: "Knowledge", color: "var(--io-vector)", items: [
-    { type: "retrieval", icon: "n_retrieval", label: "Retrieval", desc: "RAG query" },
-    { type: "qa_lookup", icon: "n_qa", label: "Q&A Lookup", desc: "Semantic pair match" },
+    { type: "retrieval", icon: "n_retrieval", label: "Retrieval", desc: "RAG + Q&A" },
   ]},
   { group: "Human", color: "var(--warn)", items: [
     { type: "human_input", icon: "n_human", label: "Human Input", desc: "HITL pause via interrupt" },
@@ -118,12 +117,8 @@ export const NODE_HELP: Record<string, { what: string; example: string }> = {
     example: "Emit 'escalated' when the agent hands off to a human",
   },
   retrieval: {
-    what: "Pulls the top-K most relevant knowledge-base chunks (and Q&A pairs, when enabled) for the user's question into context — optionally limited to specific folders. Place it right before a grounded agent. Tip: for multi-part questions, give the agent a knowledge_search TOOL instead, so it can search per sub-question.",
+    what: "Pulls the most relevant knowledge into context for the user's question — place it right before a grounded agent. Toggle DOCUMENTS (RAG over your chunks) and Q&A PAIRS independently: use either or both. Tip: for multi-part questions, give the agent a knowledge_search TOOL instead, so it can search per sub-question.",
     example: "KB says “returns within 30 days” → agent answers with that policy",
-  },
-  qa_lookup: {
-    what: "Instant FAQ deflection: if a stored Q&A pair matches closely enough, reply with its exact answer — no model call. Filter by kind (faq, error_workaround, or your custom kinds). Can write yes/no to a state key so a Router can branch on hit vs miss.",
-    example: "“How to convert quote to order” → the stored FAQ answer, instantly",
   },
   // --- flow ---
   loop: {
@@ -173,14 +168,14 @@ export const CAT_BY_TYPE: Record<string, string> = {
   start: "control", end: "control", router: "control", loop: "control", parallel_fanout: "control", join: "control",
   agent: "agent", deep_agent: "agent",
   llm: "json", tool_call: "json", transform: "json", code: "json",
-  retrieval: "vector", qa_lookup: "vector",
+  retrieval: "vector",
   human_input: "human",
   subworkflow: "signal", webhook_out: "signal", emit_event: "signal",
 };
 
 export const workflowNodes = [
   { id: "start", type: "start", position: { x: 40, y: 300 }, data: {}, summary: [] as string[] },
-  { id: "faq_deflect", type: "qa_lookup", position: { x: 220, y: 286 }, data: { threshold: 0.85, kind: "faq" }, title: "FAQ Deflect", summary: ["threshold ≥ 0.85", "kind · faq"] },
+  { id: "faq_deflect", type: "retrieval", position: { x: 220, y: 286 }, data: { top_k: 5, include_qa: true }, title: "Knowledge", summary: ["docs top_k 5", "+ Q&A"] },
   { id: "intent_router", type: "router", position: { x: 430, y: 280 }, data: {}, title: "Intent Router", summary: ["expression · state.intent", "billing · technical · default"], cases: ["billing", "technical", "default"] },
   { id: "kb_search", type: "retrieval", position: { x: 700, y: 110 }, data: {}, title: "Help Docs", summary: ["3 sources · top_k 5", "hybrid + rerank"] },
   { id: "billing_agent", type: "agent", position: { x: 690, y: 270 }, data: {}, title: "Billing Agent", summary: ["claude-sonnet-4-6", "2 tools · 4 middleware"], mw: ["summarization", "tool_call_limit", "human_in_the_loop", "pii"] },

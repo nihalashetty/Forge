@@ -118,6 +118,11 @@ class KbSource(PkTimestamp, Base):
     embedding_model: Mapped[str | None] = mapped_column(String(120), nullable=True)
     meta: Mapped[dict] = mapped_column("metadata", JSON, default=dict)
 
+    @property
+    def chunking_strategy(self) -> str | None:
+        """Chunking strategy used at ingest (recursive|section|sentence); lives in meta."""
+        return (self.meta or {}).get("chunk_strategy")
+
 
 class QaPair(PkTimestamp, Base):
     __tablename__ = "qa_pairs"

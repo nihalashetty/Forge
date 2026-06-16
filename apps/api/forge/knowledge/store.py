@@ -81,6 +81,51 @@ class ChromaStore:
             hits.append(Hit(id=_id, text=docs[i], score=1.0 - float(dist), metadata=metas[i] or {}))
         return hits
 
+    def _get_documents(self, where: dict, limit: int | None = None) -> list[Hit]:
+        """All stored chunks matching `where` (no vector query) — the corpus a lexical
+        index is built over. score is 0.0 (unranked); `limit` caps the scan."""
+        try:
+            res = self._col.get(where=where, limit=limit) if limit else self._col.get(where=where)
+        except Exception:  # noqa: BLE001 - collection empty / not ready
+            return []
+        ids = res.get("ids") or []
+        docs = res.get("documents") or []
+        metas = res.get("metadatas") or []
+        return [
+            Hit(id=ids[i], text=(docs[i] if i < len(docs) else "") or "",
+                score=0.0, metadata=(metas[i] if i < len(metas) else {}) or {})
+            for i in range(len(ids))
+        ]
+
+    def hybrid_query(
+        self, *, embedding, query: str, tenant_id, project_id, top_k=5, source_ids=None,
+        candidate_pool: int | None = None, corpus_cap: int = 5000,
+    ) -> list[Hit]:
+        """Fuse dense (vector) and lexical (BM25) ranking via RRF, scoped by the SAME
+        tenant/project/source where-clause as vector search. Degrades to vector-only when
+        BM25 is unavailable or the corpus has nothing to match. The returned score is the
+        fused rank normalized to (0, 1] (NOT cosine) so downstream min_score still filters."""
+        from forge.knowledge.hybrid import bm25_rank, rrf_fuse
+
+        where = _where(tenant_id, project_id, source_ids)
+        pool = candidate_pool or max(top_k * 5, 20)
+        vec_hits = self.query_where(embedding=embedding, where=where, top_k=pool)
+        corpus = self._get_documents(where, limit=corpus_cap)
+        bm25_ids = bm25_rank(query, [(h.id, h.text) for h in corpus])
+        if not bm25_ids:
+            return vec_hits[:top_k]
+
+        fused = rrf_fuse([h.id for h in vec_hits], bm25_ids)
+        by_id: dict[str, Hit] = {h.id: h for h in corpus}
+        by_id.update({h.id: h for h in vec_hits})  # prefer the vector hit's text/metadata
+        max_score = max(fused.values()) or 1.0
+        ranked = sorted(fused, key=lambda i: fused[i], reverse=True)[:top_k]
+        return [
+            Hit(id=by_id[i].id, text=by_id[i].text,
+                score=round(fused[i] / max_score, 4), metadata=by_id[i].metadata)
+            for i in ranked if i in by_id
+        ]
+
     def delete_ids(self, ids: list[str]) -> None:
         if ids:
             self._col.delete(ids=ids)

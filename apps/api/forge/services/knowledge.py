@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from forge.knowledge.embeddings import resolve_embedder
-from forge.knowledge.splitter import split_text
+from forge.knowledge.splitter import chunk_text
 from forge.knowledge.store import ChromaStore, Hit
 from forge.models import KbSource, Project, QaPair
 from forge.secrets.store import SecretStore
@@ -40,6 +40,14 @@ class KnowledgeService:
             except Exception:  # noqa: BLE001 - missing key -> offline embedder
                 pass
         return resolve_embedder(model, api_key)
+
+    @staticmethod
+    async def _rag_defaults(session, project_id: str) -> dict:
+        """Project-level RAG knobs (embedding_model, chunk_size, chunk_overlap,
+        chunking_strategy). Empty dict when the project has none configured."""
+        proj = (await session.execute(select(Project).where(Project.id == project_id))).scalar_one_or_none()
+        cfg = (proj.config or {}) if proj else {}
+        return cfg.get("rag_defaults") or {}
 
     @staticmethod
     def _store(embedder) -> ChromaStore:
@@ -111,8 +119,13 @@ class KnowledgeService:
         return list(rows.scalars())
 
     @staticmethod
-    async def create_source(session, tenant_id, project_id, *, kind, name, uri=None, text=None, folder="") -> KbSource:
-        src = KbSource(tenant_id=tenant_id, project_id=project_id, kind=kind, name=name, uri=uri, folder=folder or "", status="queued", meta={"text": text} if text else {})
+    async def create_source(session, tenant_id, project_id, *, kind, name, uri=None, text=None, folder="", chunking_strategy=None) -> KbSource:
+        meta: dict = {}
+        if text:
+            meta["text"] = text
+        if chunking_strategy:
+            meta["chunk_strategy"] = chunking_strategy
+        src = KbSource(tenant_id=tenant_id, project_id=project_id, kind=kind, name=name, uri=uri, folder=folder or "", status="queued", meta=meta)
         session.add(src)
         await session.commit()
         await session.refresh(src)
@@ -140,7 +153,9 @@ class KnowledgeService:
         src.status = "processing"
         await session.commit()
         try:
-            if src.kind == "text":
+            if src.kind in ("text", "file"):
+                # File uploads stash their decoded text in meta["text"] (see the upload
+                # endpoint), same as inline text sources — so they share this branch.
                 content = (src.meta or {}).get("text", "")
             elif src.kind == "url":
                 from forge.util.ssrf import guarded_get
@@ -154,7 +169,11 @@ class KnowledgeService:
             else:
                 raise ValueError(f"Unsupported source kind for ingest: {src.kind}")
 
-            chunks = split_text(content, 1000, 200)
+            rag = await KnowledgeService._rag_defaults(session, src.project_id)
+            strategy = (src.meta or {}).get("chunk_strategy") or rag.get("chunking_strategy") or "recursive"
+            chunk_size = int(rag.get("chunk_size") or 1000)
+            overlap = int(rag.get("chunk_overlap") or 200)
+            chunks = chunk_text(content, strategy=strategy, chunk_size=chunk_size, overlap=overlap)
             embedder = await KnowledgeService.embedder_for_project(session, src.tenant_id, src.project_id)
             store = KnowledgeService._store(embedder)
             if chunks:
@@ -167,6 +186,9 @@ class KnowledgeService:
                 )
             src.chunks = len(chunks)
             src.embedding_model = embedder.name
+            # Record the strategy actually used (covers the project-default fallback) so
+            # the UI can show it and reingest reuses it.
+            src.meta = {**(src.meta or {}), "chunk_strategy": strategy}
             src.status = "ready"
         except Exception as e:  # noqa: BLE001
             src.status = "error"
@@ -215,14 +237,16 @@ class KnowledgeService:
     @staticmethod
     async def search(
         session, tenant_id, project_id, query, *, top_k=5, source_ids=None, folders=None,
-        embedder=None, embedding=None,
+        embedder=None, embedding=None, hybrid=False,
     ) -> list[Hit]:
-        """Vector search over the project's chunks.
+        """Vector search over the project's chunks — or hybrid (BM25 lexical + vector,
+        fused via RRF) when `hybrid=True`. Hybrid is opt-in; vector-only is the default.
 
         `embedder`/`embedding` let a caller that already embedded the query (e.g. the
         retrieval node, which reuses one vector for docs AND Q&A) skip re-embedding.
         `folders` narrows to sources in those folders (resolved to source ids here, so
-        existing Chroma data needs no re-ingest).
+        existing Chroma data needs no re-ingest). In hybrid mode `Hit.score` is a
+        normalized fusion rank, not cosine similarity.
         """
         if folders:
             folder_ids = await KnowledgeService._source_ids_for_folders(session, tenant_id, project_id, folders)
@@ -231,7 +255,13 @@ class KnowledgeService:
                 return []
         embedder = embedder or await KnowledgeService.embedder_for_project(session, tenant_id, project_id)
         vec = embedding if embedding is not None else await embedder.aembed_query(query)
-        return KnowledgeService._store(embedder).query(
+        store = KnowledgeService._store(embedder)
+        if hybrid:
+            return store.hybrid_query(
+                embedding=vec, query=query, tenant_id=tenant_id, project_id=project_id,
+                top_k=top_k, source_ids=source_ids,
+            )
+        return store.query(
             embedding=vec, tenant_id=tenant_id, project_id=project_id, top_k=top_k, source_ids=source_ids
         )
 

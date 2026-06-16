@@ -32,6 +32,12 @@ function summarize(type: string, c: Record<string, any>): string[] {
       return [`${c.engine || "jmespath"} → ${c.output_key || "data"}`];
     case "tool_call":
       return [String(c.tool_id || "—")];
+    case "retrieval": {
+      const lines: string[] = [];
+      if (c.include_docs !== false) lines.push(`docs top_k ${c.top_k ?? 5}${c.hybrid ? " · hybrid" : ""}`);
+      if (c.include_qa) lines.push(`Q&A top_k ${c.qa_top_k ?? 3}`);
+      return lines.length ? lines : ["no sources"];
+    }
     case "human_input":
       return [(c.prompt || "").slice(0, 34), (c.allowed_decisions || ["approve", "reject"]).join(" · ")];
     case "webhook_out":
