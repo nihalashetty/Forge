@@ -120,6 +120,24 @@ async def validate_url(url: str, policy: EgressPolicy | None = None) -> str:
     return url
 
 
+async def validate_host_port(host: str | None, port: int, policy: EgressPolicy | None = None) -> None:
+    """Apply the egress policy to a non-HTTP network target (e.g. a database DSN host) so
+    the SSRF guard isn't limited to HTTP tools (audit S7). Raises EgressBlocked when the
+    host is denied / not allow-listed / resolves to a private/loopback/metadata address."""
+    policy = policy or EgressPolicy.from_settings()
+    host = (host or "").lower().rstrip(".")
+    if not host:
+        return  # no network host (e.g. a local sqlite file) — nothing to guard
+    if _host_matches(host, policy.deny_hosts):
+        raise EgressBlocked(f"host {host!r} is on the egress deny list")
+    if policy.allow_hosts and not _host_matches(host, policy.allow_hosts):
+        raise EgressBlocked(f"host {host!r} is not on the egress allow list")
+    if policy.block_private:
+        for ip in await _resolve_ips(host, port or 0):
+            if _ip_is_blocked(ip):
+                raise EgressBlocked(f"host {host!r} resolves to blocked address {ip}")
+
+
 async def guarded_request(
     client: httpx.AsyncClient,
     method: str,

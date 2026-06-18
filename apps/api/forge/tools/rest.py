@@ -329,7 +329,14 @@ def build_rest_tool(cfg: dict, ctx):
     # fields, langchain_core's _to_args_and_kwargs short-circuits empty-schema tools to
     # `(), {}` — dropping even the injected runtime — so zero-arg tools run uninjected.
     async def _call(runtime: ToolRuntime = None, **kwargs):  # type: ignore[assignment]
-        context = getattr(runtime, "context", None) or {}
+        # Server-side entitlement gate (Feature 3b): deny independently of the LLM if the
+        # run's end_user lacks the entitlements this tool declares (config.required_entitlements).
+        required = cfg.get("required_entitlements") or []
+        if required and getattr(ctx, "has_entitlements", None) and not ctx.has_entitlements(required):
+            return f"Not permitted: this action requires {required}, which the current user is not entitled to."
+        # Per-user context for header/body templating ({{ctx.end_user…}}) and on-behalf-of
+        # calls: the run's identity (ctx.end_user) is merged under any runtime-provided context.
+        context = {"end_user": getattr(ctx, "end_user", None), **(getattr(runtime, "context", None) or {})}
         sw = getattr(runtime, "stream_writer", None)
         res = await execute_rest(
             cfg, kwargs, tenant_id=ctx.tenant_id, project_id=ctx.project_id,

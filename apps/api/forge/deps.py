@@ -88,11 +88,25 @@ def require_role(minimum: str):
     return _dep
 
 
+def _trusts_peer(peer: str | None) -> bool:
+    """Whether to believe an X-Forwarded-For from this socket peer. Only configured
+    reverse-proxy IPs are trusted, so an arbitrary client can't spoof its IP for per-IP
+    rate limits / audit (audit L2)."""
+    tp = settings.trusted_proxies
+    if not tp:
+        return False
+    if "*" in tp:
+        return True
+    return peer in tp
+
+
 def client_ip(request: Request) -> str | None:
+    peer = request.client.host if request.client else None
     fwd = request.headers.get("x-forwarded-for")
-    if fwd:
+    if fwd and _trusts_peer(peer):
+        # Left-most entry is the original client (proxies append on the right).
         return fwd.split(",")[0].strip()
-    return request.client.host if request.client else None
+    return peer
 
 
 def get_run_service(request: Request) -> RunService:

@@ -8,6 +8,7 @@ and stores them as a secret. The AuthResolver then auto-refreshes on expiry.
 
 from __future__ import annotations
 
+from html import escape
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -22,7 +23,7 @@ from forge.models import AuthProvider
 from forge.secrets.store import SecretNotFound, SecretStore
 from forge.security import TokenError, create_state_token, decode_token
 from forge.util.http import shared_async_client
-from forge.util.ssrf import validate_url
+from forge.util.ssrf import guarded_request
 
 router = APIRouter(tags=["oauth"])
 
@@ -77,14 +78,16 @@ async def oauth_callback(
     code: str | None = None, state: str | None = None, error: str | None = None,
     session: AsyncSession = Depends(get_session),
 ):
+    # Every interpolated value below is provider/redirect-controlled, so HTML-escape it to
+    # avoid reflected XSS on the API origin's callback page (audit S9).
     if error:
-        return HTMLResponse(f"<h3>Authorization failed</h3><p>{error}</p>", status_code=400)
+        return HTMLResponse(f"<h3>Authorization failed</h3><p>{escape(error)}</p>", status_code=400)
     if not code or not state:
         return HTMLResponse("<h3>Missing code/state</h3>", status_code=400)
     try:
         claims = decode_token(state, expected_type="oauth_state")
     except TokenError as e:
-        return HTMLResponse(f"<h3>Invalid or expired state</h3><p>{e}</p>", status_code=400)
+        return HTMLResponse(f"<h3>Invalid or expired state</h3><p>{escape(str(e))}</p>", status_code=400)
     tenant_id, project_id, ap_id = claims["tid"], claims["pid"], claims["ap"]
     ap = await _load(session, tenant_id, project_id, ap_id)
     cfg = ap.config or {}
@@ -100,10 +103,18 @@ async def oauth_callback(
         "client_id": str(client_id) if client_id else None,
         "client_secret": str(client_secret) if client_secret else None,
     }
-    await validate_url(cfg["token_url"])
-    r = await shared_async_client().post(cfg["token_url"], data={k: v for k, v in data.items() if v is not None}, timeout=30)
+    # Fetch the token through the SSRF guard (validates the host pre-connect AND re-validates
+    # any redirect hop, with httpx's cross-origin credential stripping) rather than a raw POST
+    # that would follow a redirect to an internal host (audit S8).
+    r = await guarded_request(
+        shared_async_client(), "POST", cfg["token_url"],
+        data={k: v for k, v in data.items() if v is not None}, timeout=30, follow_redirects=True,
+    )
     if r.status_code >= 400:
-        return HTMLResponse(f"<h3>Token exchange failed ({r.status_code})</h3><pre>{r.text[:500]}</pre>", status_code=400)
+        return HTMLResponse(
+            f"<h3>Token exchange failed ({escape(str(r.status_code))})</h3><pre>{escape(r.text[:500])}</pre>",
+            status_code=400,
+        )
     body = r.json()
     import time as _t
 

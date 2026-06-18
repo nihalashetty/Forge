@@ -20,6 +20,17 @@ from typing import Any
 from forge.secrets.store import SecretStore
 
 
+def _thread_ref(references: str | None, in_reply_to: str | None, message_id: str | None) -> str | None:
+    """A stable per-conversation key for threading replies (audit F6): the ROOT of the
+    References chain (shared by every message in the thread), else the In-Reply-To parent,
+    else this message's own id (a brand-new thread)."""
+    if references:
+        first = references.split()[0].strip() if references.split() else ""
+        if first:
+            return first
+    return (in_reply_to or "").strip() or (message_id or "").strip() or None
+
+
 def parse_inbound(payload: Any) -> dict:
     """Normalize an inbound email (raw MIME or provider dict) to a common shape."""
     if isinstance(payload, dict):
@@ -28,8 +39,11 @@ def parse_inbound(payload: Any) -> dict:
         subject = payload.get("subject") or payload.get("Subject", "")
         text = payload.get("text") or payload.get("body-plain") or payload.get("stripped-text") or payload.get("TextBody") or ""
         msg_id = payload.get("message-id") or payload.get("Message-Id") or payload.get("MessageID")
+        references = payload.get("References") or payload.get("references")
+        in_reply_to = payload.get("In-Reply-To") or payload.get("in-reply-to")
         return {"from_addr": parseaddr(sender)[1] or sender, "from_name": parseaddr(sender)[0],
-                "subject": subject, "text": text.strip(), "message_id": msg_id}
+                "subject": subject, "text": (text or "").strip(), "message_id": msg_id,
+                "thread_ref": _thread_ref(references, in_reply_to, msg_id)}
 
     raw = payload.encode() if isinstance(payload, str) else payload
     msg = email.message_from_bytes(raw)
@@ -37,13 +51,17 @@ def parse_inbound(payload: Any) -> dict:
     if msg.is_multipart():
         for part in msg.walk():
             if part.get_content_type() == "text/plain" and "attachment" not in str(part.get("Content-Disposition", "")):
-                body = part.get_payload(decode=True).decode(part.get_content_charset() or "utf-8", "replace")
+                # decode=True returns None for a part with no decodable payload — guard it
+                # so a malformed MIME message can't 500 the public inbound webhook (audit F-low).
+                raw_payload = part.get_payload(decode=True) or b""
+                body = raw_payload.decode(part.get_content_charset() or "utf-8", "replace")
                 break
     else:
-        body = msg.get_payload(decode=True).decode(msg.get_content_charset() or "utf-8", "replace")
+        body = (msg.get_payload(decode=True) or b"").decode(msg.get_content_charset() or "utf-8", "replace")
     name, addr = parseaddr(msg.get("From", ""))
     return {"from_addr": addr, "from_name": name, "subject": msg.get("Subject", ""),
-            "text": body.strip(), "message_id": msg.get("Message-ID")}
+            "text": body.strip(), "message_id": msg.get("Message-ID"),
+            "thread_ref": _thread_ref(msg.get("References"), msg.get("In-Reply-To"), msg.get("Message-ID"))}
 
 
 def build_input_text(parsed: dict, include_subject: bool = True) -> str:

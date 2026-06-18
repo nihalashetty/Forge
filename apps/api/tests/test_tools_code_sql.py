@@ -9,6 +9,16 @@ from forge.tools.code import CodeToolError, execute_code, run_code
 from forge.tools.materialize import materialize_tool
 from forge.tools.sql import SqlToolError, execute_sql
 
+
+@pytest.fixture(autouse=True)
+def _enable_code_tools(monkeypatch):
+    # Code tools are OFF by default in prod-safe config (unsandboxed RestrictedPython is not
+    # an isolation boundary — audit S5); these tests exercise the feature, so opt in.
+    from forge.config import settings
+
+    monkeypatch.setattr(settings, "enable_code_tools", True)
+
+
 # --- code tool ---
 
 

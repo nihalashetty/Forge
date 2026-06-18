@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ORMModel(BaseModel):
@@ -129,11 +129,29 @@ class AgentUpdate(BaseModel):
 
 
 # --- runs ---
+class EndUser(BaseModel):
+    """The end user a run acts for (identity). Generic + app-defined — put any custom claims
+    in `attributes`. Set server-to-server by the integrator's authenticated backend on the
+    run-create body, or minted into a verified session token for the browser widget (3b)."""
+
+    id: str
+    display_name: str | None = None
+    email: str | None = None
+    roles: list[str] = Field(default_factory=list)
+    entitlements: list[str] = Field(default_factory=list)
+    attributes: dict[str, Any] = Field(default_factory=dict)
+
+
 class RunCreate(BaseModel):
     input: dict[str, Any] | None = None
     # Reuse an existing thread (its checkpointer state holds the conversation);
     # when set, `input` should contain only the NEW user message.
     thread_id: str | None = None
+    # The end user this run acts for. Trusted because it's set server-to-server by the
+    # integrator's authenticated backend. The browser widget instead sends `session_token`
+    # (a verified, server-minted token), which takes precedence over any body end_user.
+    end_user: EndUser | None = None
+    session_token: str | None = None
 
 
 class RunOut(ORMModel):

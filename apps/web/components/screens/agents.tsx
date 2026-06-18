@@ -4,9 +4,9 @@ import { useCallback, useEffect, useState } from "react";
 import { Icon } from "../icons";
 import { StatusPill, Tile } from "../primitives";
 import { AgentConfig } from "../canvas/AgentConfig";
-import { api, Agent, McpClientT, Tool } from "@/lib/api";
+import { api, Agent, ComponentT, McpClientT, Tool } from "@/lib/api";
 
-const NEW_AGENT_CONFIG = { flavor: "agent", model: "openai:gpt-4o-mini", system_prompt: "", tools: [], middleware: [] };
+const NEW_AGENT_CONFIG = { flavor: "agent", model: "openai:gpt-4o-mini", system_prompt: "", tools: [], components: [], middleware: [] };
 
 /* ============ AGENTS LIST ============ */
 export function AgentsScreen({ project, onOpen }: { project: any; onOpen: (a: Agent) => void }) {
@@ -94,11 +94,17 @@ export function AgentConfigScreen({ project, agentId, onBack }: { project: any; 
   const [name, setName] = useState("");
   const [tools, setTools] = useState<Tool[]>([]);
   const [mcpServers, setMcpServers] = useState<McpClientT[]>([]);
+  const [components, setComponents] = useState<ComponentT[]>([]);
+  const [folders, setFolders] = useState<string[]>([]);
+  const [kinds, setKinds] = useState<string[]>([]);
   const [save, setSave] = useState<"idle" | "saving" | "saved">("idle");
 
   useEffect(() => {
     if (project?.id) api.listTools(project.id).then(setTools).catch(() => {});
     if (project?.id) api.listMcpClients(project.id).then(setMcpServers).catch(() => {});
+    if (project?.id) api.listComponents(project.id).then(setComponents).catch(() => {});
+    if (project?.id) api.listFolders(project.id).then(setFolders).catch(() => {});
+    if (project?.id) api.listQaKinds(project.id).then(setKinds).catch(() => {});
     if (project?.id && agentId) api.getAgent(project.id, agentId).then((a) => { setAgent(a); setConfig(a.config || NEW_AGENT_CONFIG); setName(a.name); }).catch(() => {});
   }, [project?.id, agentId]);
 
@@ -130,7 +136,7 @@ export function AgentConfigScreen({ project, agentId, onBack }: { project: any; 
       <div className="row" style={{ flex: 1, minHeight: 0, alignItems: "stretch" }}>
         <div className="scroll-y grow" style={{ padding: 24 }}>
           <div style={{ maxWidth: 640, margin: "0 auto" }}>
-            <AgentConfig config={config} onChange={setConfig} tools={tools} mcpServers={mcpServers} />
+            <AgentConfig config={config} onChange={setConfig} tools={tools} mcpServers={mcpServers} components={components} folders={folders} kinds={kinds} />
           </div>
         </div>
         <div className="scroll-y" style={{ width: 300, flex: "none", borderLeft: "1px solid var(--line)", background: "var(--bg-1)", padding: 16 }}>

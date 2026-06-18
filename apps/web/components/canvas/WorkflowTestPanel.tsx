@@ -4,10 +4,15 @@
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "../icons";
 import { Tile } from "../primitives";
-import { api, openSSE, type Workflow } from "@/lib/api";
+import { api, openSSE, type Workflow, type ComponentT } from "@/lib/api";
 import { fmtUSD } from "@/lib/data";
+import { ComponentRenderer } from "../component-renderer";
+import { Markdown } from "../markdown";
+import Mustache from "mustache";
 
-interface TestMsg { role: "user" | "assistant"; content: string }
+interface ComponentInstance { component_id: string; instance_id?: string; name?: string; version?: number; props?: Record<string, any>; actions?: Record<string, any>[] }
+type Part = { kind: "text"; text: string } | { kind: "component"; inst: ComponentInstance };
+interface TestMsg { role: "user" | "assistant"; content?: string; parts?: Part[] }
 
 export function WorkflowTestPanel({
   project,
@@ -34,11 +39,16 @@ export function WorkflowTestPanel({
   const [msgs, setMsgs] = useState<TestMsg[]>([]);
   const [streaming, setStreaming] = useState("");
   const [meter, setMeter] = useState<{ tokens: number; cost: number } | null>(null);
+  const [compDefs, setCompDefs] = useState<Record<string, ComponentT>>({});
+  const [liveParts, setLiveParts] = useState<Part[]>([]);  // in-flight assistant reply parts (audit H3)
   const activeRef = useRef(true);
   const scrollRef = useRef<HTMLDivElement>(null);
   // One backend thread per test session — the checkpointer holds prior turns.
   const threadRef = useRef<string | null>(null);
-  useEffect(() => { threadRef.current = null; setMsgs([]); }, [workflow?.id]);
+  useEffect(() => {
+    threadRef.current = null; setMsgs([]);
+    if (project?.id) api.listComponents(project.id).then((cs) => setCompDefs(Object.fromEntries(cs.map((c) => [c.id, c])))).catch(() => {});
+  }, [workflow?.id, project?.id]);
 
   useEffect(() => {
     activeRef.current = true;
@@ -50,20 +60,29 @@ export function WorkflowTestPanel({
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-  }, [msgs, streaming, meter]);
+  }, [msgs, streaming, meter, liveParts]);
 
-  async function send() {
-    const text = input.trim();
+  async function send(textArg?: string) {
+    const text = (typeof textArg === "string" ? textArg : input).trim();
     if (!text || running || !project?.id || !workflow?.id) return;
-    setInput("");
+    if (typeof textArg !== "string") setInput("");
     setMsgs((m) => [...m, { role: "user", content: text }]);
     setStreaming("");
     setMeter(null);
+    setLiveParts([]);
     onResetRun();
     onRunningChange(true);
     let buffer = "";
     let finalAnswer = "";
     let lastNode: string | null = null;
+    // Ordered reply parts (text + components interleaved as produced) so a rendered
+    // component lands in its correct place within the reply.
+    const parts: Part[] = [];
+    const pushText = (s: string) => {
+      const last = parts[parts.length - 1];
+      if (last && last.kind === "text") last.text += s;
+      else parts.push({ kind: "text", text: s });
+    };
 
     try {
       await onBeforeRun();
@@ -79,6 +98,8 @@ export function WorkflowTestPanel({
         if (f.event === "messages" && f.data?.content) {
           buffer += f.data.content;
           setStreaming(buffer);
+          pushText(f.data.content);
+          setLiveParts([...parts]);
         } else if (f.event === "node_start" && f.data?.node) {
           const node = f.data.node;
           lastNode = node;
@@ -93,6 +114,9 @@ export function WorkflowTestPanel({
           const output = f.data[node];
           onNodeStep(node, "done", output);
           if (lastNode === node) lastNode = null;
+        } else if (f.event === "custom" && f.data?.channel === "component" && f.data?.payload) {
+          parts.push({ kind: "component", inst: f.data.payload as ComponentInstance });
+          setLiveParts([...parts]);
         } else if (f.event === "done") {
           finalAnswer = f.data?.answer || "";
           setMeter({ tokens: f.data?.total_tokens ?? 0, cost: f.data?.total_cost_usd ?? 0 });
@@ -114,11 +138,28 @@ export function WorkflowTestPanel({
       if (activeRef.current) {
         setStreaming("");
         onRunningChange(false);
+        setLiveParts([]);
       }
     }
     if (activeRef.current) {
-      setMsgs((m) => [...m, { role: "assistant", content: finalAnswer || buffer || "(no output)" }]);
+      const hasComp = parts.some((p) => p.kind === "component");
+      if (hasComp) {
+        // Don't let a component swallow the authoritative answer / error text (audit H2).
+        const streamedText = parts.filter((p) => p.kind === "text").map((p) => (p as any).text).join("").trim();
+        const fa = (finalAnswer || "").trim();
+        if (fa && fa !== streamedText) parts.push({ kind: "text", text: finalAnswer });
+        setMsgs((m) => [...m, { role: "assistant", parts: parts.filter((p) => p.kind === "component" || (p.kind === "text" && p.text.trim().length > 0)) }]);
+      } else {
+        setMsgs((m) => [...m, { role: "assistant", content: finalAnswer || buffer || "(no output)" }]);
+      }
     }
+  }
+
+  function handleComponentAction(inst: ComponentInstance, action: string, fields: Record<string, string>) {
+    const def = (inst.actions || []).find((a: any) => a.id === action) || {};
+    let msg = (def as any).message || (def as any).label || action;
+    try { msg = Mustache.render(String(msg), { props: inst.props || {}, fields, action }); } catch {}
+    if (msg) send(msg);
   }
 
   return (
@@ -131,15 +172,19 @@ export function WorkflowTestPanel({
         <button className="iconbtn" onClick={onClose}><Icon name="x" size={15} /></button>
       </div>
       <div ref={scrollRef} className="scroll-y col gap3" style={{ flex: 1, minHeight: 0, padding: 12, overflowX: "hidden" }}>
-        {msgs.length === 0 && !streaming && (
+        {msgs.length === 0 && !streaming && !running && (
           <div className="col center" style={{ minHeight: 160, textAlign: "center", gap: 8, color: "var(--fg-2)" }}>
             <Tile icon="playground" color="var(--io-json)" size={38} />
             <div className="t-h3" style={{ color: "var(--fg-1)" }}>Message this workflow</div>
             <div className="t-caption">Nodes highlight as the graph executes. Hover the debug chips on nodes for output and cost.</div>
           </div>
         )}
-        {msgs.map((m, i) => <TestBubble key={i} role={m.role} content={m.content} />)}
-        {(streaming || running) && <TestBubble role="assistant" content={streaming || "…"} streaming />}
+        {msgs.map((m, i) => (
+          <TestMessage key={i} role={m.role} content={m.content} parts={m.parts} compDefs={compDefs} onAction={handleComponentAction} />
+        ))}
+        {(running || liveParts.length > 0) && (
+          <TestMessage role="assistant" parts={liveParts} streaming compDefs={compDefs} onAction={handleComponentAction} />
+        )}
         {meter && <span className="chip chip-mono" style={{ alignSelf: "flex-start" }}><Icon name="bolt" size={12} />{meter.tokens} tok · {fmtUSD(meter.cost)}</span>}
       </div>
       <div style={{ padding: 12, borderTop: "1px solid var(--line)", flex: "none" }}>
@@ -152,7 +197,7 @@ export function WorkflowTestPanel({
             disabled={running}
             style={{ flex: 1, minWidth: 0, border: "none", background: "none", outline: "none", fontSize: 13, color: "var(--fg-0)", fontFamily: "var(--font-ui)" }}
           />
-          <button className="btn btn-primary btn-sm" onClick={send} disabled={running || !input.trim()}>
+          <button className="btn btn-primary btn-sm" onClick={() => send()} disabled={running || !input.trim()}>
             <Icon name={running ? "refresh" : "play"} size={13} style={running ? { animation: "spin 1s linear infinite" } : {}} />
             {running ? "Testing" : "Send"}
           </button>
@@ -162,14 +207,51 @@ export function WorkflowTestPanel({
   );
 }
 
-function TestBubble({ role, content, streaming }: { role: "user" | "assistant"; content: string; streaming?: boolean }) {
+/* One test-panel turn: a single avatar + a column. The assistant reply is an ordered list
+   of parts (text + components interleaved in produced order), matching the Playground so a
+   rendered component sits in its correct place within the reply. */
+function TestMessage({ role, content, streaming, parts, compDefs, onAction }: {
+  role: "user" | "assistant";
+  content?: string;
+  streaming?: boolean;
+  parts?: Part[];
+  compDefs: Record<string, ComponentT>;
+  onAction: (inst: ComponentInstance, action: string, fields: Record<string, string>) => void;
+}) {
   const user = role === "user";
+  if (user) {
+    return (
+      <div className="row" style={{ gap: 8, alignItems: "flex-start", flexDirection: "row-reverse" }}>
+        <Tile icon="user" color="var(--signal)" size={24} />
+        <div style={{ maxWidth: 260, padding: "8px 10px", borderRadius: 10, borderTopRightRadius: 3, fontSize: 13, lineHeight: "19px", whiteSpace: "pre-wrap", overflowWrap: "anywhere", background: "var(--accent)", color: "var(--fg-on-accent)" }}>
+          {content}
+        </div>
+      </div>
+    );
+  }
+  const renderComp = (inst: ComponentInstance, key: number | string) => {
+    const def = compDefs[inst.component_id];
+    if (!def) {
+      return <div key={key} className="card" style={{ padding: "6px 9px", fontSize: 12, color: "var(--fg-2)" }}>Component “{inst.name || inst.component_id}” unavailable.</div>;
+    }
+    return (
+      <ComponentRenderer key={key} def={{ id: def.id, name: def.name, html: def.html, css: def.css, actions: inst.actions || def.actions }} props={inst.props || {}} onAction={(a, f) => onAction(inst, a, f)} />
+    );
+  };
+  const list: Part[] = parts && parts.length ? parts : (content && content.trim() ? [{ kind: "text", text: content }] : []);
+  let lastText = -1;
+  for (let k = list.length - 1; k >= 0; k--) { if (list[k].kind === "text") { lastText = k; break; } }
   return (
-    <div className="row" style={{ gap: 8, alignItems: "flex-start", flexDirection: user ? "row-reverse" : "row" }}>
-      <Tile icon={user ? "user" : "sparkles"} color={user ? "var(--signal)" : "var(--accent)"} size={24} />
-      <div style={{ maxWidth: 260, minWidth: 0, padding: "8px 10px", borderRadius: 10, fontSize: 13, lineHeight: "19px", whiteSpace: "pre-wrap", overflowWrap: "anywhere", background: user ? "var(--accent)" : "var(--bg-3)", color: user ? "var(--fg-on-accent)" : "var(--fg-0)", borderTopRightRadius: user ? 3 : 10, borderTopLeftRadius: user ? 10 : 3 }}>
-        {content}
-        {streaming && <span style={{ display: "inline-block", width: 6, height: 13, background: "var(--accent)", marginLeft: 2, verticalAlign: "-2px", animation: "blink 1s steps(1) infinite" }} />}
+    <div className="row" style={{ gap: 8, alignItems: "flex-start" }}>
+      <Tile icon="sparkles" color="var(--accent)" size={24} />
+      <div className="col gap2" style={{ minWidth: 0, flex: 1 }}>
+        {list.map((p, j) => (p.kind === "text" ? (
+          <div key={j} style={{ fontSize: 13, lineHeight: "19px", color: "var(--fg-0)", overflowWrap: "anywhere" }}>
+            <Markdown>{p.text}</Markdown>
+            {streaming && j === lastText && <span style={{ display: "inline-block", width: 6, height: 13, background: "var(--accent)", verticalAlign: "-2px", animation: "blink 1s steps(1) infinite" }} />}
+          </div>
+        ) : renderComp(p.inst, j)))}
+        {streaming && lastText === -1 && <span className="fg-2" style={{ fontSize: 13 }}>…</span>}
       </div>
     </div>
   );

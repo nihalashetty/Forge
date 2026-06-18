@@ -57,6 +57,21 @@ export interface Tool {
   config: Record<string, any>;
 }
 
+export interface ComponentT {
+  id: string;
+  name: string;
+  title?: string | null;
+  description: string;
+  props_schema: Record<string, any>;
+  html: string;
+  css: string;
+  actions: Record<string, any>[];
+  sample_props: Record<string, any>;
+  kind: string;
+  enabled: boolean;
+  version: number;
+}
+
 export interface RedirectInfo {
   followed: boolean;
   status?: number;
@@ -202,10 +217,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ executable }),
     }),
-  createRun: (pid: string, wid: string, input: Record<string, unknown>, threadId?: string) =>
+  createRun: (pid: string, wid: string, input: Record<string, unknown>, threadId?: string, endUser?: Record<string, unknown> | null) =>
     json<{ id: string; status: string; thread_id: string }>(
       `/v1/projects/${pid}/workflows/${wid}/runs`,
-      { method: "POST", body: JSON.stringify({ input, ...(threadId ? { thread_id: threadId } : {}) }) },
+      { method: "POST", body: JSON.stringify({ input, ...(threadId ? { thread_id: threadId } : {}), ...(endUser ? { end_user: endUser } : {}) }) },
     ),
   resumeRun: (pid: string, wid: string, rid: string, value: unknown) =>
     json<{ status?: string; messages?: any[]; interrupted?: boolean; error?: string }>(
@@ -245,6 +260,15 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ args, context }),
     }),
+  // components (Feature 2 — generative UI widgets)
+  listComponents: (pid: string) => json<ComponentT[]>(`/v1/projects/${pid}/components`),
+  getComponent: (pid: string, cid: string) => json<ComponentT>(`/v1/projects/${pid}/components/${cid}`),
+  createComponent: (pid: string, body: Record<string, unknown> & { name: string }) =>
+    notifyCounts(json<ComponentT>(`/v1/projects/${pid}/components`, { method: "POST", body: JSON.stringify(body) })),
+  updateComponent: (pid: string, cid: string, body: Record<string, unknown>) =>
+    json<ComponentT>(`/v1/projects/${pid}/components/${cid}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteComponent: (pid: string, cid: string) =>
+    notifyCounts(fetch(`${BASE}/v1/projects/${pid}/components/${cid}`, { method: "DELETE", headers: authHeader() })),
   listAuthProviders: (pid: string) => json<AuthProviderT[]>(`/v1/projects/${pid}/auth-providers`),
   createAuthProvider: (pid: string, body: { name: string; kind: string; config: Record<string, unknown>; credentials_ref?: string }) =>
     notifyCounts(json<AuthProviderT>(`/v1/projects/${pid}/auth-providers`, { method: "POST", body: JSON.stringify(body) })),
@@ -364,6 +388,10 @@ export const api = {
   listHandoffs: (pid: string, status = "open") => json<Handoff[]>(`/v1/projects/${pid}/handoffs?status=${status}`),
   replyHandoff: (pid: string, hid: string, message: string) =>
     json<{ ok: boolean }>(`/v1/projects/${pid}/handoffs/${hid}/reply`, { method: "POST", body: JSON.stringify({ message }) }),
+  // embed (widget)
+  getEmbed: (pid: string) => json<EmbedSettings>(`/v1/projects/${pid}/embed`),
+  setEmbed: (pid: string, body: { enabled: boolean; allowed_origins: string[]; workflow_id?: string | null }) =>
+    json<EmbedSettings>(`/v1/projects/${pid}/embed`, { method: "PUT", body: JSON.stringify(body) }),
 };
 
 export interface InviteResult extends TeamMember { email_sent: boolean; invite_url?: string; }
@@ -372,6 +400,7 @@ export interface Trigger { id: string; workflow_id: string; node_id: string; kin
 export interface Dataset { id: string; name: string; workflow_id?: string | null; score_mode: string; items: any[]; n_items: number; last_pass_rate?: number | null; }
 export interface EvalReport { summary: { total: number; passed: number; pass_rate: number }; results: { input: string; expected: string; answer: string; passed: boolean; reason?: string | null }[]; }
 export interface Handoff { id: string; run_id: string; workflow_id?: string | null; customer?: string | null; customer_message?: string | null; reason?: string | null; status: string; at?: string | null; }
+export interface EmbedSettings { enabled: boolean; allowed_origins: string[]; workflow_id?: string | null; publishable_key?: string | null; embed_src?: string | null; }
 
 export interface MeResult { id: string; email: string | null; role: string; tenant_id: string; is_fallback: boolean; }
 export interface AuthResult { access_token: string; refresh_token: string; user: { id: string; email: string; role: string }; }

@@ -27,7 +27,9 @@ async def execute_graphql(
         auth = await auth_resolver.resolve(
             tenant_id=tenant_id, project_id=project_id, provider_id=cfg["auth_provider_id"], context=context or {},
         )
-        headers.update(auth.headers); params.update(auth.params); cookies.update(auth.cookies)
+        headers.update(auth.headers)
+        params.update(auth.params)
+        cookies.update(auth.cookies)
 
     follow = bool(cfg.get("follow_redirects", False))
     await validate_url(cfg["endpoint"], egress_policy)

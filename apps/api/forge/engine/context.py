@@ -32,6 +32,9 @@ class CompileContext:
     # MCP server id -> list of native LangChain tools (the server's enabled tools),
     # pre-loaded by the runtime assembler so the sync agent factory can attach them.
     mcp_tools_by_client: dict[str, list] = field(default_factory=dict)
+    # Materialized UI components (component_id -> widget StructuredTool); attached to an
+    # agent via config["components"], the same way tools are (Feature 2 — generative UI).
+    component_registry: dict[str, Any] = field(default_factory=dict)
 
     # Cross-cutting services.
     auth_resolver: Any = None
@@ -45,6 +48,11 @@ class CompileContext:
     # Model config.
     default_model: str | None = None
     provider_credentials: dict[str, str] = field(default_factory=dict)
+
+    # The end user this run acts for (identity, Feature 3). Generic app-defined shape
+    # ({id, roles?, attributes?, entitlements?, …}); surfaced to agent prompts (awareness)
+    # and tool templating ({{ctx.end_user…}} / on-behalf-of calls). None = anonymous.
+    end_user: dict | None = None
 
     # Project-level default middleware, prepended to every agent stack (Doc 2 §8).
     project_default_mw: list[dict] = field(default_factory=list)
@@ -71,6 +79,27 @@ class CompileContext:
             if tool is not None:
                 out.append(tool)
         return out
+
+    def components_for(self, ids: Sequence[str]) -> list[Any]:
+        """Resolve component ids to materialized widget-tools, skipping unknown ids
+        (a deleted component just drops out, like tools_for)."""
+        out = []
+        for i in ids or []:
+            tool = self.component_registry.get(i)
+            if tool is not None:
+                out.append(tool)
+        return out
+
+    def has_entitlements(self, required) -> bool:
+        """True if the run's end_user holds ALL of `required` (matched against roles ∪
+        entitlements). Empty/absent requirement → allowed, anonymous user → denied. The
+        server-side gate for tools that declare `required_entitlements` (Feature 3b)."""
+        req = [r for r in (required or []) if r]
+        if not req:
+            return True
+        eu = self.end_user or {}
+        have = set(eu.get("entitlements") or []) | set(eu.get("roles") or [])
+        return all(r in have for r in req)
 
     def sandbox_backend_for(self, config: dict) -> Any:
         """Deep-agent sandbox backend from a node's sandbox config. (Phase 3+.)"""

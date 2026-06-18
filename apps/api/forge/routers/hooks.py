@@ -6,7 +6,6 @@ signature). No JWT — external systems POST here. Rate-limited per trigger.
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import hmac
 
@@ -19,6 +18,7 @@ from forge.services.dispatch import dispatch_trigger
 from forge.services.runs import RunService
 from forge.services.triggers import TriggerService
 from forge.util.ratelimit import rate_limiter
+from forge.util.tasks import spawn
 
 router = APIRouter(prefix="/v1/hooks", tags=["hooks"])
 
@@ -68,6 +68,9 @@ async def inbound_webhook(
     if wait:
         result = await dispatch_trigger(run_service, trigger, payload)
         return result
-    # fire-and-forget: ack immediately, run in the background
-    asyncio.create_task(dispatch_trigger(run_service, trigger, payload))
+    # fire-and-forget: ack immediately, run in a TRACKED background task so failures are
+    # logged (not silently swallowed) and a flood can't spawn unbounded coroutines (F4).
+    accepted = spawn(dispatch_trigger(run_service, trigger, payload), name=f"webhook:{trigger.id}")
+    if not accepted:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "server busy; retry shortly")
     return {"accepted": True, "trigger": trigger.id}

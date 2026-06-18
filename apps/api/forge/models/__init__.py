@@ -5,6 +5,7 @@ from forge.models.entities import (
     AuditLog,
     AuthProvider,
     Channel,
+    Component,
     Dataset,
     HandoffRequest,
     KbSource,
@@ -28,5 +29,5 @@ from forge.models.entities import (
 __all__ = [
     "Tenant", "User", "Project", "Workflow", "Thread", "Run", "Trace", "Span",
     "Tool", "AuthProvider", "Secret", "McpClient", "Agent", "KbSource", "QaPair",
-    "AuditLog", "Trigger", "Channel", "HandoffRequest", "Dataset", "ModelPrice", "Memory",
+    "AuditLog", "Trigger", "Channel", "Component", "HandoffRequest", "Dataset", "ModelPrice", "Memory",
 ]

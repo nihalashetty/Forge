@@ -14,6 +14,7 @@ import { EdgeOverlay } from "../canvas/EdgeOverlay";
 import { WorkflowTestPanel } from "../canvas/WorkflowTestPanel";
 import { FieldsForm, ModelSelect, MultiSelectChips, type FieldSpec } from "../canvas/ConfigForm";
 import { Field, Toggle } from "../primitives";
+import type { ComponentT } from "@/lib/api";
 import { api, openSSE, Agent, McpClientT, NodeType, Tool, Workflow } from "@/lib/api";
 import { NODE_META, NODE_HELP, IO_COLOR, fmtUSD } from "@/lib/data";
 import { canvasToExecutable, canvasToFlow, ioCompatible, newNodeId, starterWorkflow, type FlowEdge, type FlowNode } from "@/lib/graph";
@@ -217,6 +218,7 @@ function CanvasInner({ project, workflowId, onWorkflowChange, onBack, onRun }: {
   // Saved agent presets (from the Agents tab) — loadable into an agent node.
   const [agents, setAgents] = useState<Agent[]>([]);
   const [mcpServers, setMcpServers] = useState<McpClientT[]>([]);
+  const [components, setComponents] = useState<ComponentT[]>([]);
   // Live KB folders + Q&A kinds drive the dropdowns in the retrieval node config.
   const [kbFolders, setKbFolders] = useState<string[]>([]);
   const [qaKinds, setQaKinds] = useState<string[]>([]);
@@ -242,6 +244,7 @@ function CanvasInner({ project, workflowId, onWorkflowChange, onBack, onRun }: {
       api.listTools(project.id).then(setTools).catch(() => {});
       api.listAgents(project.id).then(setAgents).catch(() => {});
       api.listMcpClients(project.id).then(setMcpServers).catch(() => {});
+      api.listComponents(project.id).then(setComponents).catch(() => {});
       api.listFolders(project.id).then(setKbFolders).catch(() => {});
       api.listQaKinds(project.id).then(setQaKinds).catch(() => {});
     }
@@ -669,6 +672,7 @@ function CanvasInner({ project, workflowId, onWorkflowChange, onBack, onRun }: {
               tools={tools}
               agents={agents}
               mcpServers={mcpServers}
+              components={components}
               dynamic={{ kb_folders: kbFolders, qa_kinds: qaKinds }}
               onChange={updateConfig}
               onRename={renameNodeId}
@@ -700,6 +704,7 @@ function NodeInspector({
   tools,
   agents,
   mcpServers,
+  components,
   dynamic,
   onChange,
   onRename,
@@ -713,6 +718,7 @@ function NodeInspector({
   tools: Tool[];
   agents: Agent[];
   mcpServers: McpClientT[];
+  components: ComponentT[];
   dynamic?: Record<string, string[]>;
   onChange: (c: Record<string, any>) => void;
   onRename: (nodeId: string, name: string) => void;
@@ -740,7 +746,7 @@ function NodeInspector({
         <button className="btn btn-danger btn-sm" onClick={() => onDelete(node.id)}><Icon name="trash" size={14} />Delete</button>
       </div>
 
-      {(type === "agent" || type === "deep_agent") && <AgentConfig config={c} onChange={onChange} tools={tools} agents={agents} mcpServers={mcpServers} folders={dynamic?.kb_folders || []} kinds={dynamic?.qa_kinds || []} />}
+      {(type === "agent" || type === "deep_agent") && <AgentConfig config={c} onChange={onChange} tools={tools} agents={agents} mcpServers={mcpServers} components={components} folders={dynamic?.kb_folders || []} kinds={dynamic?.qa_kinds || []} />}
 
       {type === "retrieval" && <RetrievalForm c={c} set={set} folders={dynamic?.kb_folders || []} kinds={dynamic?.qa_kinds || []} />}
 

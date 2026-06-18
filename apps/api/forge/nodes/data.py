@@ -97,7 +97,9 @@ def webhook_out_factory(cfg: dict, ctx: CompileContext):
             auth = await ctx.auth_resolver.resolve(
                 tenant_id=ctx.tenant_id, project_id=ctx.project_id, provider_id=provider_id, context={}
             )
-            headers.update(auth.headers); params.update(auth.params); cookies.update(auth.cookies)
+            headers.update(auth.headers)
+            params.update(auth.params)
+            cookies.update(auth.cookies)
         await validate_url(url, getattr(ctx, "egress_policy", None))
         c = shared_async_client()
         r = await c.request(method, url, headers=headers, params=params or None, json=body, cookies=cookies or None, timeout=30)

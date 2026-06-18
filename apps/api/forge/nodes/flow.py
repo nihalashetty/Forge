@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from langgraph.graph import END
@@ -16,6 +17,8 @@ from langgraph.graph import END
 from forge.engine.context import CompileContext
 from forge.engine.expressions import ExpressionError, eval_expression, eval_truthy
 from forge.engine.registry import NodeSpec, Port, register
+
+log = logging.getLogger("forge.flow")
 
 
 def _passthrough(state: dict) -> dict:
@@ -53,7 +56,10 @@ def make_router_path(config: dict):
     def _path(state: dict) -> Any:
         try:
             val = eval_expression(expr, dict(state or {}))
-        except ExpressionError:
+        except ExpressionError as e:
+            # A failing router expression silently ending the run is a debugging nightmare;
+            # log it (and fall through to the default/END) so it's traceable (audit F10).
+            log.warning("router expression %r failed: %s", expr, e)
             val = None
         if multi:
             vals = list(val) if isinstance(val, (list, tuple, set)) else ([val] if val is not None else [])
@@ -64,9 +70,13 @@ def make_router_path(config: dict):
                     targets.append(t)
             if targets:
                 return targets
+            if not default:
+                log.warning("router %r matched no case and has no default; ending the run", expr)
             return default if default else END
         target = _one(val)
         if target is None:
+            if not default:
+                log.warning("router %r value %r matched no case and has no default; ending the run", expr, val)
             target = default
         return target if target else END
 
@@ -118,12 +128,16 @@ def loop_factory(config: dict, ctx: CompileContext):
     condition = config.get("condition")
 
     def _node(state: dict) -> dict:
+        # `_loop_count` is the running firing count; stop once it reaches max_iter. (Counting
+        # contract is intentionally stable — see test_loop_node_counts_and_stops.)
         i = int(state.get("_loop_count", 0)) + 1
         cont = i < max_iter
         if cont and condition:
             try:
                 cont = eval_truthy(condition, dict(state))
-            except ExpressionError:
+            except ExpressionError as e:
+                # A failing loop condition silently ending the loop is hard to debug; log it.
+                log.warning("loop condition %r failed: %s", condition, e)
                 cont = False
         return {"_loop_count": i, "_loop": "continue" if cont else "done"}
 
@@ -141,6 +155,11 @@ def make_fanout_path(config: dict):
 
     def _path(state: dict) -> Any:
         items = state.get(over) or []
+        if not items:
+            # An empty fan-out produces no Sends, so the child (and anything gated on its
+            # aggregated output) never runs. Log it so an empty `over` isn't a silent
+            # dead-end the operator can't see (audit F10).
+            log.warning("parallel_fanout over %r produced no items; no children dispatched", over)
         return [Send(child, {item_key: item}) for item in items]
 
     return _path

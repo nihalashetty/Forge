@@ -4,6 +4,7 @@ import { ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "./icons";
 import { Avatar, Tile, StatusPill } from "./primitives";
 import { PROJECT_NAV, NavLeaf } from "@/lib/data";
+import { Markdown } from "./markdown";
 
 /* ---------------- Theme hook ---------------- */
 export function useTheme(): [string, (t: string) => void] {
@@ -99,12 +100,12 @@ export function ProjectSidebar({ project, active, onNav, onBack, refreshKey }: {
     let live = true;
     (async () => {
       const { api } = await import("@/lib/api");
-      const [wf, ag, tl, ap, kb] = await Promise.allSettled([
-        api.listWorkflows(pid), api.listAgents(pid), api.listTools(pid), api.listAuthProviders(pid), api.listSources(pid),
+      const [wf, ag, tl, ap, kb, cp] = await Promise.allSettled([
+        api.listWorkflows(pid), api.listAgents(pid), api.listTools(pid), api.listAuthProviders(pid), api.listSources(pid), api.listComponents(pid),
       ]);
       if (!live) return;
       const n = (r: PromiseSettledResult<any[]>) => (r.status === "fulfilled" ? r.value.length : 0);
-      setCounts({ workflows: n(wf), agents: n(ag), tools: n(tl), auth: n(ap), knowledge: n(kb) });
+      setCounts({ workflows: n(wf), agents: n(ag), tools: n(tl), auth: n(ap), knowledge: n(kb), components: n(cp) });
     })();
     return () => { live = false; };
   }, [project?.id, refreshKey, countsBump]);
@@ -422,7 +423,7 @@ export function AssistantPanel({ open, onClose, project, onMutate }: { open: boo
             )}
             <div className="row" style={{ gap: 9, alignItems: "flex-start", flexDirection: m.role === "user" ? "row-reverse" : "row" }}>
               {m.role === "assistant" ? <Tile icon="sparkles" color="var(--accent)" size={28} /> : <Avatar name="You" size={28} />}
-              <div style={{ maxWidth: 280, padding: "9px 12px", borderRadius: 11, fontSize: 13, lineHeight: "19px", whiteSpace: "pre-wrap", overflowWrap: "anywhere", background: m.role === "user" ? "var(--accent)" : "var(--bg-3)", color: m.role === "user" ? "var(--fg-on-accent)" : "var(--fg-0)", borderTopRightRadius: m.role === "user" ? 3 : 11, borderTopLeftRadius: m.role === "assistant" ? 3 : 11 }}>{m.content}</div>
+              <div style={{ maxWidth: 280, padding: "9px 12px", borderRadius: 11, fontSize: 13, lineHeight: "19px", overflowWrap: "anywhere", whiteSpace: m.role === "user" ? "pre-wrap" : "normal", background: m.role === "user" ? "var(--accent)" : "var(--bg-3)", color: m.role === "user" ? "var(--fg-on-accent)" : "var(--fg-0)", borderTopRightRadius: m.role === "user" ? 3 : 11, borderTopLeftRadius: m.role === "assistant" ? 3 : 11 }}>{m.role === "assistant" ? <Markdown>{m.content}</Markdown> : m.content}</div>
             </div>
           </div>
         ))}
@@ -466,8 +467,8 @@ export function AssistantPanel({ open, onClose, project, onMutate }: { open: boo
           ) : (
             <div className="row" style={{ gap: 9, alignItems: "flex-start" }}>
               <Tile icon="sparkles" color="var(--accent)" size={28} />
-              <div style={{ maxWidth: 280, padding: "9px 12px", borderRadius: 11, fontSize: 13, lineHeight: "19px", whiteSpace: "pre-wrap", overflowWrap: "anywhere", background: "var(--bg-3)", color: "var(--fg-0)", borderTopLeftRadius: 3 }}>
-                {streaming || "…"}
+              <div style={{ maxWidth: 280, padding: "9px 12px", borderRadius: 11, fontSize: 13, lineHeight: "19px", overflowWrap: "anywhere", background: "var(--bg-3)", color: "var(--fg-0)", borderTopLeftRadius: 3 }}>
+                {streaming ? <Markdown>{streaming}</Markdown> : "…"}
                 <span style={{ display: "inline-block", width: 6, height: 13, background: "var(--accent)", marginLeft: 2, verticalAlign: "-2px", animation: "blink 1s steps(1) infinite" }} />
               </div>
             </div>

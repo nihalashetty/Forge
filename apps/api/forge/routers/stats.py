@@ -19,7 +19,11 @@ def _rollup(traces) -> dict:
     tokens = sum(t.total_tokens or 0 for t in traces)
     cost = sum(t.total_cost_usd or 0.0 for t in traces)
     latency = int(sum(t.latency_ms or 0 for t in traces) / runs) if runs else 0
-    return {"runs": runs, "tokens": tokens, "cost_usd": round(cost, 6), "avg_latency_ms": latency}
+    errors = sum(1 for t in traces if getattr(t, "status", None) == "error")
+    return {
+        "runs": runs, "tokens": tokens, "cost_usd": round(cost, 6), "avg_latency_ms": latency,
+        "errors": errors, "error_rate": round(errors / runs * 100, 1) if runs else 0.0,
+    }
 
 
 def _report_rows(traces, wf_names: dict[str, str]) -> list[dict]:

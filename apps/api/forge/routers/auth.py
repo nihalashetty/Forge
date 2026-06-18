@@ -18,7 +18,7 @@ from forge.deps import (
 from forge.security import TokenError, create_invite_token, decode_token
 from forge.services.audit import AuditService
 from forge.services.auth import AuthError, AuthService
-from forge.util.mailer import send_email, smtp_configured
+from forge.util.mailer import send_email
 
 router = APIRouter(prefix="/v1/auth", tags=["auth"])
 team_router = APIRouter(prefix="/v1/team", tags=["team"])

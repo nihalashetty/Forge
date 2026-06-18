@@ -21,8 +21,12 @@ class SemanticCacheService:
         return ChromaStore(collection=f"forge_cache_{embedder.dim}")
 
     @staticmethod
-    def _id(scope: str, question: str) -> str:
-        return hashlib.sha256(f"{scope}::{question.strip().lower()}".encode()).hexdigest()[:32]
+    def _id(tenant_id: str, project_id: str, scope: str, question: str) -> str:
+        # Include tenant+project so two tenants asking the same question in the same scope
+        # don't collide on one Chroma id and overwrite each other's cached answer (audit F-low).
+        return hashlib.sha256(
+            f"{tenant_id}::{project_id}::{scope}::{question.strip().lower()}".encode()
+        ).hexdigest()[:32]
 
     @staticmethod
     async def lookup(session, tenant_id, project_id, question, *, scope="default", threshold=0.9, ttl=3600) -> str | None:
@@ -50,7 +54,7 @@ class SemanticCacheService:
         emb = await embedder.aembed_query(question)
         try:
             SemanticCacheService._store(embedder).upsert(
-                ids=[SemanticCacheService._id(scope, question)], embeddings=[emb], documents=[question],
+                ids=[SemanticCacheService._id(tenant_id, project_id, scope, question)], embeddings=[emb], documents=[question],
                 metadatas=[{"tenant_id": tenant_id, "project_id": project_id, "scope": scope,
                             "answer": answer, "ts": time.time()}],
             )

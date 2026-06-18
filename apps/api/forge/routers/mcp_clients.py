@@ -79,6 +79,9 @@ async def update_client(project_id: str, client_id: str, body: McpClientPatch, s
         m.headers_ref = body.headers_ref
     await session.commit()
     await session.refresh(m)
+    # Drop the cached connection so running agents pick up the new config (audit F12).
+    from forge.tools.mcp import invalidate_client
+    invalidate_client(client_id)
     return _out(m)
 
 
@@ -113,4 +116,6 @@ async def delete_client(project_id: str, client_id: str, session: AsyncSession =
         raise HTTPException(status.HTTP_404_NOT_FOUND, "mcp client not found")
     await session.delete(m)
     await session.commit()
+    from forge.tools.mcp import invalidate_client
+    invalidate_client(client_id)
     return {"ok": True}
