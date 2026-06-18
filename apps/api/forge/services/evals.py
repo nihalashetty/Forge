@@ -10,13 +10,21 @@ run). Generalizes the assistant's one-off `evaluate_build` into a reusable harne
 
 from __future__ import annotations
 
+import logging
 import re
 
 from sqlalchemy import select
 
 from forge.models import Dataset
 from forge.services.dispatch import dispatch_message
+from forge.services.quota import QuotaExceeded, check_run_quota
 from forge.services.runs import RunService
+
+log = logging.getLogger("forge.evals")
+
+# A single eval run can fire one billable model run per item; cap it so a huge dataset
+# can't kick off thousands of runs from one request (audit F11).
+_MAX_EVAL_ITEMS = 1000
 
 _JUDGE_SCHEMA = {
     "title": "ItemJudgement",
@@ -73,16 +81,29 @@ class EvalService:
         workflow_id = dataset.workflow_id
         if not workflow_id:
             return {"error": "dataset has no workflow bound"}
-        items = dataset.items or []
+        # Eval runs are billable model calls — gate the whole batch on the tenant's daily quota.
+        try:
+            await check_run_quota(session, dataset.tenant_id)
+        except QuotaExceeded as e:
+            return {"error": e.message}
+        all_items = dataset.items or []
+        items = all_items[:_MAX_EVAL_ITEMS]
+        truncated = len(all_items) > _MAX_EVAL_ITEMS
         results: list[dict] = []
         passed = 0
         for item in items:
             inp = item.get("input", "")
             expected = item.get("expected", "")
-            res = await dispatch_message(
-                run_service, tenant_id=dataset.tenant_id, project_id=dataset.project_id,
-                workflow_id=workflow_id, text=inp,
-            )
+            # Isolate each item: one failing run must not abort the whole eval (audit F11).
+            try:
+                res = await dispatch_message(
+                    run_service, tenant_id=dataset.tenant_id, project_id=dataset.project_id,
+                    workflow_id=workflow_id, text=inp,
+                )
+            except Exception as e:  # noqa: BLE001
+                log.warning("eval item failed for dataset %s: %s", dataset.id, e)
+                results.append({"input": inp, "expected": expected, "answer": "", "passed": False, "reason": f"run failed: {e}"})
+                continue
             answer = res.get("answer", "") or ""
             if res.get("error"):
                 ok, reason = False, res["error"]
@@ -96,7 +117,11 @@ class EvalService:
         rate = (passed / total) if total else 0.0
         dataset.last_pass_rate = rate
         await session.commit()
-        return {"summary": {"total": total, "passed": passed, "pass_rate": round(rate, 4)}, "results": results}
+        summary = {"total": total, "passed": passed, "pass_rate": round(rate, 4)}
+        if truncated:
+            summary["truncated"] = True
+            summary["items_skipped"] = len(all_items) - _MAX_EVAL_ITEMS
+        return {"summary": summary, "results": results}
 
     @staticmethod
     async def _judge(model, inp: str, expected: str, answer: str) -> tuple[bool, str | None]:

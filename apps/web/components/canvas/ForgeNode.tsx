@@ -17,11 +17,10 @@ const CAT_COLOR: Record<string, string> = {
 function summarize(type: string, c: Record<string, any>): string[] {
   switch (type) {
     case "agent":
-    case "deep_agent": {
-      const tools = (c.tools || []).length;
-      const mw = (c.middleware || []).filter((m: any) => m.enabled !== false).length;
-      return [String(c.model || "—"), `${tools} tool${tools === 1 ? "" : "s"} · ${mw} middleware`];
-    }
+    case "deep_agent":
+      // Show only the model on the card — tools / middleware / components / knowledge are
+      // all partial here; the right-hand inspector shows the full config.
+      return [String(c.model || "—")];
     case "router":
       return [`expr · ${c.expression || "—"}`, Object.keys(c.cases || {}).concat(c.default ? ["default"] : []).join(" · ")];
     case "llm":

@@ -27,6 +27,9 @@ from forge.routers import (
     auth,
     auth_providers,
     channels,
+    components,
+    embed,
+    embed_public,
     evals,
     handoff,
     health,
@@ -52,11 +55,33 @@ from forge.util.http import aclose_shared_client
 
 
 async def _make_checkpointer(stack: AsyncExitStack):
-    """Durable execution. SQLite locally; set FORGE_CHECKPOINT_DB=memory for ephemeral."""
-    if settings.checkpoint_db == "memory":
+    """Durable-execution checkpointer. Selected by FORGE_CHECKPOINT_BACKEND:
+    - "postgres": durable + shared across workers (REQUIRED for prod/HITL; audit P2).
+    - "memory": ephemeral (tests / throwaway).
+    - "sqlite" (default): local file; fine for single-worker dev, lost on restart."""
+    backend = (settings.checkpoint_backend or "sqlite").lower()
+    if backend == "memory" or settings.checkpoint_db == "memory":
         from langgraph.checkpoint.memory import InMemorySaver
 
         return InMemorySaver()
+    if backend == "postgres":
+        try:
+            from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+        except ImportError as e:  # pragma: no cover - optional extra
+            raise RuntimeError(
+                "FORGE_CHECKPOINT_BACKEND=postgres needs langgraph-checkpoint-postgres "
+                "(pip install -e '.[postgres]')."
+            ) from e
+        dsn = settings.checkpoint_postgres_url or settings.database_url
+        # LangGraph wants a plain libpq DSN, not the SQLAlchemy +asyncpg/+psycopg form.
+        for prefix in ("+asyncpg", "+psycopg", "+psycopg2"):
+            dsn = dsn.replace(prefix, "")
+        cp = await stack.enter_async_context(AsyncPostgresSaver.from_conn_string(dsn))
+        try:
+            await cp.setup()
+        except Exception:  # noqa: BLE001 - setup is idempotent
+            pass
+        return cp
     from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
     cp = await stack.enter_async_context(AsyncSqliteSaver.from_conn_string(settings.checkpoint_db))
@@ -65,6 +90,22 @@ async def _make_checkpointer(stack: AsyncExitStack):
     except Exception:  # noqa: BLE001 - setup is idempotent; ignore "already exists"
         pass
     return cp
+
+
+async def _reaper_loop() -> None:
+    """Periodically reap runs stuck in queued/running (never streamed, or driver died) so
+    they can't linger forever (audit F3)."""
+    from forge.services.runs import RunService
+
+    log = logging.getLogger("forge.reaper")
+    while True:
+        try:
+            await asyncio.sleep(300)
+            await RunService.reap_stale_runs()
+        except asyncio.CancelledError:
+            break
+        except Exception:  # noqa: BLE001 - keep the reaper alive across failures
+            log.exception("reaper tick failed")
 
 
 async def _scheduler_loop(app: FastAPI) -> None:
@@ -105,8 +146,11 @@ async def lifespan(app: FastAPI):
     problems = settings.validate_production()
     if problems:
         # Refuse to serve a misconfigured production install (default secrets, auth off,
-        # SSRF guard off, SQLite). Set the flagged env vars before deploying.
+        # SSRF guard off, SQLite, non-durable checkpointer, unsandboxed code). Set the
+        # flagged env vars before deploying. Enforced for every non-dev environment (S6).
         raise RuntimeError("Unsafe production configuration:\n  - " + "\n  - ".join(problems))
+    for warn in settings.startup_warnings():
+        logging.getLogger("forge.config").warning("INSECURE CONFIG: %s", warn)
     await init_db()
     threading.Thread(target=_preload_heavy_modules, name="forge-preload", daemon=True).start()
     app.state.exit_stack = AsyncExitStack()
@@ -124,14 +168,32 @@ async def lifespan(app: FastAPI):
         from forge.tracing import otel
 
         otel.configure()
-    scheduler = None
-    if settings.enable_scheduler:
-        scheduler = asyncio.create_task(_scheduler_loop(app), name="forge-scheduler")
+    bg_tasks: list[asyncio.Task] = []
+    # The scheduler must run on EXACTLY ONE instance (else every replica double-fires).
+    # `enable_scheduler` turns it on; `scheduler_leader` elects the single instance by env
+    # so you can ship one image everywhere (audit P3).
+    if settings.enable_scheduler and settings.scheduler_leader:
+        bg_tasks.append(asyncio.create_task(_scheduler_loop(app), name="forge-scheduler"))
+    # The reaper is safe to run everywhere (idempotent), but one instance is enough.
+    if settings.scheduler_leader:
+        bg_tasks.append(asyncio.create_task(_reaper_loop(), name="forge-reaper"))
     yield
-    if scheduler is not None:
-        scheduler.cancel()
+    for t in bg_tasks:
+        t.cancel()
+    for t in bg_tasks:
         with contextlib.suppress(asyncio.CancelledError):
-            await scheduler
+            await t
+    from forge.util.tasks import drain
+
+    await drain()
+    with contextlib.suppress(Exception):
+        from forge.tools.mcp import close_all
+
+        await close_all()
+    with contextlib.suppress(Exception):
+        from forge.queue import close_pool
+
+        await close_pool()
     await aclose_shared_client()
     await app.state.exit_stack.aclose()
 
@@ -143,6 +205,11 @@ def create_app() -> FastAPI:
         description="Self-hosted platform for building, testing, and shipping LangChain/LangGraph agents.",
         lifespan=lifespan,
     )
+    # Host-header allow-list (defense-in-depth against Host-header attacks). Empty => any (dev).
+    if settings.trusted_hosts:
+        from starlette.middleware.trustedhost import TrustedHostMiddleware
+
+        app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.trusted_hosts)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
@@ -157,7 +224,7 @@ def create_app() -> FastAPI:
     for r in (
         health.router, auth.router, auth.team_router, audit.router, oauth.router, hooks.router,
         nodes.router, projects.router, workflows.router, runs.router,
-        tools.router, auth_providers.router, secrets.router, agents.router,
+        tools.router, components.router, embed.router, embed_public.router, auth_providers.router, secrets.router, agents.router,
         knowledge.router, knowledge.qa_router, traces.router, assistant.router, stats.router,
         triggers_router.router, channels.router, channels.public, handoff.router, evals.router,
         pricing.router, mcp_server.router, mcp_clients.router,

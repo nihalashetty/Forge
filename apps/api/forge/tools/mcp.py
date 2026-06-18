@@ -12,6 +12,9 @@ assembler (not the sync `materialize_tool` path).
 
 from __future__ import annotations
 
+import contextlib
+import logging
+import time
 from typing import Any
 
 from langchain.tools import ToolRuntime
@@ -21,8 +24,29 @@ from forge.db.base import SessionLocal
 from forge.models import McpClient
 from forge.secrets.store import SecretStore
 
-# Cache MultiServerMCPClient instances per (mcp_client_id) so we connect once.
-_CLIENT_CACHE: dict[str, Any] = {}
+log = logging.getLogger("forge.mcp")
+
+# Cache MultiServerMCPClient instances per mcp_client_id with a TTL so a dead connection or
+# an edited server config is eventually re-established without a process restart (audit F12).
+# `invalidate_client` drops one entry immediately (called when the McpClient row changes);
+# `close_all` is called on shutdown.
+_CLIENT_CACHE: dict[str, tuple[float, Any]] = {}
+_CACHE_TTL = 300.0  # seconds
+
+
+def invalidate_client(client_id: str) -> None:
+    """Drop a cached MCP client so the next run reconnects with the latest config."""
+    _CLIENT_CACHE.pop(client_id, None)
+
+
+async def close_all() -> None:
+    """Best-effort close of every cached MCP client (transports/subprocesses) on shutdown."""
+    for _, client in list(_CLIENT_CACHE.values()):
+        aclose = getattr(client, "aclose", None)
+        if aclose is not None:
+            with contextlib.suppress(Exception):
+                await aclose()
+    _CLIENT_CACHE.clear()
 
 
 class McpUnavailable(RuntimeError):
@@ -62,13 +86,16 @@ async def _connection_for(client_row: McpClient, tenant_id: str, project_id: str
 
 async def _client_and_tools(client_row: McpClient, tenant_id: str, project_id: str):
     MultiServerMCPClient = _require_adapters()
-    cached = _CLIENT_CACHE.get(client_row.id)
-    if cached is None:
+    now = time.monotonic()
+    entry = _CLIENT_CACHE.get(client_row.id)
+    if entry is None or (now - entry[0]) > _CACHE_TTL:
         conn = await _connection_for(client_row, tenant_id, project_id)
-        cached = MultiServerMCPClient({client_row.name: conn})
-        _CLIENT_CACHE[client_row.id] = cached
-    tools = await cached.get_tools()
-    return cached, tools
+        client = MultiServerMCPClient({client_row.name: conn})
+        _CLIENT_CACHE[client_row.id] = (now, client)
+    else:
+        client = entry[1]
+    tools = await client.get_tools()
+    return client, tools
 
 
 async def discover_tools(client_row: McpClient, tenant_id: str, project_id: str) -> list[dict]:

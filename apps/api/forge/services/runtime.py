@@ -42,7 +42,8 @@ def _tool_cfg(t: Tool) -> dict:
 
 
 async def build_compile_context(
-    session, *, tenant_id: str, project_id: str, checkpointer=None, store=None
+    session, *, tenant_id: str, project_id: str, checkpointer=None, store=None,
+    end_user: dict | None = None,
 ) -> CompileContext:
     project = (
         await session.execute(select(Project).where(Project.id == project_id))
@@ -80,6 +81,7 @@ async def build_compile_context(
     )
     ctx.provider_credentials = resolved_keys
     ctx.egress_policy = EgressPolicy.from_settings(pconfig.get("egress"))
+    ctx.end_user = end_user or None
 
     rows = (
         await session.execute(
@@ -103,6 +105,38 @@ async def build_compile_context(
             log.warning("Skipping tool %s (%s): %s", t.name, t.kind, e)
     ctx.tool_registry = registry
     ctx.tool_specs = specs
+
+    # User-defined UI components → widget-tools (Feature 2). Each becomes a tool the agent
+    # can call to render a saved html/css template client-side (the tool args are the props).
+    from forge.models import Component
+    from forge.tools.components import build_component_tool
+
+    try:
+        comp_rows = list((
+            await session.execute(
+                select(Component).where(
+                    Component.tenant_id == tenant_id,
+                    Component.project_id == project_id,
+                    Component.enabled.is_(True),
+                )
+            )
+        ).scalars())
+    except Exception as e:  # noqa: BLE001 - a components-table error must not abort the whole run
+        log.warning("Skipping components (load failed): %s", e)
+        comp_rows = []
+    comp_registry: dict[str, object] = {}
+    for c in comp_rows:
+        try:
+            comp_registry[c.id] = build_component_tool(
+                {
+                    "id": c.id, "name": c.name, "description": c.description,
+                    "props_schema": c.props_schema, "actions": c.actions, "version": c.version,
+                },
+                ctx,
+            )
+        except Exception as e:  # noqa: BLE001 - skip a broken component; don't break the run
+            log.warning("Skipping component %s: %s", c.name, e)
+    ctx.component_registry = comp_registry
 
     # Pre-load enabled MCP servers' tools (one connect per server) so agent nodes can
     # attach them — the agent factory is sync, but MCP discovery is async.

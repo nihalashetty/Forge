@@ -3,10 +3,15 @@
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "../icons";
 import { Tile } from "../primitives";
-import { api, openSSE, Workflow } from "@/lib/api";
+import { api, openSSE, Workflow, ComponentT } from "@/lib/api";
 import { fmtUSD } from "@/lib/data";
+import { Markdown } from "../markdown";
+import { ComponentRenderer } from "../component-renderer";
+import Mustache from "mustache";
 
-interface ChatMsg { role: "user" | "assistant"; content: string }
+interface ComponentInstance { component_id: string; instance_id?: string; name?: string; version?: number; props?: Record<string, any>; actions?: Record<string, any>[] }
+type Part = { kind: "text"; text: string } | { kind: "component"; inst: ComponentInstance };
+interface ChatMsg { role: "user" | "assistant"; content?: string; parts?: Part[] }
 interface Step { node: string }
 
 export function PlaygroundScreen({ project }: { project: any }) {
@@ -21,6 +26,9 @@ export function PlaygroundScreen({ project }: { project: any }) {
   const [meter, setMeter] = useState<{ tokens: number; cost: number } | null>(null);
   const [pendingInterrupt, setPendingInterrupt] = useState<{ runId: string; payload: any } | null>(null);
   const [resuming, setResuming] = useState(false);
+  const [compDefs, setCompDefs] = useState<Record<string, ComponentT>>({});
+  const [actingAs, setActingAs] = useState("");  // optional end_user JSON, to test identity locally
+  const [liveParts, setLiveParts] = useState<Part[]>([]);  // in-flight assistant reply parts, rendered live (audit H3)
   const scrollRef = useRef<HTMLDivElement>(null);
   // One backend thread per chat session: the checkpointer holds the conversation, so
   // each turn sends ONLY the new message (no full-transcript replay).
@@ -30,6 +38,7 @@ export function PlaygroundScreen({ project }: { project: any }) {
     if (!project?.id) return;
     threadRef.current = null;
     setWf(null); setLoadErr(null); setMsgs([]); setSteps([]); setMeter(null);
+    api.listComponents(project.id).then((cs) => setCompDefs(Object.fromEntries(cs.map((c) => [c.id, c])))).catch(() => {});
     api.listWorkflows(project.id)
       .then((ws) => {
         setWfs(ws);
@@ -40,23 +49,34 @@ export function PlaygroundScreen({ project }: { project: any }) {
       .catch((e) => setLoadErr(String(e.message || e)));
   }, [project?.id]);
 
-  useEffect(() => { scrollRef.current?.scrollTo({ top: 1e9, behavior: "smooth" }); }, [msgs, streaming, steps]);
+  useEffect(() => { scrollRef.current?.scrollTo({ top: 1e9, behavior: "smooth" }); }, [msgs, streaming, steps, liveParts]);
 
-  async function send() {
-    if (!input.trim() || !wf || running) return;
-    const text = input.trim();
-    setInput("");
+  async function send(textArg?: string) {
+    const text = (typeof textArg === "string" ? textArg : input).trim();
+    if (!text || !wf || running) return;
+    if (typeof textArg !== "string") setInput("");
     setMsgs((m) => [...m, { role: "user", content: text }]);
-    setStreaming(""); setSteps([]); setMeter(null); setRunning(true);
+    setStreaming(""); setSteps([]); setMeter(null); setRunning(true); setLiveParts([]);
     let buffer = "";
     let finalAnswer = "";
+    // The reply is an ordered list of parts (text + components interleaved as the agent
+    // produces them), so a rendered component lands in its correct place in the reply.
+    const parts: Part[] = [];
+    const pushText = (s: string) => {
+      const last = parts[parts.length - 1];
+      if (last && last.kind === "text") last.text += s;
+      else parts.push({ kind: "text", text: s });
+    };
     try {
       // The thread's checkpointer holds prior turns, so send only the new message when a
       // thread exists; the first turn establishes the thread.
+      let endUser: Record<string, unknown> | undefined;
+      if (actingAs.trim() && actingAsValid) { try { endUser = JSON.parse(actingAs); } catch { /* ignore */ } }
       const run = await api.createRun(
         project.id, wf.id,
         { messages: [{ role: "user", content: text }] },
         threadRef.current || undefined,
+        endUser,
       );
       threadRef.current = run.thread_id;
       let interrupted = false;
@@ -65,9 +85,14 @@ export function PlaygroundScreen({ project }: { project: any }) {
         if (f.event === "messages" && f.data?.content) {
           buffer += f.data.content;
           setStreaming(buffer);
+          pushText(f.data.content);
+          setLiveParts([...parts]);
         } else if ((f.event === "node_start" || f.event === "updates") && f.data) {
           const node = f.event === "node_start" ? f.data.node : Object.keys(f.data || {})[0];
           if (node) setSteps((s) => (s.some((x) => x.node === node) ? s : [...s, { node }]));
+        } else if (f.event === "custom" && f.data?.channel === "component" && f.data?.payload) {
+          parts.push({ kind: "component", inst: f.data.payload as ComponentInstance });
+          setLiveParts([...parts]);
         } else if (f.event === "done") {
           finalAnswer = f.data?.answer || "";
           setMeter({ tokens: f.data?.total_tokens ?? 0, cost: f.data?.total_cost_usd ?? 0 });
@@ -78,14 +103,35 @@ export function PlaygroundScreen({ project }: { project: any }) {
           finalAnswer = `⚠ ${f.data?.message || "run failed"}`;
         }
       });
-      if (interrupted) { setStreaming(""); setRunning(false); return; } // approval card takes over
+      if (interrupted) {
+        // Preserve anything streamed before the pause (audit M4) — mirror the finalize commit.
+        const hadComp = parts.some((p) => p.kind === "component");
+        if (hadComp || buffer.trim()) {
+          setMsgs((m) => [...m, hadComp
+            ? { role: "assistant", parts: parts.filter((p) => p.kind === "component" || (p.kind === "text" && p.text.trim().length > 0)) }
+            : { role: "assistant", content: buffer }]);
+        }
+        setStreaming(""); setRunning(false); setLiveParts([]);
+        return; // approval card takes over
+      }
     } catch (e: any) {
       finalAnswer = `⚠ ${e.message || e}`;
     } finally {
       setStreaming("");
       setRunning(false);
+      setLiveParts([]);
     }
-    setMsgs((m) => [...m, { role: "assistant", content: finalAnswer || buffer || "(no output)" }]);
+    const hasComp = parts.some((p) => p.kind === "component");
+    if (hasComp) {
+      // Don't let a component swallow the authoritative final answer / error text (audit H2):
+      // if done.answer (or an error) isn't already in the streamed text, append it as a part.
+      const streamedText = parts.filter((p) => p.kind === "text").map((p) => (p as any).text).join("").trim();
+      const fa = (finalAnswer || "").trim();
+      if (fa && fa !== streamedText) parts.push({ kind: "text", text: finalAnswer });
+      setMsgs((m) => [...m, { role: "assistant", parts: parts.filter((p) => p.kind === "component" || (p.kind === "text" && p.text.trim().length > 0)) }]);
+    } else {
+      setMsgs((m) => [...m, { role: "assistant", content: finalAnswer || buffer || "(no output)" }]);
+    }
   }
 
   /** Pull the human-facing prompt + decision options out of the interrupt payload.
@@ -127,6 +173,19 @@ export function PlaygroundScreen({ project }: { project: any }) {
     }
   }
 
+  function handleComponentAction(inst: ComponentInstance, action: string, fields: Record<string, string>) {
+    const def = (inst.actions || []).find((a: any) => a.id === action) || {};
+    let msg = (def as any).message || (def as any).label || action;
+    try { msg = Mustache.render(String(msg), { props: inst.props || {}, fields, action }); } catch {}
+    if (msg) send(msg);
+  }
+
+  // "Acting as" must be a JSON object (or blank) — drives the red-border hint + gates send (F20).
+  const actingAsValid = !actingAs.trim() || (() => {
+    try { const v = JSON.parse(actingAs); return v !== null && typeof v === "object" && !Array.isArray(v); }
+    catch { return false; }
+  })();
+
   const samples = ["How to convert quote to order", "What can you help me with?"];
 
   return (
@@ -160,6 +219,10 @@ export function PlaygroundScreen({ project }: { project: any }) {
           {meter && (
             <span className="chip chip-mono"><Icon name="bolt" size={13} />{meter.tokens} tok · {fmtUSD(meter.cost)}</span>
           )}
+          <input value={actingAs} onChange={(e) => setActingAs(e.target.value)} disabled={running}
+            placeholder={'Acting as… {"id":"u_1","roles":["admin"]}'}
+            title="Optional end_user object to test identity — sent to the run as end_user. In production the integrator's backend supplies this."
+            className="input mono" style={{ width: 230, height: 26, fontSize: 11, borderColor: actingAsValid ? undefined : "var(--err)" }} />
           <span className="chip chip-mono"><Icon name="knowledge" size={12} />grounded</span>
           <button className="btn btn-ghost btn-sm" onClick={() => { setMsgs([]); setSteps([]); setMeter(null); }} disabled={running}>
             <Icon name="refresh" size={14} />Reset
@@ -177,7 +240,7 @@ export function PlaygroundScreen({ project }: { project: any }) {
                 once it outgrows the viewport it scrolls normally. */}
             <div style={{ maxWidth: 720, margin: "0 auto", padding: "0 24px", width: "100%", minHeight: "100%", display: "flex", flexDirection: "column", justifyContent: "flex-end" }}>
               {loadErr && <div className="card" style={{ padding: 14, color: "var(--err)", marginBottom: 12 }}>{loadErr}</div>}
-              {msgs.length === 0 && !streaming && !loadErr && (
+              {msgs.length === 0 && !running && !loadErr && (
                 <div className="col center" style={{ minHeight: 300, gap: 10, color: "var(--fg-2)", textAlign: "center", margin: "auto 0" }}>
                   <Tile icon="sparkles" color="var(--accent)" size={44} glow />
                   <div className="t-h2" style={{ color: "var(--fg-1)" }}>Run “{wf?.name || "your workflow"}” live</div>
@@ -190,8 +253,12 @@ export function PlaygroundScreen({ project }: { project: any }) {
                 </div>
               )}
               <div className="col gap4">
-                {msgs.map((m, i) => <Bubble key={i} role={m.role} content={m.content} />)}
-                {(streaming || running) && <Bubble role="assistant" content={streaming} streaming />}
+                {msgs.map((m, i) => (
+                  <MessageBlock key={i} role={m.role} content={m.content} parts={m.parts} compDefs={compDefs} onAction={handleComponentAction} />
+                ))}
+                {(running || liveParts.length > 0) && (
+                  <MessageBlock role="assistant" parts={liveParts} streaming compDefs={compDefs} onAction={handleComponentAction} />
+                )}
                 {pendingInterrupt && (() => {
                   const info = parseInterrupt(pendingInterrupt.payload);
                   return (
@@ -223,7 +290,7 @@ export function PlaygroundScreen({ project }: { project: any }) {
                 <input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()}
                   placeholder="Message the workflow…" disabled={!wf || running}
                   style={{ flex: 1, minWidth: 0, border: "none", background: "none", outline: "none", fontSize: 14, color: "var(--fg-0)", fontFamily: "var(--font-ui)" }} />
-                <button className="btn btn-primary" onClick={send} disabled={!wf || running}>
+                <button className="btn btn-primary" onClick={() => send()} disabled={!wf || running}>
                   <Icon name={running ? "refresh" : "play"} size={15} style={running ? { animation: "spin 1s linear infinite" } : {}} />{running ? "Running" : "Run"}
                 </button>
               </div>
@@ -257,14 +324,56 @@ export function PlaygroundScreen({ project }: { project: any }) {
   );
 }
 
-function Bubble({ role, content, streaming }: { role: "user" | "assistant"; content: string; streaming?: boolean }) {
+/* One chat turn. User turns keep the colored bubble. An assistant turn is ONE flowing reply
+   under a single avatar — bare markdown text and inline components in order, with NO bubble
+   chrome — so a rendered component reads as part of the reply, not a detached card below it
+   (audit Priority C). Missing component defs degrade to a visible notice (audit M5). */
+function MessageBlock({ role, content, streaming, parts, compDefs, onAction }: {
+  role: "user" | "assistant";
+  content?: string;
+  streaming?: boolean;
+  parts?: Part[];
+  compDefs: Record<string, ComponentT>;
+  onAction: (inst: ComponentInstance, action: string, fields: Record<string, string>) => void;
+}) {
   const user = role === "user";
+  if (user) {
+    return (
+      <div className="row" style={{ gap: 9, alignItems: "flex-start", flexDirection: "row-reverse" }}>
+        <Tile icon="user" color="var(--signal)" size={28} />
+        <div style={{ maxWidth: 560, padding: "10px 13px", borderRadius: 12, borderTopRightRadius: 3, fontSize: 14, lineHeight: "21px", whiteSpace: "pre-wrap", overflowWrap: "anywhere", wordBreak: "break-word", background: "var(--accent)", color: "var(--fg-on-accent)" }}>
+          {content}
+        </div>
+      </div>
+    );
+  }
+  const renderComp = (inst: ComponentInstance, key: number | string) => {
+    const def = compDefs[inst.component_id];
+    if (!def) {
+      return (
+        <div key={key} className="card" style={{ padding: "8px 11px", fontSize: 12.5, color: "var(--fg-2)" }}>
+          Component “{inst.name || inst.component_id}” is unavailable.
+        </div>
+      );
+    }
+    return (
+      <ComponentRenderer key={key} def={{ id: def.id, name: def.name, html: def.html, css: def.css, actions: inst.actions || def.actions }} props={inst.props || {}} onAction={(a, f) => onAction(inst, a, f)} />
+    );
+  };
+  const list: Part[] = parts && parts.length ? parts : (content && content.trim() ? [{ kind: "text", text: content }] : []);
+  let lastText = -1;
+  for (let k = list.length - 1; k >= 0; k--) { if (list[k].kind === "text") { lastText = k; break; } }
   return (
-    <div className="row" style={{ gap: 9, alignItems: "flex-start", flexDirection: user ? "row-reverse" : "row" }}>
-      {user ? <Tile icon="user" color="var(--signal)" size={28} /> : <Tile icon="sparkles" color="var(--accent)" size={28} />}
-      <div style={{ maxWidth: 540, minWidth: 0, padding: "10px 13px", borderRadius: 12, fontSize: 14, lineHeight: "21px", whiteSpace: "pre-wrap", overflowWrap: "anywhere", wordBreak: "break-word", background: user ? "var(--accent)" : "var(--bg-2)", color: user ? "var(--fg-on-accent)" : "var(--fg-0)", border: user ? "none" : "1px solid var(--line)", borderTopRightRadius: user ? 3 : 12, borderTopLeftRadius: user ? 12 : 3 }}>
-        {content}
-        {streaming && <span style={{ display: "inline-block", width: 7, height: 14, background: "var(--accent)", marginLeft: 2, verticalAlign: "-2px", animation: "blink 1s steps(1) infinite" }} />}
+    <div className="row" style={{ gap: 9, alignItems: "flex-start" }}>
+      <Tile icon="sparkles" color="var(--accent)" size={28} />
+      <div className="col gap2" style={{ minWidth: 0, maxWidth: 620, flex: 1 }}>
+        {list.map((p, j) => (p.kind === "text" ? (
+          <div key={j} style={{ fontSize: 14, lineHeight: "21px", color: "var(--fg-0)", overflowWrap: "anywhere" }}>
+            <Markdown>{p.text}</Markdown>
+            {streaming && j === lastText && <span style={{ display: "inline-block", width: 7, height: 14, background: "var(--accent)", verticalAlign: "-2px", animation: "blink 1s steps(1) infinite" }} />}
+          </div>
+        ) : renderComp(p.inst, j)))}
+        {streaming && lastText === -1 && <span className="fg-2" style={{ fontSize: 14 }}>…</span>}
       </div>
     </div>
   );

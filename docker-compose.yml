@@ -1,0 +1,99 @@
+# Forge — production-shaped local stack: Postgres (app DB + durable checkpointer),
+# Redis (shared rate-limit/idempotency + future worker queue), the API, and the web
+# console. Copy .env from apps/api/.env.example and SET REAL SECRETS before using.
+#
+#   docker compose up --build
+#
+# Notes:
+# - FORGE_ENVIRONMENT=production turns on the hardening guard (validate_production); the
+#   app refuses to boot with default secrets / sqlite / non-durable checkpointer.
+# - The scheduler runs only on the single `api` service (scheduler_leader); scale `api`
+#   replicas freely behind a load balancer — limits/idempotency are shared via Redis.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: forge
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-forge-dev-pw}
+      POSTGRES_DB: forge
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U forge"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: ./apps/api
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      FORGE_ENVIRONMENT: production
+      FORGE_DATABASE_URL: postgresql+asyncpg://forge:${POSTGRES_PASSWORD:-forge-dev-pw}@postgres:5432/forge
+      FORGE_CHECKPOINT_BACKEND: postgres
+      FORGE_REDIS_URL: redis://redis:6379/0
+      # Run the scheduler/reaper on this single instance (the leader). If you scale `api`
+      # to multiple replicas, keep this on ONE of them only.
+      FORGE_ENABLE_SCHEDULER: "true"
+      FORGE_JWT_SECRET: ${FORGE_JWT_SECRET:?set a strong random secret}
+      FORGE_BOOTSTRAP_ADMIN_EMAIL: ${FORGE_BOOTSTRAP_ADMIN_EMAIL:-admin@forge.local}
+      FORGE_BOOTSTRAP_ADMIN_PASSWORD: ${FORGE_BOOTSTRAP_ADMIN_PASSWORD:?set a real admin password}
+      FORGE_PUBLIC_BASE_URL: ${FORGE_PUBLIC_BASE_URL:-http://localhost:8000}
+      FORGE_PUBLIC_CONSOLE_URL: ${FORGE_PUBLIC_CONSOLE_URL:-http://localhost:3000}
+      FORGE_CORS_ORIGINS: '["http://localhost:3000"]'
+      # Provider keys (set the ones you use):
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    ports:
+      - "8000:8000"
+
+  # Offloaded run execution (webhook/schedule triggers). Scale freely: `--scale worker=N`.
+  worker:
+    build:
+      context: ./apps/api
+    command: ["arq", "forge.worker.WorkerSettings"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      FORGE_ENVIRONMENT: production
+      FORGE_DATABASE_URL: postgresql+asyncpg://forge:${POSTGRES_PASSWORD:-forge-dev-pw}@postgres:5432/forge
+      FORGE_CHECKPOINT_BACKEND: postgres
+      FORGE_REDIS_URL: redis://redis:6379/0
+      FORGE_JWT_SECRET: ${FORGE_JWT_SECRET:?set a strong random secret}
+      # The worker does not run the scheduler (the api leader does).
+      FORGE_ENABLE_SCHEDULER: "false"
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    depends_on:
+      - api
+    environment:
+      # The web server proxies /api/forge/* to this URL (server-side rewrite).
+      FORGE_API_URL: http://api:8000
+    ports:
+      - "3000:3000"
+
+volumes:
+  pgdata:

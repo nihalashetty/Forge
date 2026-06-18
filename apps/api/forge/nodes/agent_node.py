@@ -15,10 +15,58 @@ from forge.engine.middleware_compiler import build_middleware
 from forge.engine.models import resolve_model
 from forge.engine.registry import NodeSpec, Port, register
 
+# Forge's default output style: every agent reply renders as GitHub-Flavored Markdown
+# (Feature 1 — structured responses). It lives in the system prompt, so it costs ~nothing
+# per turn (and is cached by the Anthropic prompt-caching middleware). Opt out with
+# config output_style="plain"; auto-skipped for structured-output agents (they emit JSON).
+OUTPUT_STYLE = (
+    "Format every reply as GitHub-Flavored Markdown so it renders cleanly: short "
+    "paragraphs; `##`/`###` headings for sections; `-` or numbered lists; GFM tables for "
+    "comparisons or structured data; fenced code blocks with a language hint for code; and "
+    "**bold** for key terms. Keep the structure minimal — only as much as the answer needs "
+    "— and never output raw HTML."
+)
+
+
+# When UI components are attached, structured data should be shown via a component (table/
+# card/form), NOT a markdown table — so this variant drops the "GFM tables for structured
+# data" clause to avoid competing with the widgets (audit B1).
+OUTPUT_STYLE_WITH_COMPONENTS = (
+    "Format every reply as GitHub-Flavored Markdown so it renders cleanly: short paragraphs; "
+    "`##`/`###` headings; `-` or numbered lists; fenced code blocks with a language hint; and "
+    "**bold** for key terms. For structured data (tables, cards, forms), prefer the available "
+    "UI components over a markdown table. Keep structure minimal and never output raw HTML."
+)
+
+
+# Steer the agent to RENDER a fitting component instead of restating its data as prose. The
+# last sentence is load-bearing: it makes clear components only PRESENT data, so the agent
+# keeps using its retrieval/other tools normally — without it, the component guidance was
+# competing with knowledge/FAQ search and the agent skipped it (audit Priority B + the KB
+# regression). Only appended when config["components"] is non-empty.
+COMPONENT_STYLE = (
+    "You have UI components available as tools (their names match the components). If a "
+    "component fits the data you want to show (a table, card, form, …), you MUST call that "
+    "component tool with the data as its props INSTEAD of writing the same data as prose or a "
+    "markdown table; add at most a one-line lead-in and never restate the component's content "
+    "as text. This governs only how you PRESENT data — keep using your other tools (search the "
+    "knowledge base, look up FAQs, call APIs) normally to GET the information you need."
+)
+
 
 def _build_prompt(config: dict) -> str | None:
-    # Static system prompt. Dynamic prompts compile to a middleware (added later).
-    return config.get("system_prompt")
+    # Static system prompt + Forge's default Markdown output style (+ component guidance when
+    # components are attached). Dynamic prompts compile to a middleware (added later).
+    base = (config.get("system_prompt") or "").strip()
+    structured = (config.get("response_format") or {}).get("mode") == "structured"
+    if structured or config.get("output_style") == "plain":
+        return base or None
+    has_components = bool(config.get("components"))
+    style = OUTPUT_STYLE_WITH_COMPONENTS if has_components else OUTPUT_STYLE
+    parts = ([base] if base else []) + [style]
+    if has_components:
+        parts.append(COMPONENT_STYLE)
+    return "\n\n".join(parts).strip()
 
 
 def _build_response_format(config: dict) -> Any:
@@ -72,6 +120,46 @@ def _maybe_add_prompt_caching(stack: list[dict], config: dict, ctx: CompileConte
     return [{"type": "anthropic_prompt_caching", "config": {}}, *stack]
 
 
+def _clamp(value, n: int = 300):
+    """Bound an end_user value's size before it enters the prompt (avoid bloat/abuse)."""
+    if isinstance(value, str):
+        return value[:n]
+    if isinstance(value, list):
+        return [_clamp(v, n) for v in value[:20]]
+    if isinstance(value, dict):
+        return {str(k)[:60]: _clamp(v, n) for k, v in list(value.items())[:20]}
+    return value
+
+
+def _end_user_block(end_user: dict) -> str:
+    """A generic identity-awareness block. Only a whitelisted, size-clamped subset of the
+    (untrusted-shaped) end_user is embedded, re-serialized so the JSON stays well-formed
+    (audit L4). The withhold-restriction sentence is added ONLY when the user actually carries
+    roles/entitlements — an unscoped prohibition with no entitlement list made the model
+    over-refuse general KB/FAQ answers ("I don't have that information") (audit Priority A)."""
+    import json as _json
+
+    safe = {
+        k: _clamp(end_user[k])
+        for k in ("id", "display_name", "email", "roles", "entitlements", "attributes")
+        if end_user.get(k) not in (None, "", [], {})
+    }
+    if not safe:
+        return ""
+    eu = _json.dumps(safe, default=str, ensure_ascii=False)
+    line = (
+        "[END USER] You are assisting this authenticated end user, provided by the host "
+        f"application — treat it as authoritative: {eu}."
+    )
+    if safe.get("roles") or safe.get("entitlements"):
+        line += (
+            " General product, FAQ, and knowledge-base information is available to everyone — "
+            "always answer it. Only withhold data that is specific to OTHER users or accounts "
+            "this user is not entitled to see or act on."
+        )
+    return line
+
+
 def _common_kwargs(config: dict, ctx: CompileContext) -> dict:
     tools = list(ctx.tools_for(config.get("tools", [])))
     # Built-in knowledge access (RAG / Q&A) attached straight to the agent via its
@@ -83,6 +171,9 @@ def _common_kwargs(config: dict, ctx: CompileContext) -> dict:
     # (pre-loaded by the runtime assembler into ctx.mcp_tools_by_client; native MCP tools).
     for cid in config.get("mcp_servers", []) or []:
         tools += (getattr(ctx, "mcp_tools_by_client", None) or {}).get(cid, [])
+    # User-defined UI components exposed as widget-tools (Feature 2): the agent "renders"
+    # one by calling it; the client draws the saved template from the props it passes.
+    tools += list(ctx.components_for(config.get("components", [])))
     stack = (ctx.project_default_mw or []) + (config.get("middleware") or [])
     stack = _maybe_add_prompt_caching(stack, config, ctx)
     middleware = build_middleware(stack, ctx)
@@ -90,6 +181,14 @@ def _common_kwargs(config: dict, ctx: CompileContext) -> dict:
 
     common: dict[str, Any] = {"model": model, "tools": tools, "middleware": middleware}
     prompt = _build_prompt(config)
+    # Identity awareness: if the run acts for an end user, append a generic context block so
+    # the agent knows who it's helping and to stay within their entitlements. Appended last,
+    # so the (cacheable) instructions prefix is unchanged; only this per-user suffix varies.
+    end_user = getattr(ctx, "end_user", None)
+    if end_user:
+        eu_block = _end_user_block(end_user)
+        if eu_block:
+            prompt = f"{prompt}\n\n{eu_block}" if prompt else eu_block
     if prompt:
         common["system_prompt"] = prompt
     rf = _build_response_format(config)
@@ -144,6 +243,9 @@ def _summary(config: dict) -> list[str]:
     n_mw = len([m for m in (config.get("middleware") or []) if m.get("enabled", True)])
     flavor = config.get("flavor", "agent")
     line2 = f"{n_tools} tools · {n_mw} middleware"
+    n_comp = len(config.get("components", []) or [])
+    if n_comp:
+        line2 += f" · {n_comp} widget{'s' if n_comp != 1 else ''}"
     k = config.get("knowledge") or {}
     kbits = [name for name, key in (("RAG", "rag"), ("Q&A", "qa")) if (k.get(key) or {}).get("enabled")]
     if kbits:

@@ -54,8 +54,15 @@ class Settings(BaseSettings):
 
     # --- Platform auth (JWT) ---
     jwt_secret: str = "dev-insecure-change-me"
+    # Previously-active signing secrets, still ACCEPTED for verification (not for minting),
+    # so you can rotate `jwt_secret` without invalidating every live token: set the new key
+    # here-as-previous during the overlap window, then drop it. Tokens carry a `kid` header.
+    jwt_secret_previous: list[str] = []
+    jwt_key_id: str = "k1"
     jwt_algorithm: str = "HS256"
-    access_token_ttl_minutes: int = 60 * 24
+    # Shorter access-token lifetime bounds the blast radius of a leaked token (audit S11);
+    # the 30-day refresh token (rotated on use) keeps sessions alive without re-login.
+    access_token_ttl_minutes: int = 60 * 8
     refresh_token_ttl_days: int = 30
     # Auth is ON by default — the app behaves like production (real login required), so the
     # flow is actually exercised in dev. The seeded owner (bootstrap_admin_email/password
@@ -91,9 +98,15 @@ class Settings(BaseSettings):
     schemas_dir: str = Field(default_factory=lambda: _DEFAULT_SCHEMAS_DIR.as_posix())
 
     # --- Tools ---
-    # Code tools run RestrictedPython (AST-sandboxed) but not OS-isolated; disable in
-    # untrusted multi-tenant installs until an isolated executor is configured.
-    enable_code_tools: bool = True
+    # Code tools run RestrictedPython (AST-sandboxed) but NOT OS-isolated: no CPU/memory
+    # bound and a runaway thread can't be force-killed. RestrictedPython is a hardening
+    # layer, not a sandbox, so it is OFF by default. Only enable it on a trusted, single-
+    # tenant install, or once an isolated executor (subprocess/container/gVisor) is wired
+    # in. The production guard refuses to boot with this on unless explicitly acknowledged.
+    enable_code_tools: bool = False
+    # Set true to run code tools in production despite the lack of OS isolation (you accept
+    # the in-process RCE/DoS risk — e.g. a trusted single-tenant deployment).
+    allow_unsandboxed_code_tools: bool = False
     # Prune the assistant's ~19 tools to the relevant subset per turn (cuts tool-schema
     # tokens). Opt-in: the selection itself is an extra model call, so it's a tradeoff.
     assistant_tool_selector: bool = False
@@ -120,8 +133,12 @@ class Settings(BaseSettings):
     otel_service_name: str = "forge"
 
     # In-process scheduler for `schedule` triggers (fires due schedules once a minute).
-    # Disable in multi-worker deployments and run a single global scheduler instead.
-    enable_scheduler: bool = True
+    # OFF by default: with more than one replica each would fire every schedule (duplicate
+    # runs). Enable it on EXACTLY ONE instance (set FORGE_SCHEDULER_LEADER=true there), or
+    # run a dedicated single scheduler/worker. `enable_scheduler` is the master switch;
+    # `scheduler_leader` lets you ship the same image everywhere and elect one leader by env.
+    enable_scheduler: bool = False
+    scheduler_leader: bool = True
 
     # Seed demo data (projects/tools/auth) on first run. Off => start from an empty
     # workspace and create projects yourself. Set FORGE_SEED_DEMO=true to populate.
@@ -144,6 +161,33 @@ class Settings(BaseSettings):
     run_rate_limit_per_minute: int = 60
     api_rate_limit_per_minute: int = 240
 
+    # --- Public embed surface (anonymous, browser-facing). The publishable key is PUBLIC
+    # by design, so these are the real abuse/cost ceilings. Per-IP is the important one
+    # (a single key is shared by every visitor). 0 = unlimited. The daily tenant quota
+    # (above) is ALSO enforced on the embed path. ---
+    embed_rate_limit_per_minute: int = 60          # per publishable key
+    embed_rate_limit_per_ip_per_minute: int = 20   # per client IP (denial-of-wallet guard)
+    embed_stream_limit_per_ip_per_minute: int = 60 # SSE connections per IP
+
+    # Max concurrent in-flight runs per tenant (0 = unlimited). Backpressure / noisy-
+    # neighbour guard for the inline execution path until the worker tier is enabled.
+    max_concurrent_runs_per_tenant: int = 20
+
+    # Reverse-proxy IPs whose X-Forwarded-For we trust for client-IP derivation. Empty =>
+    # trust none (use the socket peer). Set to your LB/ingress IPs in production so clients
+    # can't spoof their IP for per-IP rate limits / audit. "*" trusts any (only behind a
+    # trusted ingress that always overwrites XFF).
+    trusted_proxies: list[str] = []
+
+    # Host allow-list for the API (TrustedHostMiddleware). Empty => allow any (dev).
+    trusted_hosts: list[str] = []
+
+    # --- LangGraph checkpointer backend: "sqlite" (default, dev), "memory" (ephemeral),
+    # or "postgres" (durable, shared across workers — required for prod/HITL). When
+    # "postgres", set FORGE_CHECKPOINT_POSTGRES_URL (or it falls back to database_url). ---
+    checkpoint_backend: str = "sqlite"
+    checkpoint_postgres_url: str | None = None
+
     @property
     def data_dir(self) -> Path:
         return _DEFAULT_DATA_DIR
@@ -152,27 +196,66 @@ class Settings(BaseSettings):
         _DEFAULT_DATA_DIR.mkdir(parents=True, exist_ok=True)
         Path(self.chroma_path).mkdir(parents=True, exist_ok=True)
 
+    # Environments treated as local/insecure-OK. ANY other value (staging, prod, an
+    # unknown string, or the empty string) is treated as security-enforced — so a
+    # misconfigured/typo'd FORGE_ENVIRONMENT fails CLOSED rather than silently skipping
+    # every guard.
+    _DEV_ENVIRONMENTS = ("development", "dev", "local", "test")
+
     @property
     def is_production(self) -> bool:
         return self.environment.lower() in ("production", "prod")
 
+    @property
+    def enforce_security(self) -> bool:
+        """True when the deployment must pass the hardening checks. Only the explicit
+        local-dev environment names opt out; everything else fails closed."""
+        return self.environment.lower() not in self._DEV_ENVIRONMENTS
+
     def validate_production(self) -> list[str]:
-        """Return a list of fatal misconfigurations for a production deployment.
-        Called at startup; an install with any of these should refuse to serve."""
+        """Return a list of FATAL misconfigurations. Called at startup; an install with
+        any of these should refuse to serve. Enforced for every non-dev environment
+        (fail-closed), not just literal 'production'."""
         problems: list[str] = []
-        if not self.is_production:
+        if not self.enforce_security:
             return problems
         if self.jwt_secret in ("", "dev-insecure-change-me"):
             problems.append("FORGE_JWT_SECRET is unset/default — set a strong random secret.")
         if not self.auth_required:
-            problems.append("FORGE_AUTH_REQUIRED must be true in production.")
+            problems.append("FORGE_AUTH_REQUIRED must be true outside local development.")
         if self.bootstrap_admin_password == "forge-admin":
             problems.append("FORGE_BOOTSTRAP_ADMIN_PASSWORD is the dev default — set a real one.")
         if not self.egress_block_private:
-            problems.append("FORGE_EGRESS_BLOCK_PRIVATE must stay true in production (SSRF guard).")
+            problems.append("FORGE_EGRESS_BLOCK_PRIVATE must stay true outside dev (SSRF guard).")
         if self.database_url.startswith("sqlite"):
-            problems.append("SQLite is not supported in production — set a Postgres FORGE_DATABASE_URL.")
+            problems.append("SQLite is not supported outside dev — set a Postgres FORGE_DATABASE_URL.")
+        if self.checkpoint_backend not in ("postgres",):
+            problems.append(
+                "FORGE_CHECKPOINT_BACKEND must be 'postgres' outside dev — a sqlite/memory "
+                "checkpointer loses run/HITL state on restart and can't be shared across workers."
+            )
+        if self.enable_code_tools and not self.allow_unsandboxed_code_tools:
+            problems.append(
+                "FORGE_ENABLE_CODE_TOOLS is on but code execution is not OS-isolated. Disable it, "
+                "or set FORGE_ALLOW_UNSANDBOXED_CODE_TOOLS=true to explicitly accept the RCE/DoS risk."
+            )
         return problems
+
+    def startup_warnings(self) -> list[str]:
+        """Non-fatal but dangerous configuration, logged loudly at startup regardless of
+        environment so an insecure local default is never silently shipped."""
+        warns: list[str] = []
+        if self.jwt_secret == "dev-insecure-change-me":
+            warns.append("JWT secret is the built-in dev default — tokens are forgeable. Set FORGE_JWT_SECRET.")
+        if self.bootstrap_admin_password == "forge-admin":
+            warns.append("Bootstrap admin password is the dev default. Set FORGE_BOOTSTRAP_ADMIN_PASSWORD.")
+        if not self.auth_required:
+            warns.append("auth_required is false — unauthenticated requests act as the workspace owner.")
+        if self.enable_code_tools:
+            warns.append("Code tools are enabled and run unsandboxed (RestrictedPython only).")
+        if self.environment.lower() not in (*self._DEV_ENVIRONMENTS, "production", "prod", "staging"):
+            warns.append(f"Unrecognized FORGE_ENVIRONMENT={self.environment!r} — treated as security-enforced.")
+        return warns
 
 
 @lru_cache

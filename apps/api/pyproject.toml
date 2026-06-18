@@ -66,6 +66,9 @@ mcp = ["langchain-mcp-adapters>=0.2,<1", "mcp>=1.9", "fastmcp>=3,<4"]
 # Background workers + cache (prod). Local default uses in-process fakes.
 # croniter powers cron `schedule` triggers (interval schedules need nothing extra).
 workers = ["redis>=5,<7", "arq>=0.26,<1", "croniter>=2,<6"]
+# Durable Postgres checkpointer + async driver (prod run/HITL state, shared across workers).
+# Set FORGE_CHECKPOINT_BACKEND=postgres and FORGE_DATABASE_URL to a postgresql+asyncpg URL.
+postgres = ["langgraph-checkpoint-postgres>=2,<5", "psycopg[binary,pool]>=3.2", "asyncpg>=0.30"]
 # OpenTelemetry export (point at an OTLP collector or Langfuse). Opt-in: no-op if absent.
 observability = [
   "opentelemetry-sdk>=1.20",

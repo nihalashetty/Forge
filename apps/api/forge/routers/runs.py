@@ -9,8 +9,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
 from forge.config import settings
-from forge.deps import current_tenant_id, get_run_service, get_session
+from forge.deps import (
+    CurrentUser,
+    current_tenant_id,
+    get_current_user,
+    get_run_service,
+    get_session,
+)
 from forge.schemas.dto import ResumeIn, RunCreate, RunOut
+from forge.services.auth import role_at_least
 from forge.services.runs import RunService
 from forge.util.ratelimit import idempotency, rate_limiter
 
@@ -28,10 +35,11 @@ async def create_run(
     workflow_id: str,
     body: RunCreate,
     session: AsyncSession = Depends(get_session),
-    tenant_id: str = Depends(current_tenant_id),
+    user: CurrentUser = Depends(get_current_user),
     run_service: RunService = Depends(get_run_service),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ):
+    tenant_id = user.tenant_id
     # Idempotency: a retried POST with the same key returns the original run instead
     # of starting a duplicate (important for at-least-once callers / channel webhooks).
     if idempotency_key:
@@ -44,21 +52,44 @@ async def create_run(
     if not rate_limiter.allow(f"runs:{tenant_id}", rate=settings.run_rate_limit_per_minute, per=60):
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "run rate limit exceeded; slow down")
 
-    # Per-tenant DAILY quota (runs / cost / tokens), from tenant.settings.
-    from forge.services.quota import QuotaExceeded, check_run_quota
+    # Resolve the end-user identity (Phase 3b): a verified session token (browser widget)
+    # wins; else the body end_user. Body identity is only fully trusted for editor+ callers
+    # (server-to-server integrators); a lower-privilege console user may NOT self-assert
+    # roles/entitlements that gate tools (audit S4) — those fields are stripped.
+    end_user = None
+    if body.session_token:
+        from forge.security import TokenError, decode_token
+
+        try:
+            claims = decode_token(body.session_token, expected_type="session")
+        except TokenError as e:
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, f"invalid session token: {e}") from e
+        if claims.get("tid") != tenant_id or claims.get("pid") != project_id:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "session token is not valid for this project")
+        end_user = claims.get("end_user") or None
+    elif body.end_user is not None:
+        end_user = body.end_user.model_dump(exclude_none=True)
+        if not role_at_least(user.role, "editor"):
+            for privileged in ("roles", "entitlements"):
+                if end_user.pop(privileged, None) is not None:
+                    pass  # silently dropped — a viewer can't escalate via the run body
+
+    # Per-tenant DAILY quota, enforced atomically with run creation so concurrent POSTs
+    # can't all pass a stale pre-insert count (audit F2).
+    from forge.services.quota import QuotaExceeded, run_admission
     try:
-        await check_run_quota(session, tenant_id)
+        async with run_admission(session, tenant_id):
+            run = await run_service.create_run(
+                session,
+                tenant_id=tenant_id,
+                project_id=project_id,
+                workflow_id=workflow_id,
+                input=body.input or {},
+                thread_id=body.thread_id,
+                end_user=end_user,
+            )
     except QuotaExceeded as e:
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, e.message) from e
-
-    run = await run_service.create_run(
-        session,
-        tenant_id=tenant_id,
-        project_id=project_id,
-        workflow_id=workflow_id,
-        input=body.input or {},
-        thread_id=body.thread_id,
-    )
     out = RunOut(id=run.id, status=run.status, thread_id=run.thread_id)
     if idempotency_key:
         idempotency.put(f"run:{tenant_id}:{idempotency_key}", out)
@@ -74,7 +105,7 @@ async def stream_run(
     run_service: RunService = Depends(get_run_service),
 ):
     async def event_gen():
-        async for frame in run_service.stream(run_id=run_id, tenant_id=tenant_id):
+        async for frame in run_service.stream(run_id=run_id, tenant_id=tenant_id, project_id=project_id):
             yield {"event": frame["event"], "data": json.dumps(frame["data"], default=str)}
 
     return EventSourceResponse(event_gen(), headers=SSE_HEADERS)
@@ -112,4 +143,4 @@ async def resume_run(
     tenant_id: str = Depends(current_tenant_id),
     run_service: RunService = Depends(get_run_service),
 ):
-    return await run_service.resume(run_id=run_id, tenant_id=tenant_id, value=body.value)
+    return await run_service.resume(run_id=run_id, tenant_id=tenant_id, value=body.value, project_id=project_id)

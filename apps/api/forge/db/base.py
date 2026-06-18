@@ -59,6 +59,7 @@ def _ensure_new_columns(conn) -> None:
         "triggers": {"metadata": "JSON DEFAULT '{}'"},
         "agents": {"created_by": "VARCHAR(36)", "created_by_email": "VARCHAR(320)"},
         "mcp_clients": {"disabled_tools": "JSON DEFAULT '[]'"},
+        "projects": {"embed_key": "VARCHAR(64)"},
     }
     inspector = inspect(conn)
     for table, columns in wanted.items():

@@ -22,7 +22,7 @@ from forge.db.base import SessionLocal
 from forge.models import AuthProvider
 from forge.secrets.store import SecretStore
 from forge.util.http import shared_async_client
-from forge.util.ssrf import validate_url
+from forge.util.ssrf import guarded_request
 
 
 @dataclass
@@ -140,9 +140,10 @@ class AuthResolver:
             data["scope"] = cfg["scope"]
         if cfg.get("audience"):
             data["audience"] = cfg["audience"]
-        await validate_url(cfg["token_url"])
         client = client or shared_async_client()
-        r = await client.post(cfg["token_url"], data=data, timeout=30)
+        # SSRF-guarded (host validated pre-connect + every redirect hop) so a tenant-configured
+        # token_url can't be aimed at an internal/metadata endpoint while carrying secrets (S8).
+        r = await guarded_request(client, "POST", cfg["token_url"], data=data, timeout=30, follow_redirects=True)
         r.raise_for_status()
         body = r.json()
         token = body.get("access_token", "")
@@ -185,9 +186,11 @@ class AuthResolver:
             "client_id": await read(cfg.get("client_id_ref")),
             "client_secret": await read(cfg.get("client_secret_ref")),
         }
-        await validate_url(cfg["token_url"])
         client = client or shared_async_client()
-        r = await client.post(cfg["token_url"], data={k: v for k, v in data.items() if v is not None}, timeout=30)
+        r = await guarded_request(
+            client, "POST", cfg["token_url"],
+            data={k: v for k, v in data.items() if v is not None}, timeout=30, follow_redirects=True,
+        )
         r.raise_for_status()
         body = r.json()
         new = dict(bundle)
@@ -201,10 +204,10 @@ class AuthResolver:
 
     async def _csrf_session(self, cfg: dict, vars: dict, client: httpx.AsyncClient | None, default_ttl: int) -> ResolvedAuth:
         fetch = render_value(cfg["token_fetch"], vars)
-        await validate_url(fetch["url"])
         client = client or shared_async_client()
-        r = await client.request(
-            fetch["method"], fetch["url"], headers=fetch.get("headers"), json=fetch.get("body"), timeout=30
+        r = await guarded_request(
+            client, fetch["method"], fetch["url"],
+            headers=fetch.get("headers"), json=fetch.get("body"), timeout=30, follow_redirects=True,
         )
         r.raise_for_status()
 

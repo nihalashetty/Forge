@@ -164,6 +164,10 @@ def validate_workflow(definition: dict) -> ValidationResult:
     # node writes will ALWAYS take its default path — the single most common wiring bug.
     _warn_router_writers(res, nodes)
 
+    # Trigger sanity: a webhook marked "signed" with no resolvable secret rejects EVERY
+    # request; flag it at publish rather than failing silently at request time (feature/F4).
+    _warn_webhook_signing(res, nodes)
+
     if entry in node_ids:
         adj = _adjacency(definition)
         reachable: set[str] = set()
@@ -248,6 +252,20 @@ def _warn_router_writers(res: ValidationResult, nodes: list) -> None:
                         f"{sorted(known)}. Case keys must be the VALUE, not a label.",
                         node_id=n.get("id"),
                     )
+
+
+def _warn_webhook_signing(res: ValidationResult, nodes: list) -> None:
+    for i, n in enumerate(nodes):
+        if not (isinstance(n, dict) and n.get("type") == "webhook_in"):
+            continue
+        cfg = n.get("config", {}) or {}
+        if cfg.get("require_signature") and not cfg.get("secret_ref"):
+            res.warn(
+                f"/nodes/{i}/config/secret_ref",
+                "Webhook requires a signature but no secret_ref is set — every inbound request "
+                "will be REJECTED. Set the HMAC secret, or turn off require_signature.",
+                node_id=n.get("id"),
+            )
 
 
 def _validate_mw(res: ValidationResult, stack: list, base_pointer: str) -> None:

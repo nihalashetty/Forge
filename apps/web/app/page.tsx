@@ -7,6 +7,8 @@ import { PlaygroundScreen } from "@/components/screens/playground";
 import { ToolsScreen, ToolBuilderScreen } from "@/components/screens/tools";
 import { WorkflowsScreen, WorkflowCanvas } from "@/components/screens/workflows";
 import { AgentsScreen, AgentConfigScreen } from "@/components/screens/agents";
+import { ComponentsScreen, ComponentBuilderScreen } from "@/components/screens/components";
+import { EmbedScreen } from "@/components/screens/embed";
 import { KnowledgeScreen } from "@/components/screens/knowledge";
 import { TracesScreen } from "@/components/screens/traces";
 import { AuthProvidersScreen } from "@/components/screens/auth";
@@ -15,7 +17,7 @@ import { ConnectScreen } from "@/components/screens/deploy";
 import { McpClientsScreen } from "@/components/screens/mcp";
 import { ChannelsScreen, TriggersScreen, DatasetsScreen, HandoffScreen } from "@/components/screens/platform";
 import { Icon } from "@/components/icons";
-import { api, Agent, Project, Tool, Workflow } from "@/lib/api";
+import { api, Agent, ComponentT, Project, Tool, Workflow } from "@/lib/api";
 import { groundedWorkflow } from "@/lib/graph";
 import { spark } from "@/lib/data";
 import { AuthGate } from "@/components/login";
@@ -24,13 +26,13 @@ type View = { name: "dashboard" | "onboarding" | "project"; project?: string; sc
 
 const SCREEN_LABEL: Record<string, string> = {
   overview: "Overview", workflows: "Workflows", "workflow-canvas": "Support Router",
-  agents: "Agents", "agent-config": "billing_agent", tools: "Tools", "tool-builder": "Tool",
+  agents: "Agents", "agent-config": "billing_agent", tools: "Tools", "tool-builder": "Tool", components: "Components", "component-builder": "Component",
   auth: "Auth Providers", knowledge: "Knowledge", playground: "Playground", traces: "Traces",
   connect: "Connect", mcp: "External MCP", settings: "Settings",
-  channels: "Channels", triggers: "Triggers", datasets: "Evaluations", handoff: "Agent inbox",
+  channels: "Channels", triggers: "Triggers", datasets: "Evaluations", handoff: "Agent inbox", embed: "Embed",
 };
 const PARENT: Record<string, [string, string]> = {
-  "workflow-canvas": ["workflows", "Workflows"], "agent-config": ["agents", "Agents"], "tool-builder": ["tools", "Tools"],
+  "workflow-canvas": ["workflows", "Workflows"], "agent-config": ["agents", "Agents"], "tool-builder": ["tools", "Tools"], "component-builder": ["components", "Components"],
 };
 
 function App() {
@@ -43,6 +45,7 @@ function App() {
   const [selTool, setSelTool] = useState<Tool | null>(null);
   const [selWorkflow, setSelWorkflow] = useState<Workflow | null>(null);
   const [selAgent, setSelAgent] = useState<Agent | null>(null);
+  const [selComponent, setSelComponent] = useState<ComponentT | null>(null);
   const [refreshNonce, setRefreshNonce] = useState(0);
   const [projStats, setProjStats] = useState<Record<string, { workflows: number; tools: number; runs_7d: number }>>({});
 
@@ -106,6 +109,7 @@ function App() {
         view.screen === "tool-builder" && selTool ? selTool.name :
         view.screen === "workflow-canvas" && selWorkflow ? selWorkflow.name :
         view.screen === "agent-config" && selAgent ? selAgent.name :
+        view.screen === "component-builder" && selComponent ? selComponent.name :
         SCREEN_LABEL[view.screen] || view.screen;
       crumbs.push({ label: leaf });
     }
@@ -186,6 +190,8 @@ function App() {
         case "agent-config": return <AgentConfigScreen project={project} agentId={selAgent?.id} onBack={() => navScreen("agents")} />;
         case "tools": return <ToolsScreen project={project} onOpen={(t) => { setSelTool(t); navScreen("tool-builder"); }} />;
         case "tool-builder": return <ToolBuilderScreen project={project} toolId={selTool?.id} onBack={() => navScreen("tools")} />;
+        case "components": return <ComponentsScreen project={project} onOpen={(c) => { setSelComponent(c); navScreen("component-builder"); }} />;
+        case "component-builder": return <ComponentBuilderScreen project={project} componentId={selComponent?.id} onBack={() => navScreen("components")} />;
         case "auth": return <AuthProvidersScreen project={project} />;
         case "mcp": return <McpClientsScreen project={project} />;
         case "knowledge": return <KnowledgeScreen project={project} />;
@@ -195,6 +201,7 @@ function App() {
         case "handoff": return <HandoffScreen project={project} />;
         case "traces": return <TracesScreen project={project} />;
         case "connect": return <ConnectScreen project={project} />;
+        case "embed": return <EmbedScreen project={project} />;
         case "settings": return <SettingsScreen project={project} />;
         default: return <OverviewScreen project={project} onNav={navScreen} />;
       }
@@ -206,7 +213,8 @@ function App() {
   const sidebarActive =
     view.screen === "workflow-canvas" ? "workflows" :
     view.screen === "agent-config" ? "agents" :
-    view.screen === "tool-builder" ? "tools" : (view.screen || "overview");
+    view.screen === "tool-builder" ? "tools" :
+    view.screen === "component-builder" ? "components" : (view.screen || "overview");
 
   return (
     <div style={{ display: "flex", height: "100vh", overflow: "hidden" }}>

@@ -5,19 +5,22 @@ import { Icon } from "../icons";
 import { Field, Modal, Segmented, Tile, Toggle } from "../primitives";
 import { FieldsForm, MW_FIELDS, MultiSelectChips } from "./ConfigForm";
 import { MODELS, MIDDLEWARE_CATALOG, MW_META } from "@/lib/data";
-import type { Agent, McpClientT, Tool } from "@/lib/api";
+import type { Agent, ComponentT, McpClientT, Tool } from "@/lib/api";
 
 type Cfg = Record<string, any>;
 type MW = { type: string; enabled?: boolean; config?: Record<string, any> };
 
-export function AgentConfig({ config, onChange, tools = [], agents = [], folders = [], kinds = [], mcpServers = [] }: { config: Cfg; onChange: (c: Cfg) => void; tools?: Tool[]; agents?: Agent[]; folders?: string[]; kinds?: string[]; mcpServers?: McpClientT[] }) {
+export function AgentConfig({ config, onChange, tools = [], agents = [], folders = [], kinds = [], mcpServers = [], components = [] }: { config: Cfg; onChange: (c: Cfg) => void; tools?: Tool[]; agents?: Agent[]; folders?: string[]; kinds?: string[]; mcpServers?: McpClientT[]; components?: ComponentT[] }) {
   const set = (patch: Cfg) => onChange({ ...config, ...patch });
   const flavor = config.flavor || "agent";
   const selectedTools: string[] = config.tools || [];
+  const selectedComponents: string[] = config.components || [];
   const mwCount = (config.middleware || []).filter((m: MW) => m.enabled !== false).length;
 
   const toggleTool = (id: string) =>
     set({ tools: selectedTools.includes(id) ? selectedTools.filter((t) => t !== id) : [...selectedTools, id] });
+  const toggleComponent = (id: string) =>
+    set({ components: selectedComponents.includes(id) ? selectedComponents.filter((c) => c !== id) : [...selectedComponents, id] });
 
   // Built-in knowledge access — compiles to agent-callable RAG / Q&A tools (see
   // tools/builtin.py build_knowledge_capability_tools). Each capability is independent.
@@ -107,6 +110,23 @@ export function AgentConfig({ config, onChange, tools = [], agents = [], folders
           })}
         </div>
       </CollapsibleSection>
+
+      {components.length > 0 && (
+        <CollapsibleSection label="Components" badge={selectedComponents.length ? `${selectedComponents.length} selected` : undefined}
+          hint="UI widgets this agent can render in chat — it calls one like a tool and the client draws the saved template.">
+          <div className="row gap2 wrap">
+            {components.map((c) => {
+              const on = selectedComponents.includes(c.id);
+              return (
+                <button key={c.id} className="chip" onClick={() => toggleComponent(c.id)}
+                  style={{ cursor: "pointer", borderColor: on ? "var(--accent)" : "var(--line)", color: on ? "var(--accent)" : "var(--fg-1)", background: on ? "var(--accent-glow)" : "var(--bg-3)" }}>
+                  {on && <Icon name="check" size={12} />}<span className="mono-sm">{c.name}</span>
+                </button>
+              );
+            })}
+          </div>
+        </CollapsibleSection>
+      )}
 
       <CollapsibleSection label="Knowledge" badge={knowledge.rag?.enabled ? "enabled" : undefined}
         hint="Give this agent built-in RAG over your documents — it searches per sub-question, so one agent can answer multi-part questions.">

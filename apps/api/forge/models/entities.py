@@ -12,7 +12,17 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, Float, ForeignKey, Integer, LargeBinary, String, Text
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Float,
+    ForeignKey,
+    Integer,
+    LargeBinary,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from forge.db.base import Base, PkTimestamp
@@ -45,6 +55,10 @@ class Project(PkTimestamp, Base):
     config: Mapped[dict] = mapped_column(JSON, default=dict)
     status: Mapped[str] = mapped_column(String(20), default="active")  # active|draft
     archived: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Public, safe-to-embed key for the chat widget (Phase 3b/4), indexed for O(1) lookup by
+    # the public /v1/embed/{key} routes. None until embedding is enabled; the rest of the embed
+    # settings (enabled, allowed_origins, workflow_id) live in config["embed"].
+    embed_key: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
 
 
 class Workflow(PkTimestamp, Base):
@@ -70,6 +84,33 @@ class Tool(PkTimestamp, Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     version: Mapped[int] = mapped_column(Integer, default=1)
     last_tested: Mapped[str | None] = mapped_column(String(20), nullable=True)  # pass|fail|untested
+
+
+class Component(PkTimestamp, Base):
+    """A user-authored UI component (Feature 2 — generative UI): saved HTML + CSS,
+    declarative button `actions`, and a JSON-Schema for the `props` the agent supplies.
+    Attached to agents like tools (agent config["components"]); at runtime each becomes a
+    widget-tool that, when called, emits a `component` stream frame for the client to
+    render — so the markup never enters the model's token stream, only the props do."""
+
+    __tablename__ = "components"
+    # The name is used verbatim as the LLM tool name → unique per project so two components
+    # can't shadow each other's widget (audit M2). Enforced on fresh DBs; the router also
+    # pre-checks for the existing-table case (create_all won't add a constraint after the fact).
+    __table_args__ = (UniqueConstraint("tenant_id", "project_id", "name", name="uq_component_tenant_project_name"),)
+    tenant_id: Mapped[str] = mapped_column(String(36), index=True)
+    project_id: Mapped[str] = mapped_column(String(36), index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    title: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    props_schema: Mapped[dict] = mapped_column(JSON, default=dict)
+    html: Mapped[str] = mapped_column(Text, default="")
+    css: Mapped[str] = mapped_column(Text, default="")
+    actions: Mapped[list] = mapped_column(JSON, default=list)
+    sample_props: Mapped[dict] = mapped_column(JSON, default=dict)
+    kind: Mapped[str] = mapped_column(String(20), default="html")  # html (sandboxed) | declarative (future)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
 
 
 class Agent(PkTimestamp, Base):

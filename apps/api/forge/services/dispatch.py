@@ -8,12 +8,31 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
+from sqlalchemy import select
+
 from forge.db.base import SessionLocal
-from forge.models import Trigger
+from forge.models import Thread, Trigger
 from forge.services.runs import RunService
 from forge.services.triggers import TriggerService
 
 log = logging.getLogger("forge.dispatch")
+
+
+def _channel_thread_key(conversation_key: str) -> str:
+    return f"ch:{conversation_key}"
+
+
+async def _find_channel_thread(s, tenant_id: str, workflow_id: str, conversation_key: str) -> str | None:
+    """Find the persisted Thread for a channel conversation so multi-turn email/Teams
+    conversations keep history through the checkpointer (audit F6)."""
+    row = (await s.execute(
+        select(Thread).where(
+            Thread.tenant_id == tenant_id,
+            Thread.workflow_id == workflow_id,
+            Thread.user_external_id == _channel_thread_key(conversation_key),
+        ).order_by(Thread.updated_at.desc())
+    )).scalars().first()
+    return row.id if row else None
 
 
 async def dispatch_trigger(run_service: RunService, trigger: Trigger, payload) -> dict:
@@ -30,24 +49,44 @@ async def dispatch_trigger(run_service: RunService, trigger: Trigger, payload) -
         if t is not None:
             t.last_fired_at = datetime.utcnow()
             await s.commit()
-    result = await run_service.run_to_completion(run_id=run_id, tenant_id=trigger.tenant_id)
-    return result
+    # Offload to the worker queue when configured (webhook/schedule need no synchronous
+    # reply); otherwise run inline. Either way per-tenant concurrency is bounded (audit P1).
+    from forge.queue import enqueue_run
+    if await enqueue_run(run_id, trigger.tenant_id, trigger.project_id):
+        return {"run_id": run_id, "status": "queued", "queued": True}
+    return await run_service.run_to_completion(
+        run_id=run_id, tenant_id=trigger.tenant_id, project_id=trigger.project_id,
+    )
 
 
 async def dispatch_message(
     run_service: RunService, *, tenant_id: str, project_id: str, workflow_id: str,
-    text: str, thread_id: str | None = None,
+    text: str, thread_id: str | None = None, conversation_key: str | None = None,
 ) -> dict:
     """Run `workflow_id` with a single user `text` (used by channels: email/teams).
-    Pass `thread_id` to continue a conversation (the checkpointer holds history)."""
+
+    `conversation_key` (the provider's stable conversation id) maps the inbound message to
+    a persisted Thread so a multi-turn conversation keeps its history via the checkpointer
+    (audit F6) — otherwise every message would start a fresh, context-free thread."""
     run_input = {"messages": [{"role": "user", "content": text or ""}]}
+    if thread_id is None and conversation_key:
+        async with SessionLocal() as s:
+            thread_id = await _find_channel_thread(s, tenant_id, workflow_id, conversation_key)
+    new_thread = thread_id is None
     async with SessionLocal() as s:
         run = await run_service.create_run(
             s, tenant_id=tenant_id, project_id=project_id, workflow_id=workflow_id,
             input=run_input, thread_id=thread_id,
         )
         run_id, run_thread_id = run.id, run.thread_id
-    result = await run_service.run_to_completion(run_id=run_id, tenant_id=tenant_id)
+        # Tag a freshly-created thread with the conversation key so the next inbound message
+        # on the same conversation continues it.
+        if conversation_key and new_thread:
+            th = await s.get(Thread, run_thread_id)
+            if th is not None and not th.user_external_id:
+                th.user_external_id = _channel_thread_key(conversation_key)
+                await s.commit()
+    result = await run_service.run_to_completion(run_id=run_id, tenant_id=tenant_id, project_id=project_id)
     result["thread_id"] = run_thread_id
     result["workflow_id"] = workflow_id
     return result
@@ -93,7 +132,6 @@ async def _poll_app_event(run_service: RunService, trig) -> int:
 
     import jmespath
 
-    from forge.models import Trigger
     from forge.util.http import shared_async_client
     from forge.util.ssrf import validate_url
 
@@ -101,6 +139,19 @@ async def _poll_app_event(run_service: RunService, trig) -> int:
     url = cfg.get("poll_url")
     if not url:
         return 0
+
+    # Claim this tick atomically BEFORE doing any work: re-check due + stamp last_fired_at
+    # in one transaction so an overlapping scheduler tick can't re-enter and double-dispatch
+    # the same items (audit F9). Read the seen-set under the same read.
+    async with SessionLocal() as s:
+        t = await s.get(Trigger, trig.id)
+        if t is None or not TriggerService.is_due(t):
+            return 0  # already claimed by another tick / no longer due
+        first_poll = t.last_fired_at is None
+        seen = set((t.meta or {}).get("seen", []))
+        t.last_fired_at = datetime.utcnow()
+        await s.commit()
+
     await validate_url(url)
     method = (cfg.get("method") or "GET").upper()
     r = await shared_async_client().request(method, url, timeout=20, follow_redirects=True)
@@ -123,18 +174,26 @@ async def _poll_app_event(run_service: RunService, trig) -> int:
             return str(jmespath.search(dedupe, item))
         return json.dumps(item, sort_keys=True, default=str)
 
-    seen = set((trig.meta or {}).get("seen", []))
-    first_poll = trig.last_fired_at is None
-    new_seen = list((trig.meta or {}).get("seen", []))
     new_items = []
+    new_keys: list[str] = []
     for item in items:
         k = _key(item)
         if k in seen:
             continue
         seen.add(k)
-        new_seen.append(k)
+        new_keys.append(k)
         new_items.append(item)
-    new_seen = new_seen[-1000:]  # cap dedupe memory
+
+    # Persist the updated seen-set, merging with any concurrent writer's keys (read-modify-
+    # write under a fresh read) so a lost update can't resurrect already-dispatched items.
+    if new_keys:
+        async with SessionLocal() as s:
+            t = await s.get(Trigger, trig.id)
+            if t is not None:
+                cur = set((t.meta or {}).get("seen", []))
+                cur.update(new_keys)
+                t.meta = {**(t.meta or {}), "seen": list(cur)[-1000:]}  # cap dedupe memory
+                await s.commit()
 
     count = 0
     # First poll only baselines the seen-set (don't replay history).
@@ -147,12 +206,4 @@ async def _poll_app_event(run_service: RunService, trig) -> int:
                 workflow_id=trig.workflow_id, text=str(text),
             )
             count += 1
-
-    from datetime import datetime
-    async with SessionLocal() as s:
-        t = await s.get(Trigger, trig.id)
-        if t is not None:
-            t.meta = {**(t.meta or {}), "seen": new_seen}
-            t.last_fired_at = datetime.utcnow()
-            await s.commit()
     return count

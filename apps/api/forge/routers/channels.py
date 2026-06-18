@@ -110,13 +110,15 @@ def _handoff_reason(result: dict) -> str | None:
 
 
 async def _maybe_open_handoff(ch, result: dict, *, customer, customer_message, reply_context) -> str | None:
-    """If the run paused at a handoff interrupt, open a HandoffRequest. Returns the
-    customer-facing acknowledgement (if any)."""
+    """If the run paused at an interrupt, open a HandoffRequest and return a customer-facing
+    acknowledgement. A text channel (email/Teams) can't resume an HITL pause inline, so ANY
+    interrupt — explicit handoff OR an approval/input pause — must be tracked and acknowledged
+    rather than falling through to a stale/empty partial answer (audit F8)."""
     if not result.get("interrupted"):
         return None
-    reason = _handoff_reason(result)
-    if reason is None:
-        return None  # interrupted for some other reason (e.g. approval HITL)
+    reason = _handoff_reason(result) or (
+        "Conversation paused awaiting input/approval — a team member will follow up."
+    )
     from forge.services.handoff import HandoffService
     async with SessionLocal() as s:
         await HandoffService.create(
@@ -146,8 +148,10 @@ async def email_inbound(key: str, request: Request, run_service: RunService = De
         payload = dict(form)
     parsed = email_ch.parse_inbound(payload)
     text = email_ch.build_input_text(parsed, include_subject=(ch.config or {}).get("include_subject", True))
+    # Continue the same email thread across replies so the conversation keeps context (F6).
+    conv_key = parsed.get("thread_ref") or (parsed.get("from_addr") or None)
     result = await dispatch_message(run_service, tenant_id=ch.tenant_id, project_id=ch.project_id,
-                                    workflow_id=workflow_id, text=text)
+                                    workflow_id=workflow_id, text=text, conversation_key=conv_key)
     ack = await _maybe_open_handoff(ch, result, customer=parsed.get("from_addr"), customer_message=text, reply_context=parsed)
     reply_text = ack or result.get("answer")
     if (ch.config or {}).get("reply", True) and reply_text:
@@ -169,7 +173,7 @@ async def teams_messages(key: str, request: Request, run_service: RunService = D
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "rate limit exceeded")
     result = await dispatch_message(run_service, tenant_id=ch.tenant_id, project_id=ch.project_id,
                                     workflow_id=workflow_id, text=parsed["text"],
-                                    thread_id=None)
+                                    conversation_key=parsed.get("conversation_id"))
     ack = await _maybe_open_handoff(ch, result, customer=parsed.get("from_name"), customer_message=parsed["text"], reply_context=parsed)
     reply_text = ack or result.get("answer")
     if reply_text:

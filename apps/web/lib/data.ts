@@ -352,6 +352,7 @@ export const PROJECT_NAV: NavEntry[] = [
     { id: "workflows", label: "Workflows", icon: "workflows", countKey: "workflows", help: "The visual canvas — wire nodes (agents, tools, routers, triggers) into a graph." },
     { id: "agents", label: "Agents", icon: "agents", countKey: "agents", help: "Reusable agent presets (model + prompt + tools + middleware) to drop into workflows." },
     { id: "tools", label: "Tools", icon: "tools", countKey: "tools", help: "Capabilities an agent can call: REST, GraphQL, Code, SQL, or built-ins." },
+    { id: "components", label: "Components", icon: "grid", countKey: "components", help: "User-defined UI widgets (HTML/CSS) an agent can render in chat — tables, cards, forms, actions." },
     { id: "knowledge", label: "Knowledge", icon: "knowledge", countKey: "knowledge", help: "Documents + Q&A pairs that ground answers (RAG). Add text, URLs, files, or crawl a site." },
     { id: "auth", label: "Auth Providers", icon: "auth", countKey: "auth", help: "Reusable credential strategies (Bearer, API key, OAuth, CSRF) that tools attach to." },
     { id: "mcp", label: "External MCP", icon: "connect", help: "Connect external MCP servers (GitHub, Slack, …) and toggle which of their tools agents and workflows can use." },
@@ -360,6 +361,7 @@ export const PROJECT_NAV: NavEntry[] = [
     { id: "channels", label: "Channels", icon: "msg", help: "Deploy a workflow to a surface: email or Microsoft Teams." },
     { id: "triggers", label: "Triggers", icon: "bolt", help: "Event-driven entry points — webhook URLs, schedules, and pollers that start runs." },
     { id: "connect", label: "Connect (MCP)", icon: "connect", help: "Expose this project's tools as an MCP server, and register external MCP servers to consume." },
+    { id: "embed", label: "Embed", icon: "grid", help: "Embed this project's chatbot as a widget on any website (publishable key + allowed origins)." },
   ] },
   { section: "Observe", items: [
     { id: "traces", label: "Traces", icon: "traces", help: "Per-run span waterfall with model calls, tokens, latency, and cost." },

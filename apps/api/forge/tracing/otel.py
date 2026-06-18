@@ -27,11 +27,15 @@ def configure(exporter=None) -> bool:
     try:
         from opentelemetry.sdk.resources import Resource
         from opentelemetry.sdk.trace import TracerProvider
-        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcessor
     except Exception:  # noqa: BLE001 - SDK missing
         log.warning("opentelemetry SDK not available; OTel export disabled")
         return False
 
+    # A test-injected exporter (e.g. in-memory) needs SimpleSpanProcessor so spans are
+    # visible synchronously; the real OTLP exporter uses BatchSpanProcessor so per-span
+    # network export never blocks a run on the request path (audit P-imp).
+    test_injected = exporter is not None
     if exporter is None:
         if not (settings.otel_enabled and settings.otel_exporter_otlp_endpoint):
             return False
@@ -43,7 +47,8 @@ def configure(exporter=None) -> bool:
             return False
 
     _provider = TracerProvider(resource=Resource.create({"service.name": settings.otel_service_name}))
-    _provider.add_span_processor(SimpleSpanProcessor(exporter))
+    processor = SimpleSpanProcessor(exporter) if test_injected else BatchSpanProcessor(exporter)
+    _provider.add_span_processor(processor)
     _tracer = _provider.get_tracer("forge")
     return True
 
