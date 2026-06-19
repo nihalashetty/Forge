@@ -8,10 +8,9 @@ import { api, openSSE, type Workflow, type ComponentT } from "@/lib/api";
 import { fmtUSD } from "@/lib/data";
 import { ComponentRenderer } from "../component-renderer";
 import { Markdown } from "../markdown";
+import { ReplyAccumulator, type Part, type ComponentInstance } from "@/lib/chat-parts";
 import Mustache from "mustache";
 
-interface ComponentInstance { component_id: string; instance_id?: string; name?: string; version?: number; props?: Record<string, any>; actions?: Record<string, any>[] }
-type Part = { kind: "text"; text: string } | { kind: "component"; inst: ComponentInstance };
 interface TestMsg { role: "user" | "assistant"; content?: string; parts?: Part[] }
 
 export function WorkflowTestPanel({
@@ -72,17 +71,11 @@ export function WorkflowTestPanel({
     setLiveParts([]);
     onResetRun();
     onRunningChange(true);
-    let buffer = "";
     let finalAnswer = "";
     let lastNode: string | null = null;
-    // Ordered reply parts (text + components interleaved as produced) so a rendered
-    // component lands in its correct place within the reply.
-    const parts: Part[] = [];
-    const pushText = (s: string) => {
-      const last = parts[parts.length - 1];
-      if (last && last.kind === "text") last.text += s;
-      else parts.push({ kind: "text", text: s });
-    };
+    // Components are positioned by the [[forge:component:ID]] markers the agent writes into its
+    // reply (not by frame-arrival order), so a widget lands in its natural place, not at the top.
+    const acc = new ReplyAccumulator();
 
     try {
       await onBeforeRun();
@@ -96,10 +89,9 @@ export function WorkflowTestPanel({
       await openSSE(api.runStreamUrl(project.id, workflow.id, run.id), (f) => {
         if (!activeRef.current) return;
         if (f.event === "messages" && f.data?.content) {
-          buffer += f.data.content;
-          setStreaming(buffer);
-          pushText(f.data.content);
-          setLiveParts([...parts]);
+          acc.addText(f.data.content);
+          setStreaming(acc.text);
+          setLiveParts(acc.parts({ streaming: true }));
         } else if (f.event === "node_start" && f.data?.node) {
           const node = f.data.node;
           lastNode = node;
@@ -115,8 +107,8 @@ export function WorkflowTestPanel({
           onNodeStep(node, "done", output);
           if (lastNode === node) lastNode = null;
         } else if (f.event === "custom" && f.data?.channel === "component" && f.data?.payload) {
-          parts.push({ kind: "component", inst: f.data.payload as ComponentInstance });
-          setLiveParts([...parts]);
+          acc.addComponent(f.data.payload as ComponentInstance);
+          setLiveParts(acc.parts({ streaming: true }));
         } else if (f.event === "done") {
           finalAnswer = f.data?.answer || "";
           setMeter({ tokens: f.data?.total_tokens ?? 0, cost: f.data?.total_cost_usd ?? 0 });
@@ -142,15 +134,13 @@ export function WorkflowTestPanel({
       }
     }
     if (activeRef.current) {
-      const hasComp = parts.some((p) => p.kind === "component");
-      if (hasComp) {
-        // Don't let a component swallow the authoritative answer / error text (audit H2).
-        const streamedText = parts.filter((p) => p.kind === "text").map((p) => (p as any).text).join("").trim();
-        const fa = (finalAnswer || "").trim();
-        if (fa && fa !== streamedText) parts.push({ kind: "text", text: finalAnswer });
-        setMsgs((m) => [...m, { role: "assistant", parts: parts.filter((p) => p.kind === "component" || (p.kind === "text" && p.text.trim().length > 0)) }]);
+      // resolveText reconciles the streamed buffer with the authoritative answer / error so it's
+      // never dropped (audit H2); markers in it splice components into place.
+      const finalText = acc.resolveText(finalAnswer);
+      if (acc.hasComponents()) {
+        setMsgs((m) => [...m, { role: "assistant", parts: acc.parts({ finalText }) }]);
       } else {
-        setMsgs((m) => [...m, { role: "assistant", content: finalAnswer || buffer || "(no output)" }]);
+        setMsgs((m) => [...m, { role: "assistant", content: finalText || "(no output)" }]);
       }
     }
   }

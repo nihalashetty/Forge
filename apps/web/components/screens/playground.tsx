@@ -7,10 +7,9 @@ import { api, openSSE, Workflow, ComponentT } from "@/lib/api";
 import { fmtUSD } from "@/lib/data";
 import { Markdown } from "../markdown";
 import { ComponentRenderer } from "../component-renderer";
+import { ReplyAccumulator, type Part, type ComponentInstance } from "@/lib/chat-parts";
 import Mustache from "mustache";
 
-interface ComponentInstance { component_id: string; instance_id?: string; name?: string; version?: number; props?: Record<string, any>; actions?: Record<string, any>[] }
-type Part = { kind: "text"; text: string } | { kind: "component"; inst: ComponentInstance };
 interface ChatMsg { role: "user" | "assistant"; content?: string; parts?: Part[] }
 interface Step { node: string }
 
@@ -57,16 +56,11 @@ export function PlaygroundScreen({ project }: { project: any }) {
     if (typeof textArg !== "string") setInput("");
     setMsgs((m) => [...m, { role: "user", content: text }]);
     setStreaming(""); setSteps([]); setMeter(null); setRunning(true); setLiveParts([]);
-    let buffer = "";
     let finalAnswer = "";
-    // The reply is an ordered list of parts (text + components interleaved as the agent
-    // produces them), so a rendered component lands in its correct place in the reply.
-    const parts: Part[] = [];
-    const pushText = (s: string) => {
-      const last = parts[parts.length - 1];
-      if (last && last.kind === "text") last.text += s;
-      else parts.push({ kind: "text", text: s });
-    };
+    // The reply is an ordered list of parts (text + components). Components are positioned by the
+    // [[forge:component:ID]] markers the agent writes into its text — NOT by the order their
+    // frames arrive — so a widget lands in its natural place instead of always at the top.
+    const acc = new ReplyAccumulator();
     try {
       // The thread's checkpointer holds prior turns, so send only the new message when a
       // thread exists; the first turn establishes the thread.
@@ -83,16 +77,15 @@ export function PlaygroundScreen({ project }: { project: any }) {
       const url = api.runStreamUrl(project.id, wf.id, run.id);
       await openSSE(url, (f) => {
         if (f.event === "messages" && f.data?.content) {
-          buffer += f.data.content;
-          setStreaming(buffer);
-          pushText(f.data.content);
-          setLiveParts([...parts]);
+          acc.addText(f.data.content);
+          setStreaming(acc.text);
+          setLiveParts(acc.parts({ streaming: true }));
         } else if ((f.event === "node_start" || f.event === "updates") && f.data) {
           const node = f.event === "node_start" ? f.data.node : Object.keys(f.data || {})[0];
           if (node) setSteps((s) => (s.some((x) => x.node === node) ? s : [...s, { node }]));
         } else if (f.event === "custom" && f.data?.channel === "component" && f.data?.payload) {
-          parts.push({ kind: "component", inst: f.data.payload as ComponentInstance });
-          setLiveParts([...parts]);
+          acc.addComponent(f.data.payload as ComponentInstance);
+          setLiveParts(acc.parts({ streaming: true }));
         } else if (f.event === "done") {
           finalAnswer = f.data?.answer || "";
           setMeter({ tokens: f.data?.total_tokens ?? 0, cost: f.data?.total_cost_usd ?? 0 });
@@ -105,11 +98,10 @@ export function PlaygroundScreen({ project }: { project: any }) {
       });
       if (interrupted) {
         // Preserve anything streamed before the pause (audit M4) — mirror the finalize commit.
-        const hadComp = parts.some((p) => p.kind === "component");
-        if (hadComp || buffer.trim()) {
-          setMsgs((m) => [...m, hadComp
-            ? { role: "assistant", parts: parts.filter((p) => p.kind === "component" || (p.kind === "text" && p.text.trim().length > 0)) }
-            : { role: "assistant", content: buffer }]);
+        if (acc.hasComponents() || acc.text.trim()) {
+          setMsgs((m) => [...m, acc.hasComponents()
+            ? { role: "assistant", parts: acc.parts() }
+            : { role: "assistant", content: acc.text }]);
         }
         setStreaming(""); setRunning(false); setLiveParts([]);
         return; // approval card takes over
@@ -121,16 +113,13 @@ export function PlaygroundScreen({ project }: { project: any }) {
       setRunning(false);
       setLiveParts([]);
     }
-    const hasComp = parts.some((p) => p.kind === "component");
-    if (hasComp) {
-      // Don't let a component swallow the authoritative final answer / error text (audit H2):
-      // if done.answer (or an error) isn't already in the streamed text, append it as a part.
-      const streamedText = parts.filter((p) => p.kind === "text").map((p) => (p as any).text).join("").trim();
-      const fa = (finalAnswer || "").trim();
-      if (fa && fa !== streamedText) parts.push({ kind: "text", text: finalAnswer });
-      setMsgs((m) => [...m, { role: "assistant", parts: parts.filter((p) => p.kind === "component" || (p.kind === "text" && p.text.trim().length > 0)) }]);
+    // resolveText reconciles the streamed buffer with the authoritative final answer / error
+    // (covers non-LLM nodes that don't stream tokens) without dropping it (audit H2).
+    const finalText = acc.resolveText(finalAnswer);
+    if (acc.hasComponents()) {
+      setMsgs((m) => [...m, { role: "assistant", parts: acc.parts({ finalText }) }]);
     } else {
-      setMsgs((m) => [...m, { role: "assistant", content: finalAnswer || buffer || "(no output)" }]);
+      setMsgs((m) => [...m, { role: "assistant", content: finalText || "(no output)" }]);
     }
   }
 

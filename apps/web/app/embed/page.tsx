@@ -10,9 +10,9 @@ import { openSSE } from "@/lib/api";
 import { Markdown } from "@/components/markdown";
 import { ComponentRenderer } from "@/components/component-renderer";
 import { Icon } from "@/components/icons";
+import { ReplyAccumulator, type Part } from "@/lib/chat-parts";
 import Mustache from "mustache";
 
-type Part = { kind: "text"; text: string } | { kind: "component"; inst: any };
 interface Msg { role: "user" | "assistant"; content?: string; parts?: Part[] }
 
 const EMBED = (key: string, path: string) => `/api/forge/v1/embed/${encodeURIComponent(key)}${path}`;
@@ -107,15 +107,11 @@ export default function EmbedWidget() {
     setMsgs((m) => [...m, { role: "user", content: q }]);
     setRunning(true);
     setLiveParts([]);
-    let buffer = "";
     let finalAnswer = "";
     let interrupted = false;
-    const parts: Part[] = [];
-    const pushText = (s: string) => {
-      const last = parts[parts.length - 1];
-      if (last && last.kind === "text") last.text += s;
-      else parts.push({ kind: "text", text: s });
-    };
+    // Components are positioned by the [[forge:component:ID]] markers the agent writes into its
+    // reply (not by frame-arrival order), so a widget lands in its natural place, not at the top.
+    const acc = new ReplyAccumulator();
     try {
       const runRes = await fetch(EMBED(key, "/runs"), {
         method: "POST",
@@ -130,19 +126,18 @@ export default function EmbedWidget() {
       const run = await runRes.json();
       threadRef.current = run.thread_id;
       await openSSE(EMBED(key, `/runs/${run.id}/stream`), (f) => {
-        if (f.event === "messages" && f.data?.content) { buffer += f.data.content; pushText(f.data.content); setLiveParts([...parts]); }
-        else if (f.event === "custom" && f.data?.channel === "component" && f.data?.payload) { parts.push({ kind: "component", inst: f.data.payload }); setLiveParts([...parts]); }
+        if (f.event === "messages" && f.data?.content) { acc.addText(f.data.content); setLiveParts(acc.parts({ streaming: true })); }
+        else if (f.event === "custom" && f.data?.channel === "component" && f.data?.payload) { acc.addComponent(f.data.payload); setLiveParts(acc.parts({ streaming: true })); }
         else if (f.event === "interrupt") { interrupted = true; setPendingInterrupt({ runId: run.id, payload: f.data }); }
         else if (f.event === "done") { finalAnswer = f.data?.answer || ""; }
         else if (f.event === "error") { finalAnswer = `⚠ ${f.data?.message || "error"}`; }
       });
       // Paused for approval: commit whatever streamed before the pause, then hand off to the card.
       if (interrupted) {
-        const hadComp = parts.some((p) => p.kind === "component");
-        if (hadComp || buffer.trim()) {
-          setMsgs((m) => [...m, hadComp
-            ? { role: "assistant", parts: parts.filter((p) => p.kind === "component" || (p.kind === "text" && (p as any).text.trim())) }
-            : { role: "assistant", content: buffer }]);
+        if (acc.hasComponents() || acc.text.trim()) {
+          setMsgs((m) => [...m, acc.hasComponents()
+            ? { role: "assistant", parts: acc.parts() }
+            : { role: "assistant", content: acc.text }]);
         }
         return; // approval card takes over; `finally` resets running/liveParts
       }
@@ -152,14 +147,11 @@ export default function EmbedWidget() {
       setRunning(false);
       setLiveParts([]);
     }
-    const hasComp = parts.some((p) => p.kind === "component");
-    if (hasComp) {
-      const streamed = parts.filter((p) => p.kind === "text").map((p: any) => p.text).join("").trim();
-      const fa = (finalAnswer || "").trim();
-      if (fa && fa !== streamed) parts.push({ kind: "text", text: finalAnswer });
-      setMsgs((m) => [...m, { role: "assistant", parts: parts.filter((p) => p.kind === "component" || (p.kind === "text" && (p as any).text.trim())) }]);
+    const finalText = acc.resolveText(finalAnswer);
+    if (acc.hasComponents()) {
+      setMsgs((m) => [...m, { role: "assistant", parts: acc.parts({ finalText }) }]);
     } else {
-      setMsgs((m) => [...m, { role: "assistant", content: finalAnswer || buffer || "(no output)" }]);
+      setMsgs((m) => [...m, { role: "assistant", content: finalText || "(no output)" }]);
     }
   }
 

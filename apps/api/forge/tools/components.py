@@ -12,6 +12,7 @@ This is the MCP-Apps structuredContent/_meta split realized with LangGraph's str
 # injectable `runtime: ToolRuntime` parameter via inspect.signature(fn), which does NOT
 # evaluate string annotations; postponed annotations make the runtime arg invisible and
 # the stream_writer is lost. (See tools/rest.py for the full rationale.)
+import re
 import uuid
 from typing import Any
 
@@ -19,6 +20,28 @@ from langchain.tools import ToolRuntime
 from langchain_core.tools import StructuredTool
 
 from forge.tools.rest import build_args_schema_from_jsonschema
+
+# Inline placeholder the agent copies into its reply to position a rendered component (the
+# props/markup travel out-of-band on the custom stream; only this ~10-token marker is in the
+# token stream). The web renderer splits the reply on these markers — keep the format in sync
+# with apps/web/lib/chat-parts.ts.
+COMPONENT_MARKER_RE = re.compile(r"\[\[forge:component:[A-Za-z0-9_-]+\]\]")
+
+
+def component_marker(instance_id: str) -> str:
+    return f"[[forge:component:{instance_id}]]"
+
+
+def strip_component_markers(text: str) -> str:
+    """Remove component markers from a reply for text-only surfaces (email/Teams/webhook/SMS),
+    which can't render a widget and would otherwise show the literal `[[forge:component:…]]`.
+    Tidies the whitespace/blank lines the removal leaves behind."""
+    if not text:
+        return text
+    out = COMPONENT_MARKER_RE.sub("", text)
+    out = re.sub(r"[ \t]+\n", "\n", out)
+    out = re.sub(r"\n{3,}", "\n\n", out)
+    return out.strip()
 
 
 def build_component_tool(cfg: dict, ctx) -> Any:
@@ -63,8 +86,10 @@ def build_component_tool(cfg: dict, ctx) -> Any:
             pass
         # `runtime.stream_writer` pushes onto the LangGraph custom stream; the runs service
         # forwards it to the client as a `component` frame. None when invoked without streaming
-        # (e.g. tool tests) — then we just ack.
+        # (e.g. tool tests) — then we just ack without a marker (nothing would render it).
+        instance_id = uuid.uuid4().hex
         sw = getattr(runtime, "stream_writer", None)
+        emitted = False
         if sw:
             try:
                 sw({
@@ -73,16 +98,25 @@ def build_component_tool(cfg: dict, ctx) -> Any:
                         "component_id": cid,
                         "name": name,
                         "version": version,
-                        "instance_id": uuid.uuid4().hex,
+                        "instance_id": instance_id,
                         "props": props,
                         "actions": actions,
                     },
                 })
+                emitted = True
             except Exception:  # noqa: BLE001 - no active stream writer; degrade to ack-only
-                pass
+                emitted = False
+        if not emitted:
+            return f"The '{name}' component was prepared (no live display surface to render it)."
+        # The marker is how the agent CONTROLS ordering: it copies this token into its reply text
+        # at the exact spot the widget should appear (the client splices the rendered component
+        # there). So the agent can put the widget mid-answer, after a heading, or at the end —
+        # wherever it reads naturally — instead of it always landing at the top.
         return (
-            f"The '{name}' UI component is now displayed to the user with those props. "
-            "Reply with at most a brief lead-in; do not restate the component's contents."
+            f"The '{name}' component is ready. Place the marker {component_marker(instance_id)} in "
+            "your reply text at the exact position where it should appear — write your prose before "
+            "and after it as needed so the component lands in its natural place. Insert the marker "
+            "exactly once and do not restate the component's contents as text."
         )
 
     return StructuredTool.from_function(
