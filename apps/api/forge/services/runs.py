@@ -346,7 +346,13 @@ class RunService:
                     for t in getattr(snapshot, "tasks", [])
                     if getattr(t, "interrupts", None)
                 ] if interrupted else []
-                answer = _last_ai_text(getattr(snapshot, "values", {}) or {})
+                # Strip component-placement markers: this path feeds text-only channels
+                # (email/Teams/webhook/schedule/evals) that can't render a widget and would
+                # otherwise show the literal [[forge:component:…]] token. The structured
+                # `components` list is still returned for richer consumers.
+                from forge.tools.components import strip_component_markers
+
+                answer = strip_component_markers(_last_ai_text(getattr(snapshot, "values", {}) or {}))
                 # Text-only surfaces (email/Teams/webhook) can't render a widget — make sure a
                 # component-only reply still sends something rather than an empty message (H1).
                 if not answer.strip() and components:

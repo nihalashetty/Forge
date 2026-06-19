@@ -6,10 +6,13 @@ Swap to a real provider embedder by setting the project's rag embedding_model + 
 from __future__ import annotations
 
 import hashlib
+import logging
 import math
 import os
 import re
 from typing import Protocol
+
+log = logging.getLogger("forge.embeddings")
 
 _WORD = re.compile(r"[a-z0-9]+")
 
@@ -100,6 +103,9 @@ class _LCEmbedder:
 # (model, key-fingerprint). The cache holds the client, not the key itself.
 _EMBEDDER_CACHE: dict[tuple[str, str], Embedder] = {}
 _FAKE = FakeEmbedder()
+# Warn once per model when we silently fall back to the offline embedder for a real provider
+# model — the dim-keyed collection then won't match content indexed under the real model.
+_FALLBACK_WARNED: set[str] = set()
 
 
 def _key_fp(api_key: str | None) -> str:
@@ -117,23 +123,41 @@ def resolve_embedder(model: str | None = None, api_key: str | None = None) -> Em
     fixed-dim, so we key the collection by `embedder.dim` (switching needs re-ingest).
     Instances are cached (construction is ~1s on Windows).
     """
-    if model and model.startswith("openai:") and (api_key or os.environ.get("OPENAI_API_KEY")):
-        cache_key = (model, _key_fp(api_key))
-        hit = _EMBEDDER_CACHE.get(cache_key)
-        if hit is not None:
-            return hit
-        try:
-            from langchain_openai import OpenAIEmbeddings
+    if model and model.startswith("openai:"):
+        if api_key or os.environ.get("OPENAI_API_KEY"):
+            cache_key = (model, _key_fp(api_key))
+            hit = _EMBEDDER_CACHE.get(cache_key)
+            if hit is not None:
+                return hit
+            try:
+                from langchain_openai import OpenAIEmbeddings
 
-            name = model.split(":", 1)[1]
-            kwargs: dict = {"model": name}
-            if api_key:
-                kwargs["api_key"] = api_key
-            emb = _LCEmbedder(OpenAIEmbeddings(**kwargs), name)
-            _EMBEDDER_CACHE[cache_key] = emb
-            return emb
-        except Exception:  # noqa: BLE001 - fall back to offline
-            pass
+                name = model.split(":", 1)[1]
+                kwargs: dict = {"model": name}
+                if api_key:
+                    kwargs["api_key"] = api_key
+                emb = _LCEmbedder(OpenAIEmbeddings(**kwargs), name)
+                _EMBEDDER_CACHE[cache_key] = emb
+                return emb
+            except Exception:  # noqa: BLE001 - fall back to offline (but make it visible)
+                if model not in _FALLBACK_WARNED:
+                    _FALLBACK_WARNED.add(model)
+                    log.warning(
+                        "resolve_embedder: could not construct OpenAIEmbeddings for %r; using "
+                        "offline FakeEmbedder (dim 256). Content indexed under the real model's "
+                        "dimension will not be found until re-indexed.", model, exc_info=True,
+                    )
+                return _FAKE
+        elif model not in _FALLBACK_WARNED:
+            # A real provider model was requested but no key resolved. The silent dim-256
+            # fallback indexes/queries a DIFFERENT collection than the real model — the
+            # dim-flip trap that makes RAG/Q&A go quietly empty. Make it loud (once).
+            _FALLBACK_WARNED.add(model)
+            log.warning(
+                "resolve_embedder: model %r requested but no OpenAI API key (project or "
+                "OPENAI_API_KEY env) resolved; using offline FakeEmbedder (dim 256). RAG/Q&A "
+                "will not match content indexed under the real model.", model,
+            )
     return _FAKE
 
 

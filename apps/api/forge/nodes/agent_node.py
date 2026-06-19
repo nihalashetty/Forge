@@ -39,18 +39,26 @@ OUTPUT_STYLE_WITH_COMPONENTS = (
 )
 
 
-# Steer the agent to RENDER a fitting component instead of restating its data as prose. The
-# last sentence is load-bearing: it makes clear components only PRESENT data, so the agent
-# keeps using its retrieval/other tools normally — without it, the component guidance was
-# competing with knowledge/FAQ search and the agent skipped it (audit Priority B + the KB
-# regression). Only appended when config["components"] is non-empty.
+# Steer the agent to RENDER a fitting component instead of restating its data as prose, and to
+# POSITION it correctly: calling a component tool returns a placeholder marker that the agent
+# copies into its reply where the widget belongs — so the component is interleaved with the text
+# in its natural place (mid-answer, after a heading, at the end) rather than always pinned to the
+# top (which is what happens if placement is left to tool-call order). The last sentence is
+# load-bearing: it makes clear components only PRESENT data, so the agent keeps using its
+# retrieval/other tools normally — without it, the component guidance was competing with
+# knowledge/FAQ search and the agent skipped it (audit Priority B + the KB regression). Only
+# appended when config["components"] is non-empty.
 COMPONENT_STYLE = (
     "You have UI components available as tools (their names match the components). If a "
     "component fits the data you want to show (a table, card, form, …), you MUST call that "
     "component tool with the data as its props INSTEAD of writing the same data as prose or a "
-    "markdown table; add at most a one-line lead-in and never restate the component's content "
-    "as text. This governs only how you PRESENT data — keep using your other tools (search the "
-    "knowledge base, look up FAQs, call APIs) normally to GET the information you need."
+    "markdown table. The tool returns a placeholder marker like [[forge:component:ID]]; copy that "
+    "marker verbatim into your reply at the exact position where the component should appear. You "
+    "control the order — write text before and after the marker so the component lands in its "
+    "natural place in the answer (in the middle, after a heading, or at the end), exactly as it "
+    "would read in a normal reply. Never restate the component's contents as text. This governs "
+    "only how you PRESENT data — keep using your other tools (search the knowledge base, look up "
+    "FAQs, call APIs) normally to GET the information you need."
 )
 
 
