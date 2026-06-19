@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 
 from sqlalchemy import select
@@ -13,6 +14,8 @@ from forge.knowledge.store import ChromaStore, Hit
 from forge.models import KbSource, Project, QaPair
 from forge.secrets.store import SecretStore
 from forge.util.http import shared_async_client
+
+log = logging.getLogger("forge.knowledge")
 
 
 def _strip_html(html: str) -> str:
@@ -103,13 +106,19 @@ class KnowledgeService:
             return
         store = KnowledgeService._qa_store(embedder)
         where = {"$and": [{"tenant_id": {"$eq": tenant_id}}, {"project_id": {"$eq": project_id}}]}
-        if store.count_where(where) >= len(rows):
+        # Index only the rows actually MISSING from this dim-keyed collection. The old
+        # `count_where(...) >= len(rows)` check wrongly skipped backfill whenever the counts
+        # happened to match (a stale id present, or the pair never indexed under this dim),
+        # which left pairs silently unfindable.
+        existing = set(store.ids_where(where))
+        missing = [r for r in rows if r.id not in existing]
+        if not missing:
             return
-        questions = [r.question for r in rows]
+        questions = [r.question for r in missing]
         vectors = await embedder.aembed(questions)
         store.upsert(
-            ids=[r.id for r in rows], embeddings=vectors, documents=questions,
-            metadatas=[{"tenant_id": tenant_id, "project_id": project_id, "kind": r.kind, "answer": r.answer} for r in rows],
+            ids=[r.id for r in missing], embeddings=vectors, documents=questions,
+            metadatas=[{"tenant_id": tenant_id, "project_id": project_id, "kind": r.kind, "answer": r.answer} for r in missing],
         )
 
     # --- sources ---
@@ -293,7 +302,10 @@ class KnowledgeService:
                 metadatas=[{"tenant_id": tenant_id, "project_id": project_id, "kind": qa.kind, "answer": answer}],
             )
         except Exception:  # noqa: BLE001 - store unavailable; lazy reindex will backfill
-            pass
+            log.warning(
+                "create_qa: failed to index Q&A pair %s into the vector store now; "
+                "lazy backfill will retry on next lookup", qa.id, exc_info=True,
+            )
         return qa
 
     @staticmethod
@@ -330,11 +342,14 @@ class KnowledgeService:
         """
         embedder = embedder or await KnowledgeService.embedder_for_project(session, tenant_id, project_id)
         q = embedding if embedding is not None else await embedder.aembed_query(query)
-        await KnowledgeService._ensure_qa_indexed(session, tenant_id, project_id, embedder)
         where = KnowledgeService._qa_where(tenant_id, project_id, kinds, kind)
         try:
+            # Backfill INSIDE the guard: a failed (re)index must degrade to "no matches"
+            # rather than abort the lookup and surface as a hard error upstream.
+            await KnowledgeService._ensure_qa_indexed(session, tenant_id, project_id, embedder)
             hits = KnowledgeService._qa_store(embedder).query_where(embedding=q, where=where, top_k=max(top_k * 2, top_k))
-        except Exception:  # noqa: BLE001 - store empty / not ready
+        except Exception:  # noqa: BLE001 - store empty / not ready, or backfill failed
+            log.warning("top_qa: Q&A retrieval failed; returning no matches", exc_info=True)
             return []
         seen: set = set()
         out: list[dict] = []

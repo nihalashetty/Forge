@@ -147,3 +147,11 @@ class ChromaStore:
             return len(self._col.get(where=where).get("ids", []))
         except Exception:  # noqa: BLE001
             return 0
+
+    def ids_where(self, where: dict) -> list[str]:
+        """The ids currently stored matching `where` — lets a caller index only the rows
+        that are actually MISSING (vs. a count comparison that can't detect stale ids)."""
+        try:
+            return list(self._col.get(where=where).get("ids", []))
+        except Exception:  # noqa: BLE001 - collection empty / not ready
+            return []
