@@ -39,7 +39,7 @@ Forge is built directly on the **MIT-licensed LangChain v1 + LangGraph v1** fram
 ## Features
 
 <div align="center">
-  <video src="https://raw.githubusercontent.com/nihalashetty/Forge/main/docs/media/forge-assistant-demo.mp4" controls muted width="85%"></video>
+  <video src="https://github.com/user-attachments/assets/1a2b3c4d-...." controls muted width="85%"></video>
 </div>
 
 > **[Watch the demo](docs/media/forge-assistant-demo.mp4)** - the in-product **Forge Assistant** builds and runs a workflow end to end. *(If the player doesn't load inline, click the link to play.)*
