@@ -169,7 +169,7 @@ With `FORGE_ENVIRONMENT=production`, Forge enables a hardening guard and **refus
 |---|---|
 | **[User Manual](docs/MANUAL.md)** | Full feature tour, the node catalog, and end-to-end use cases (no developer knowledge needed). |
 | **[Backend README](apps/api/README.md)** | API layout, local-vs-production swaps, and dependency notes. |
-| **[Roadmap & status](docs/ROADMAP.md)** | What's done, what's next, and the deliberate deviations from the original design. |
+| **[Roadmap & status](docs/ROADMAP.md)** | What's shipped, what's in progress, and what's planned next (connectors, more channels, and more). |
 
 ## Tech stack
 
