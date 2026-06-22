@@ -1,4 +1,4 @@
-"""AuthService — users, login, tokens, and team membership.
+"""AuthService - users, login, tokens, and team membership.
 
 Multi-tenant model: a User belongs to exactly one Tenant (workspace) with a role
 (owner > admin > editor > viewer). Self-service signup creates a new workspace +
@@ -152,7 +152,7 @@ class AuthService:
     @staticmethod
     async def accept_invite(session, *, user_id: str, tenant_id: str, password: str) -> User:
         """Redeem an invite token: set the invitee's first password and activate them.
-        Only a still-pending ('invited') user may be redeemed — so a leaked link can never
+        Only a still-pending ('invited') user may be redeemed - so a leaked link can never
         reset an already-active account's password."""
         if len(password) < 8:
             raise AuthError("password must be at least 8 characters")

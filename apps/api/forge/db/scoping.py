@@ -1,4 +1,4 @@
-"""Tenant-scoping helpers — one place to enforce row-level tenant isolation.
+"""Tenant-scoping helpers - one place to enforce row-level tenant isolation.
 
 Every query against a tenant-scoped table should go through `tenant_scoped` so the
 `tenant_id` filter can never be forgotten. On Postgres this is backed up by Row-Level

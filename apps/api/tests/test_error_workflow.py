@@ -15,7 +15,7 @@ _ERR_WF = {
     "id": "wf_err", "version": 1,
     "state": {"messages": {"type": "list[message]", "reducer": "add_messages"}},
     "entry_node": "agent",
-    "on_error": {"message": "Sorry — something went wrong. A teammate will follow up."},
+    "on_error": {"message": "Sorry - something went wrong. A teammate will follow up."},
     "nodes": [
         {"id": "agent", "type": "agent", "config": {"flavor": "agent", "model": "fake:hi", "middleware": [{"type": "___nonexistent___", "enabled": True}]}},
         {"id": "end", "type": "end", "config": {}},
@@ -34,4 +34,4 @@ async def test_errored_run_returns_on_error_message():
     result = await dispatch_message(rs, tenant_id="t_err", project_id="p_err", workflow_id=wf.id, text="hi")
     assert result.get("error")  # the run did fail
     assert result.get("error_handled") is True
-    assert result.get("answer") == "Sorry — something went wrong. A teammate will follow up."
+    assert result.get("answer") == "Sorry - something went wrong. A teammate will follow up."

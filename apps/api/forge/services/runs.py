@@ -1,4 +1,4 @@
-"""RunService — create a run (thread + run rows) and stream its execution over SSE.
+"""RunService - create a run (thread + run rows) and stream its execution over SSE.
 
 The architectural payoff: load the workflow's executable JSON, compile it to a
 LangGraph graph (with the app checkpointer + a ForgeTracer), `astream` it, push
@@ -39,7 +39,7 @@ def _client_error(public: bool, run_id: str, detail: str) -> str:
 
 
 def _last_ai_text(values: dict) -> str:
-    """Final assistant text from run state — the last AI/assistant message's content."""
+    """Final assistant text from run state - the last AI/assistant message's content."""
     msgs = (values or {}).get("messages") or []
     for m in reversed(msgs):
         mtype = getattr(m, "type", None) or (m.get("role") if isinstance(m, dict) else None)
@@ -233,7 +233,7 @@ class RunService:
                         # subgraph-internal "model"/"tools" updates so the steps panel stays clean.
                         if mode == "updates" and ns:
                             continue
-                        # In messages mode, only stream the agent's own tokens — never tool-result
+                        # In messages mode, only stream the agent's own tokens - never tool-result
                         # or human-message content (which would otherwise leak into the chat bubble).
                         if mode == "messages":
                             msg = chunk[0] if isinstance(chunk, (list, tuple)) and chunk else chunk
@@ -259,7 +259,7 @@ class RunService:
                         ]
                         yield {"event": "interrupt", "data": payload}
                     else:
-                        # The authoritative final answer comes from run state — this covers
+                        # The authoritative final answer comes from run state - this covers
                         # answers produced by non-LLM nodes that never stream as message
                         # tokens, so the UI can always render a final bubble.
                         done_data: dict[str, Any] = {
@@ -268,7 +268,7 @@ class RunService:
                             "total_cost_usd": run.total_cost_usd,
                             "answer": _last_ai_text(getattr(snapshot, "values", {}) or {}),
                         }
-                        # Run-step cost/debug is operator-only — never expose node names / cost
+                        # Run-step cost/debug is operator-only - never expose node names / cost
                         # to an anonymous embed end user (memory: widget-no-operator-data).
                         if not public:
                             done_data["debug"] = {"nodes": _debug_nodes(wf.executable or {}, tracer)}
@@ -283,7 +283,7 @@ class RunService:
                 finalized = True
                 yield {"event": "error", "data": {"message": _client_error(public, run.id, str(e))}}
             finally:
-                # Client disconnect / cancellation propagates here without `finalized` set —
+                # Client disconnect / cancellation propagates here without `finalized` set -
                 # mark the otherwise-stranded run canceled in a fresh, shielded session so it
                 # never sticks at status="running" forever (audit F1).
                 if not finalized:
@@ -325,7 +325,7 @@ class RunService:
                     graph = compile_workflow(wf.executable, ctx)
                     # Drive with the custom stream (not ainvoke) so `component` frames emitted by
                     # widget-tools are captured for channels that consume run_to_completion
-                    # (webhook/schedule/email/Teams/evals) — ainvoke discards custom-stream items
+                    # (webhook/schedule/email/Teams/evals) - ainvoke discards custom-stream items
                     # entirely (audit H1).
                     components: list = []
                     async for _ns, _mode, _chunk in graph.astream(
@@ -353,7 +353,7 @@ class RunService:
                 from forge.tools.components import strip_component_markers
 
                 answer = strip_component_markers(_last_ai_text(getattr(snapshot, "values", {}) or {}))
-                # Text-only surfaces (email/Teams/webhook) can't render a widget — make sure a
+                # Text-only surfaces (email/Teams/webhook) can't render a widget - make sure a
                 # component-only reply still sends something rather than an empty message (H1).
                 if not answer.strip() and components:
                     names = ", ".join(str((c or {}).get("name") or "result") for c in components if c)

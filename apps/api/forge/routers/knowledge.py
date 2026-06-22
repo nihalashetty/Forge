@@ -1,4 +1,4 @@
-"""Knowledge endpoints — sources (ingest text/url), Q&A pairs, and a search debugger."""
+"""Knowledge endpoints - sources (ingest text/url), Q&A pairs, and a search debugger."""
 
 from __future__ import annotations
 

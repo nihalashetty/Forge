@@ -1,4 +1,4 @@
-"""Code tool — run a small user-authored Python function as an agent tool.
+"""Code tool - run a small user-authored Python function as an agent tool.
 
 Sandboxed with RestrictedPython (AST-level: no dunder access, no eval/exec, guarded
 item/attr access) plus an allowlisted importer and a bounded execution wait. This is
@@ -26,7 +26,7 @@ from RestrictedPython.Guards import (
 
 from forge.config import settings
 
-# Modules a code tool may import — pure/standard, no IO or network.
+# Modules a code tool may import - pure/standard, no IO or network.
 _ALLOWED_IMPORTS = {
     "json", "math", "re", "datetime", "statistics", "random", "string",
     "itertools", "functools", "collections", "decimal", "base64", "hashlib", "uuid",

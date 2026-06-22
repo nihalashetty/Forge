@@ -6,7 +6,7 @@ combines the two ranked lists by *position*, so their very different score scale
 (cosine ~[0,1] vs unbounded BM25) never have to be normalized against each other.
 
 All pure functions + graceful degradation: if rank_bm25 isn't installed, bm25_rank
-returns [] and the caller falls back to vector-only — hybrid never hard-fails.
+returns [] and the caller falls back to vector-only - hybrid never hard-fails.
 """
 
 from __future__ import annotations

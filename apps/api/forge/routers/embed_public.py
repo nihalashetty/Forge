@@ -106,7 +106,7 @@ async def embed_create_run(key: str, body: EmbedRunIn, request: Request, session
             raise HTTPException(status.HTTP_403_FORBIDDEN, "session token is not valid for this embed")
         end_user = claims.get("end_user") or None
     # The public surface is anonymous and uncapped by design, so it MUST also honor the
-    # tenant daily quota (audit S2) — otherwise the widget bypasses the only spend ceiling.
+    # tenant daily quota (audit S2) - otherwise the widget bypasses the only spend ceiling.
     from forge.services.quota import QuotaExceeded, run_admission
     try:
         async with run_admission(session, proj.tenant_id):
@@ -145,7 +145,7 @@ class EmbedResumeIn(BaseModel):
 
 @router.post("/runs/{run_id}/resume")
 async def embed_resume(key: str, run_id: str, body: EmbedResumeIn, request: Request, session: AsyncSession = Depends(get_session), run_service: RunService = Depends(get_run_service)):
-    """Resume an interrupted (human-in-the-loop) run from the widget — mirrors the authed
+    """Resume an interrupted (human-in-the-loop) run from the widget - mirrors the authed
     resume endpoint but resolves the tenant+project from the publishable key. resume() is
     scoped to this project (audit S1); the end-user identity is already bound to the thread
     (thread.meta.end_user) from the original run, so a value-only body matches the authed

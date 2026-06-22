@@ -1,4 +1,4 @@
-"""MCP tool-kind wiring tests (monkeypatched server — no live MCP connection)."""
+"""MCP tool-kind wiring tests (monkeypatched server - no live MCP connection)."""
 
 from __future__ import annotations
 

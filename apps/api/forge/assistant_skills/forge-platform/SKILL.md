@@ -1,6 +1,6 @@
 ---
 name: forge-platform
-description: Use when designing, building, debugging, or explaining Forge workflows, nodes, state, routing, middleware, tools, or knowledge — especially for custom/complex workflow shapes beyond the canned builders.
+description: Use when designing, building, debugging, or explaining Forge workflows, nodes, state, routing, middleware, tools, or knowledge - especially for custom/complex workflow shapes beyond the canned builders.
 ---
 
 # Forge platform deep guide
@@ -8,7 +8,7 @@ description: Use when designing, building, debugging, or explaining Forge workfl
 You are embedded in Forge, a visual builder for LangChain/LangGraph agents. Workflows are
 JSON definitions compiled to LangGraph StateGraphs. This guide covers the rules the canned
 builder tools don't teach. For the live catalog always call `list_node_types`,
-`get_node_schema(type)`, and `list_middleware_types` — they read the real registry.
+`get_node_schema(type)`, and `list_middleware_types` - they read the real registry.
 
 ## Workflow definition shape
 
@@ -38,18 +38,18 @@ Rules:
   smalltalk, "what can you do?", capability/meta questions) to a small friendly agent that
   answers directly and goes to `end`; route only `support` into the retrieval/ticket
   pipeline. Without this, greetings and meta questions fall through retrieval, miss,
-  and dead-end at a "no relevant data → create a ticket" path — a bad first impression.
+  and dead-end at a "no relevant data → create a ticket" path - a bad first impression.
   Shape: start → classify(general|support) → router → {general: greeter_agent → end,
   support: retrieval → … → end}. (Simpler alt: one front agent with a knowledge_search tool
   that both chats and answers.)
 - Single intent: `classifier` (labels, output_key=intent) → `router`
   (expression=intent, cases {label: node_id}, default=fallback_node). Case KEYS are the
   exact VALUES the expression takes, not display labels.
-- ALWAYS give routers a `default` — with no default, an unmatched value silently ends the
+- ALWAYS give routers a `default` - with no default, an unmatched value silently ends the
   run with no answer.
 - MULTI-INTENT (a question with several asks): classifier `multi_label: true` writes a
   LIST to state (declare it `list[str]`); router `multi: true` routes to EVERY matching
-  case in parallel. All branches then converge on ONE synthesizer agent node before end —
+  case in parallel. All branches then converge on ONE synthesizer agent node before end -
   its prompt: "compose the partial answers above into one coherent reply". Without a
   synthesizer the user sees only the last branch's answer.
 - Simpler multi-intent alternative (preferred for support bots): ONE agent with
@@ -77,7 +77,7 @@ Rules:
      ```
      Compiles to `search_knowledge_base` (documents) and/or `lookup_faq` (curated Q&A),
      each toggled and scoped (folders / kinds) independently. The agent searches per
-     sub-question in its own phrasing — so ONE agent answers multi-part questions.
+     sub-question in its own phrasing - so ONE agent answers multi-part questions.
   3. `knowledge_search` builtin TOOL = same idea but as a standalone Tool row (use when you
      want to share one tool across agents, or filter folder per-call). For a single agent,
      `config.knowledge` is simpler.
@@ -104,6 +104,6 @@ dynamic_model_by_state, tool_filter_by_context, human_in_the_loop. Call
 
 1. write_todos the plan. 2. list_resources (reuse, never duplicate names).
 3. Build (canned builder if it fits, else create_custom_workflow). 4. test_workflow with
-a realistic question, a greeting, an off-topic question — and every branch/intent.
+a realistic question, a greeting, an off-topic question - and every branch/intent.
 5. evaluate_build to judge the results against the user's actual request. 6. Fix and
 re-test until the judge passes. Only then report success.

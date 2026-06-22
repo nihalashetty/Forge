@@ -1,4 +1,4 @@
-"""`llm` node — a single model call, no tool loop (Doc 2 §7).
+"""`llm` node - a single model call, no tool loop (Doc 2 §7).
 
 Reads the conversation from `messages`, optionally prepends the configured prompt
 as a system message, and appends the model's reply. Structured output binds the
@@ -46,7 +46,7 @@ register(
         category="model_tools",
         label="LLM",
         description="Single model call",
-        summarize=lambda c: [str(c.get("model", "—")), "single call"],
+        summarize=lambda c: [str(c.get("model", "-")), "single call"],
     )
 )
 
@@ -58,16 +58,16 @@ def classifier_factory(config: dict, ctx: CompileContext):
 
     This is the docs' routing pattern: "use structured output for the routing decision,
     then add_conditional_edges". With `multi_label: true` the node writes a LIST of
-    labels — pair it with a router configured `multi: true` to fan out to every matching
+    labels - pair it with a router configured `multi: true` to fan out to every matching
     branch in parallel (multi-intent questions). A label outside the configured set (or
-    a model failure) falls back to a naive keyword match, else writes nothing — the
+    a model failure) falls back to a naive keyword match, else writes nothing - the
     router's default/Else path then handles it.
     """
     labels = [str(label) for label in (config.get("labels") or []) if str(label).strip()]
     output_key = config.get("output_key", "intent")
     instructions = config.get("instructions", "")
     multi = bool(config.get("multi_label", False))
-    # Intent classification is high-volume + low-stakes — default to the provider's
+    # Intent classification is high-volume + low-stakes - default to the provider's
     # cheapest model (overridable via config.model) instead of the workflow default.
     model_ref = config.get("model")
     if not model_ref:

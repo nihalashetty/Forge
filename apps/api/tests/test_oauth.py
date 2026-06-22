@@ -68,7 +68,7 @@ async def test_bearer_tolerates_stale_credentials_ref():
     ap = AuthProvider(
         id="ap_bearer", tenant_id="t_b", project_id="p_b", name="git", kind="bearer",
         config={"kind": "bearer", "token_ref": "secret://proj/git_token", "header_name": "Authorization", "prefix": "Bearer "},
-        credentials_ref="secret://proj/token",  # stale — no secret named "token" exists
+        credentials_ref="secret://proj/token",  # stale - no secret named "token" exists
     )
     resolved = await AuthResolver().resolve(tenant_id="t_b", project_id="p_b", provider_id="ap_bearer", provider=ap, force=True)
     assert resolved.headers["Authorization"] == "Bearer ghp_real"

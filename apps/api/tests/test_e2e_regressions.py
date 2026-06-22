@@ -32,7 +32,7 @@ async def test_tool_test_supports_code_and_sql(tmp_path, monkeypatch):
 
     from forge.config import settings
     # Code tools are OFF by default (unsandboxed RestrictedPython is not an isolation
-    # boundary — audit S5); this test exercises the feature, so opt in explicitly.
+    # boundary - audit S5); this test exercises the feature, so opt in explicitly.
     monkeypatch.setattr(settings, "enable_code_tools", True)
     code = {"name": "u", "kind": "code", "description": "upper", "language": "python",
             "source": "def main(s):\n    return s.upper()", "args_schema": {"properties": {"s": {"type": "string"}}, "required": ["s"]}}

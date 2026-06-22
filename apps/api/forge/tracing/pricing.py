@@ -1,6 +1,6 @@
 """Model pricing: USD per 1M tokens (input, output). Editable in admin later.
 
-Unknown models price at 0 — but now log a warn-once per model so missing entries
+Unknown models price at 0 - but now log a warn-once per model so missing entries
 surface in the server log instead of silently under-reporting SPEND. Keys are
 matched by exact id, then by the bare model name (after the provider prefix).
 Rates should be re-verified against provider price pages periodically.
@@ -72,7 +72,7 @@ def price(model: str | None, input_tokens: int, output_tokens: int) -> float:
     if not rate:
         if model not in _warned and not model.startswith("fake"):
             _warned.add(model)
-            log.warning("No pricing entry for model %r — its runs report $0 cost. Add it to forge/tracing/pricing.py.", model)
+            log.warning("No pricing entry for model %r - its runs report $0 cost. Add it to forge/tracing/pricing.py.", model)
         return 0.0
     in_rate, out_rate = rate
     return (input_tokens / 1_000_000) * in_rate + (output_tokens / 1_000_000) * out_rate

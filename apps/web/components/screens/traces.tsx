@@ -20,7 +20,7 @@ export function TracesScreen({ project }: { project: any }) {
   useEffect(() => { if (project?.id && sel) api.getTrace(project.id, sel).then(setDetail).catch(() => setDetail(null)); }, [project?.id, sel]);
 
   return (
-    // alignItems:stretch — .row centers children, which gives the list its content
+    // alignItems:stretch - .row centers children, which gives the list its content
     // height and silently kills its scroll.
     <div className="row" style={{ flex: 1, minHeight: 0, height: "100%", overflow: "hidden", alignItems: "stretch" }}>
       {/* runs list */}

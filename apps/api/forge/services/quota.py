@@ -1,4 +1,4 @@
-"""QuotaService — per-tenant daily usage caps.
+"""QuotaService - per-tenant daily usage caps.
 
 Limits live in `tenant.settings` (max_runs_per_day / max_cost_per_day_usd /
 max_tokens_per_day; 0 or unset = unlimited) and are checked at run creation against

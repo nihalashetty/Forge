@@ -163,7 +163,7 @@ async def test_sql_tool_honors_project_egress_policy():
 
     cfg = {"name": "q", "query": "SELECT 1",
            "connection_url": "postgresql+asyncpg://u:p@blocked.example.com:5432/db"}
-    # A resolved EgressPolicy INSTANCE (what ctx.egress_policy is) must be applied directly —
+    # A resolved EgressPolicy INSTANCE (what ctx.egress_policy is) must be applied directly -
     # not silently rebuilt from global settings (which, in tests, block nothing).
     policy = EgressPolicy(block_private=False, deny_hosts=("blocked.example.com",))
     with pytest.raises(EgressBlocked):

@@ -80,7 +80,7 @@ function TeamCard() {
                 <div className="t-body-sm"><Icon name="check" size={13} style={{ color: "var(--ok, #2a8)" }} /> Invitation emailed to <b>{result.email}</b>. They’ll set their own password from the link.</div>
               ) : (
                 <>
-                  <div className="t-body-sm" style={{ marginBottom: 6 }}>Invite created for <b>{result.email}</b>. Email isn’t configured on this server, so share this link — it lets them set their password and join:</div>
+                  <div className="t-body-sm" style={{ marginBottom: 6 }}>Invite created for <b>{result.email}</b>. Email isn’t configured on this server, so share this link - it lets them set their password and join:</div>
                   <div className="row gap2">
                     <input className="input mono" readOnly value={result.invite_url || ""} style={{ flex: 1, fontSize: 12 }} onFocus={(e) => e.currentTarget.select()} />
                     <button className="btn btn-secondary btn-sm" onClick={copyInvite}><Icon name={copied ? "check" : "copy"} size={13} />{copied ? "Copied" : "Copy"}</button>
@@ -141,7 +141,7 @@ export function SettingsScreen({ project }: { project: any }) {
     let used: { type: string; label: string }[] = [];
     try { used = (await api.secretUsage(project.id, name)).references; } catch { /* fall back to a plain confirm */ }
     const detail = used.length
-      ? `\n\nIn use by ${used.length}:\n` + used.map((r) => `• ${r.label} — ${r.type.replace(/_/g, " ")}`).join("\n") + `\n\nDeleting will break these.`
+      ? `\n\nIn use by ${used.length}:\n` + used.map((r) => `• ${r.label} - ${r.type.replace(/_/g, " ")}`).join("\n") + `\n\nDeleting will break these.`
       : "";
     if (!window.confirm(`Delete secret “${name}”?${detail}`)) return;
     await api.deleteSecret(project.id, name, true); reloadSecrets();
@@ -200,7 +200,7 @@ export function SettingsScreen({ project }: { project: any }) {
                   <span className="t-body-sm" style={{ fontWeight: 600 }}>{label}</span>
                 </div>
                 <input className="input mono" type="password" style={{ flex: 1 }}
-                  placeholder={configured ? "•••• configured — re-enter to replace" : "sk-…"}
+                  placeholder={configured ? "•••• configured - re-enter to replace" : "sk-…"}
                   value={pkeys[prov] || ""} onChange={(e) => setPkeys((k) => ({ ...k, [prov]: e.target.value }))} />
                 {configured && <span className="pill pill-ok" style={{ height: 18 }}><span className="dot" />set</span>}
               </div>
@@ -218,7 +218,7 @@ export function SettingsScreen({ project }: { project: any }) {
         </Card>
 
         <Card title="Secrets" action={<button className="btn btn-secondary btn-sm" onClick={() => setOpen(true)}><Icon name="plus" size={14} />Add secret</button>}>
-          <div className="field-help" style={{ marginTop: 0, marginBottom: 8 }}>Write-only — values are encrypted (Fernet) and never returned. Reference as <span className="mono-sm">secret://proj/&lt;name&gt;</span>.</div>
+          <div className="field-help" style={{ marginTop: 0, marginBottom: 8 }}>Write-only - values are encrypted (Fernet) and never returned. Reference as <span className="mono-sm">secret://proj/&lt;name&gt;</span>.</div>
           {secrets.map((s) => (
             <div key={s.id} className="row spread" style={{ padding: "8px 0", borderTop: "1px solid var(--line)" }}>
               <div className="row gap2"><Icon name="secret" size={15} style={{ color: "var(--fg-2)" }} /><span className="mono-sm">{s.name}</span><span className="typechip">{s.kind}</span></div>
@@ -252,7 +252,7 @@ function AuditCard({ project }: { project: any }) {
       {rows.slice(0, 40).map((a) => (
         <div key={a.id} className="row spread" style={{ padding: "5px 0", borderTop: "1px solid var(--line)" }}>
           <div className="row gap2"><span className="mono-sm">{a.action}</span>{a.status !== "ok" && <span className="pill pill-muted" style={{ height: 16 }}>{a.status}</span>}</div>
-          <div className="row gap2 fg-2 t-caption"><span>{a.actor_email || "—"}</span><span>{a.at ? new Date(a.at).toLocaleString() : ""}</span></div>
+          <div className="row gap2 fg-2 t-caption"><span>{a.actor_email || "-"}</span><span>{a.at ? new Date(a.at).toLocaleString() : ""}</span></div>
         </div>
       ))}
       {rows.length === 0 && <div className="fg-2 t-caption">No audit events yet.</div>}

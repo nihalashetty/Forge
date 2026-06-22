@@ -2,7 +2,7 @@
 
 Embedded persistent client (no server). One collection, scoped by tenant_id +
 project_id metadata so it's multi-tenant. We pass embeddings explicitly (our own
-embedder), so Chroma never needs to download its default model — fully offline.
+embedder), so Chroma never needs to download its default model - fully offline.
 """
 
 from __future__ import annotations
@@ -82,7 +82,7 @@ class ChromaStore:
         return hits
 
     def _get_documents(self, where: dict, limit: int | None = None) -> list[Hit]:
-        """All stored chunks matching `where` (no vector query) — the corpus a lexical
+        """All stored chunks matching `where` (no vector query) - the corpus a lexical
         index is built over. score is 0.0 (unranked); `limit` caps the scan."""
         try:
             res = self._col.get(where=where, limit=limit) if limit else self._col.get(where=where)
@@ -149,7 +149,7 @@ class ChromaStore:
             return 0
 
     def ids_where(self, where: dict) -> list[str]:
-        """The ids currently stored matching `where` — lets a caller index only the rows
+        """The ids currently stored matching `where` - lets a caller index only the rows
         that are actually MISSING (vs. a count comparison that can't detect stale ids)."""
         try:
             return list(self._col.get(where=where).get("ids", []))

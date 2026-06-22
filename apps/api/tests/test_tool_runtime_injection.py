@@ -2,9 +2,9 @@
 
 Two historical failure modes (both caused by `from __future__ import annotations`
 in forge/tools/rest.py):
-1. compile time — NameError("ToolRuntime") when create_agent resolved the string
+1. compile time - NameError("ToolRuntime") when create_agent resolved the string
    annotation against module globals where ToolRuntime wasn't imported.
-2. call time — "_call() missing 1 required positional argument: 'runtime'":
+2. call time - "_call() missing 1 required positional argument: 'runtime'":
    langchain_core's StructuredTool detects injectable params via
    inspect.signature(fn) (raw, unevaluated annotations), so a string annotation
    made the runtime arg invisible and it was stripped during validation.
@@ -57,7 +57,7 @@ def test_runtime_param_is_visible_to_langchain():
     """The injected-arg detection must see `runtime` as a real ToolRuntime class."""
     tool = rest.build_rest_tool(REST_CFG, CompileContext(tenant_id="t", project_id="p"))
     assert tool._injected_args_keys == frozenset({"runtime"}), (
-        "StructuredTool can't see the runtime param — string annotations strike again "
+        "StructuredTool can't see the runtime param - string annotations strike again "
         "(check for `from __future__ import annotations` in forge/tools/rest.py)"
     )
     # The model-facing schema must NOT advertise runtime as an input.
@@ -66,7 +66,7 @@ def test_runtime_param_is_visible_to_langchain():
 
 async def test_zero_field_tool_executes_without_injection(captured_exec):
     """Tools with NO llm-visible fields (empty args schema) hit langchain_core's empty-schema
-    short-circuit, which drops even injected args — the coroutine must tolerate runtime=None."""
+    short-circuit, which drops even injected args - the coroutine must tolerate runtime=None."""
     from langchain.agents import create_agent
 
     cfg = {

@@ -2,7 +2,7 @@
 
 Constructing an httpx client is expensive (~470ms measured on Windows: SSL context +
 OS certificate-store load), and Forge previously built a fresh client per REST tool
-call / webhook / auth token fetch / URL ingest — dominating per-node latency. One
+call / webhook / auth token fetch / URL ingest - dominating per-node latency. One
 shared client amortizes that cost; callers pass per-request `timeout=` (and
 `follow_redirects=` where needed) instead of constructing clients.
 
@@ -17,7 +17,7 @@ _client: httpx.AsyncClient | None = None
 
 
 def shared_async_client() -> httpx.AsyncClient:
-    """The process-wide AsyncClient. Never close it at call sites — pass per-request
+    """The process-wide AsyncClient. Never close it at call sites - pass per-request
     `timeout=`/`follow_redirects=` overrides instead."""
     global _client
     if _client is None or _client.is_closed:

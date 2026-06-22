@@ -26,7 +26,7 @@ END_TOKENS = {"END", "__end__"}
 class ValidationResult:
     valid: bool = True
     errors: list[dict] = field(default_factory=list)
-    # Warnings don't block save/publish — they flag almost-certainly-wrong wiring
+    # Warnings don't block save/publish - they flag almost-certainly-wrong wiring
     # (e.g. a router branching on a state key nothing writes).
     warnings: list[dict] = field(default_factory=list)
 
@@ -161,7 +161,7 @@ def validate_workflow(definition: dict) -> ValidationResult:
                 res.add(f"/nodes/{i}/config/default", f"Router default {cfg['default']!r} is not a node id")
 
     # Routing sanity (warnings): a router whose expression is a bare state key that no
-    # node writes will ALWAYS take its default path — the single most common wiring bug.
+    # node writes will ALWAYS take its default path - the single most common wiring bug.
     _warn_router_writers(res, nodes)
 
     # Trigger sanity: a webhook marked "signed" with no resolvable secret rejects EVERY
@@ -222,7 +222,7 @@ def _warn_router_writers(res: ValidationResult, nodes: list) -> None:
             continue
         cfg = n.get("config", {}) or {}
         # A router with no Default ends the run SILENTLY (no answer) whenever the
-        # expression value matches no case — e.g. when an upstream classifier fails.
+        # expression value matches no case - e.g. when an upstream classifier fails.
         if not cfg.get("default"):
             res.warn(
                 f"/nodes/{i}/config/default",
@@ -236,7 +236,7 @@ def _warn_router_writers(res: ValidationResult, nodes: list) -> None:
         if expr not in writers:
             res.warn(
                 f"/nodes/{i}/config/expression",
-                f"Router branches on '{expr}', but no node writes that state key — every run will "
+                f"Router branches on '{expr}', but no node writes that state key - every run will "
                 f"take the Default path. Write it first (Classifier output, Q&A/Retrieval route flag, "
                 f"or Human Input decision flag).",
                 node_id=n.get("id"),
@@ -262,7 +262,7 @@ def _warn_webhook_signing(res: ValidationResult, nodes: list) -> None:
         if cfg.get("require_signature") and not cfg.get("secret_ref"):
             res.warn(
                 f"/nodes/{i}/config/secret_ref",
-                "Webhook requires a signature but no secret_ref is set — every inbound request "
+                "Webhook requires a signature but no secret_ref is set - every inbound request "
                 "will be REJECTED. Set the HMAC secret, or turn off require_signature.",
                 node_id=n.get("id"),
             )

@@ -7,7 +7,7 @@ on:
 
 jobs:
   api:
-    name: API — lint + tests
+    name: API - lint + tests
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -27,7 +27,7 @@ jobs:
         run: pytest -q
 
   web:
-    name: Web — typecheck + build
+    name: Web - typecheck + build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

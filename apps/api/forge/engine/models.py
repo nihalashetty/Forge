@@ -40,7 +40,7 @@ def default_model_for_credentials(creds: dict | None) -> str | None:
     return None
 
 
-# Cheapest capable model per provider — for high-volume, low-stakes calls like intent
+# Cheapest capable model per provider - for high-volume, low-stakes calls like intent
 # classification, where a frontier model is wasted spend.
 _PROVIDER_CHEAP_MODEL: dict[str, str] = {
     "openai": "openai:gpt-4.1-nano",

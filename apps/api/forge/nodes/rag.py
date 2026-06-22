@@ -1,4 +1,4 @@
-"""Knowledge node: retrieval — RAG document search + curated Q&A lookup in one node.
+"""Knowledge node: retrieval - RAG document search + curated Q&A lookup in one node.
 
 It reads the latest user message from `messages` and appends a SystemMessage with the
 retrieved document chunks and/or matching Q&A pairs (grounding for a downstream agent).
@@ -17,7 +17,7 @@ _KB_TAG = "forge_kb"
 
 def _kb_removals(msgs: list[Any]) -> list[Any]:
     """RemoveMessage for every prior retrieval system-message (tagged), so KB context is
-    EPHEMERAL — only the current turn's chunks stay in history instead of accumulating
+    EPHEMERAL - only the current turn's chunks stay in history instead of accumulating
     (which otherwise grows cost every turn on a checkpointed thread)."""
     from langchain_core.messages import RemoveMessage
 

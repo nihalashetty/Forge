@@ -1,4 +1,4 @@
-"""Node Type Registry — `node.type` -> factory + typed ports + schema id.
+"""Node Type Registry - `node.type` -> factory + typed ports + schema id.
 
 Doc 2 §6. New node types are added by registering a `NodeSpec`; the compiler,
 the validator, and the UI palette all read from this registry without edits.
@@ -35,7 +35,7 @@ class Port:
 
 
 # A NodeFactory takes (validated config, CompileContext) and returns a LangGraph
-# node — either a plain callable `(state) -> dict` or a compiled Runnable/graph.
+# node - either a plain callable `(state) -> dict` or a compiled Runnable/graph.
 NodeFactory = Callable[[dict, "object"], object]
 # summarize(config) -> short glanceable lines for the canvas node body.
 Summarizer = Callable[[dict], list[str]]

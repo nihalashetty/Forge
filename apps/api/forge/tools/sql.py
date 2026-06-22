@@ -1,4 +1,4 @@
-"""SQL tool — let an agent run a parameterized, read-only query against a database.
+"""SQL tool - let an agent run a parameterized, read-only query against a database.
 
 The connection string comes from a secret (`connection_ref` → `secret://proj/...`) so
 credentials never live in tool config. Read-only is enforced by default: only a single
@@ -79,7 +79,7 @@ async def execute_sql(
         raise SqlToolError("no database connection configured (set connection_ref to a secret holding the URL)")
 
     # ctx.egress_policy is a resolved EgressPolicy INSTANCE (merges global + per-project
-    # allow/deny/block_private), passed through exactly like REST/GraphQL get it — use it
+    # allow/deny/block_private), passed through exactly like REST/GraphQL get it - use it
     # directly so the SQL DSN guard honors per-project overrides. Only fall back to building
     # from settings when given a raw dict / None.
     policy = egress if isinstance(egress, EgressPolicy) else EgressPolicy.from_settings(egress if isinstance(egress, dict) else None)

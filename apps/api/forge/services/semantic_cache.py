@@ -1,4 +1,4 @@
-"""SemanticCacheService — cache answers for semantically-similar questions.
+"""SemanticCacheService - cache answers for semantically-similar questions.
 
 For a high-volume support surface, most questions repeat. Caching by MEANING (vector
 similarity over the question) lets paraphrases hit the cache, skipping a full LLM run.

@@ -1,6 +1,6 @@
 """FastAPI application factory + lifespan.
 
-Builds our own server on the MIT LangChain/LangGraph framework — never depends on
+Builds our own server on the MIT LangChain/LangGraph framework - never depends on
 `langgraph-api` or LangSmith. Lifespan initializes the DB, the durable-execution
 checkpointer, and dev seed data.
 """

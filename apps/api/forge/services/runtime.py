@@ -139,7 +139,7 @@ async def build_compile_context(
     ctx.component_registry = comp_registry
 
     # Pre-load enabled MCP servers' tools (one connect per server) so agent nodes can
-    # attach them — the agent factory is sync, but MCP discovery is async.
+    # attach them - the agent factory is sync, but MCP discovery is async.
     from forge.models import McpClient
     from forge.tools.mcp import server_tools
 

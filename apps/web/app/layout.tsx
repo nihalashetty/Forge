@@ -3,7 +3,7 @@ import "@xyflow/react/dist/style.css";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Forge — AI Agent Platform",
+  title: "Forge - AI Agent Platform",
   description: "Self-hosted platform for building, testing, and shipping LangChain/LangGraph agents.",
 };
 

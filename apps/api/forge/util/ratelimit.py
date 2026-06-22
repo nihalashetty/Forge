@@ -1,7 +1,7 @@
 """In-process rate limiting + idempotency (Redis swap documented for prod).
 
 `RateLimiter` is a per-key token bucket; `IdempotencyCache` dedupes mutating
-requests carrying an `Idempotency-Key`. Both are process-local — fine for a single
+requests carrying an `Idempotency-Key`. Both are process-local - fine for a single
 worker / dev; in a multi-worker prod deployment back them with Redis (same
 interface) so limits/idempotency are shared across workers.
 """
@@ -81,7 +81,7 @@ class IdempotencyCache:
 class RedisRateLimiter:
     """Fixed-window counter shared across workers via Redis (same `allow` interface as the
     in-process limiter). Fails OPEN on a Redis error so a cache outage can't 500 every
-    request. Uses the sync redis client — calls are single round-trips (sub-ms locally)."""
+    request. Uses the sync redis client - calls are single round-trips (sub-ms locally)."""
 
     def __init__(self, client) -> None:
         self._r = client

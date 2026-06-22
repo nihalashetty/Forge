@@ -1,5 +1,5 @@
 "use client";
-/* Components screen (Feature 2 — generative UI): author UI widgets (HTML + CSS + props +
+/* Components screen (Feature 2 - generative UI): author UI widgets (HTML + CSS + props +
    button actions) that an agent can render in chat. Code-first editor (no visual builder,
    per product direction) with a live sandboxed preview. A new component pre-loads with a
    simple 2-column table example. */
@@ -40,7 +40,7 @@ const DEFAULT_PROPS_SCHEMA = {
 };
 
 const DEFAULT_SAMPLE = {
-  title: "Weather — London",
+  title: "Weather - London",
   col1: "Day",
   col2: "Forecast",
   rows: [
@@ -103,7 +103,7 @@ export function ComponentsScreen({ project, onOpen }: { project: any; onOpen: (c
           <Tile icon="grid" color="var(--io-vector)" size={30} />
           <div>
             <div className="t-h2">Components</div>
-            <div className="fg-2 t-caption">UI widgets the agent can render in chat — attached to agents like tools.</div>
+            <div className="fg-2 t-caption">UI widgets the agent can render in chat - attached to agents like tools.</div>
           </div>
         </div>
         <button className="btn btn-primary btn-sm" onClick={create} disabled={creating || !project}>
@@ -119,7 +119,7 @@ export function ComponentsScreen({ project, onOpen }: { project: any; onOpen: (c
             <Tile icon="grid" color="var(--io-vector)" size={40} />
             <div className="t-h3" style={{ color: "var(--fg-1)" }}>No components yet</div>
             <div className="t-caption" style={{ maxWidth: 380 }}>
-              Author an HTML/CSS widget — a table, product card, or form — then attach it to an agent. The agent renders it in chat when relevant.
+              Author an HTML/CSS widget - a table, product card, or form - then attach it to an agent. The agent renders it in chat when relevant.
             </div>
             <button className="btn btn-secondary btn-sm" onClick={create} disabled={creating} style={{ marginTop: 6 }}>
               <Icon name="plus" size={14} />
@@ -152,7 +152,7 @@ export function ComponentsScreen({ project, onOpen }: { project: any; onOpen: (c
                 className="t-caption fg-2"
                 style={{ overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}
               >
-                {c.description || "—"}
+                {c.description || "-"}
               </div>
               <div className="row gap2" style={{ marginTop: 2 }}>
                 <span className="typechip">{c.kind}</span>
@@ -317,7 +317,7 @@ export function ComponentBuilderScreen({
       </div>
       <div className="row" style={{ flex: 1, minHeight: 0, alignItems: "stretch" }}>
         <div className="scroll-y" style={{ flex: 1, minWidth: 0, padding: 20, borderRight: "1px solid var(--line)" }}>
-          {field("Name", <input className="input mono" value={name} onChange={(e) => setName(e.target.value)} placeholder="product_card" />, "Machine name — this is the tool name the agent calls.")}
+          {field("Name", <input className="input mono" value={name} onChange={(e) => setName(e.target.value)} placeholder="product_card" />, "Machine name - this is the tool name the agent calls.")}
           {field("Title", <input className="input" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Product card" />)}
           {field(
             "Description",

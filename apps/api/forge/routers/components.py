@@ -1,4 +1,4 @@
-"""UI component endpoints (CRUD) — Feature 2 (generative UI).
+"""UI component endpoints (CRUD) - Feature 2 (generative UI).
 
 A Component is a saved HTML/CSS template + declarative button actions + a JSON-Schema
 for its props. It is attached to agents like a tool (agent config["components"]) and

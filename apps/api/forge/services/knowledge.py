@@ -100,7 +100,7 @@ class KnowledgeService:
     @staticmethod
     async def _ensure_qa_indexed(session, tenant_id, project_id, embedder) -> None:
         """Lazily backfill the Q&A vector collection from the DB rows (covers pre-existing
-        pairs and embedder/dim switches — a new dim collection starts empty)."""
+        pairs and embedder/dim switches - a new dim collection starts empty)."""
         rows = await KnowledgeService.list_qa(session, tenant_id, project_id)
         if not rows:
             return
@@ -164,7 +164,7 @@ class KnowledgeService:
         try:
             if src.kind in ("text", "file"):
                 # File uploads stash their decoded text in meta["text"] (see the upload
-                # endpoint), same as inline text sources — so they share this branch.
+                # endpoint), same as inline text sources - so they share this branch.
                 content = (src.meta or {}).get("text", "")
             elif src.kind == "url":
                 from forge.util.ssrf import guarded_get
@@ -225,7 +225,7 @@ class KnowledgeService:
     @staticmethod
     async def delete_source(session, src: KbSource) -> None:
         # Vectors are stored in a dimension-keyed collection (forge_kb_<dim>), so the
-        # delete MUST target that same collection — a bare ChromaStore() hits the
+        # delete MUST target that same collection - a bare ChromaStore() hits the
         # default `forge_kb` collection and silently leaves the real chunks behind
         # (they keep showing up in search). Resolve the project's embedder to get the
         # right collection; also sweep the other known collection as a safety net in
@@ -248,7 +248,7 @@ class KnowledgeService:
         session, tenant_id, project_id, query, *, top_k=5, source_ids=None, folders=None,
         embedder=None, embedding=None, hybrid=False,
     ) -> list[Hit]:
-        """Vector search over the project's chunks — or hybrid (BM25 lexical + vector,
+        """Vector search over the project's chunks - or hybrid (BM25 lexical + vector,
         fused via RRF) when `hybrid=True`. Hybrid is opt-in; vector-only is the default.
 
         `embedder`/`embedding` let a caller that already embedded the query (e.g. the

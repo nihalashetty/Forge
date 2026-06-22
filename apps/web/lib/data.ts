@@ -1,4 +1,4 @@
-/* Forge mock data — generic, plausible SaaS content. Ported from the design handoff.
+/* Forge mock data - generic, plausible SaaS content. Ported from the design handoff.
    Screens not yet wired to the live API render from this; the Dashboard merges live
    projects from the backend when available (see lib/api.ts). */
 
@@ -8,7 +8,7 @@ export const spark = (n: number, base: number, amp: number): number[] =>
   );
 
 /* Format a USD cost. Cheap models cost fractions of a cent per run, so a flat
-   $0.00 reads as "broken" even when tracking works — show small amounts with
+   $0.00 reads as "broken" even when tracking works - show small amounts with
    enough precision (down to a sub-cent floor) so non-zero cost is visible. */
 export const fmtUSD = (v: number | null | undefined): string => {
   const n = v || 0;
@@ -26,7 +26,7 @@ export const MODELS = [
   { id: "anthropic:claude-3-5-sonnet-latest", name: "claude-3-5-sonnet", provider: "Anthropic", ctx: "200k", tools: true, vision: true },
   { id: "anthropic:claude-3-5-haiku-latest", name: "claude-3-5-haiku", provider: "Anthropic", ctx: "200k", tools: true, vision: false },
   { id: "google_genai:gemini-1.5-flash", name: "gemini-1.5-flash", provider: "Google", ctx: "1M", tools: true, vision: true },
-  { id: "fake:echo", name: "fake (offline test)", provider: "Local", ctx: "—", tools: true, vision: false },
+  { id: "fake:echo", name: "fake (offline test)", provider: "Local", ctx: "-", tools: true, vision: false },
 ];
 
 export const NODE_CATALOG = [
@@ -66,10 +66,10 @@ export const NODE_META: Record<string, any> = {};
 NODE_CATALOG.forEach((g) => g.items.forEach((it) => (NODE_META[it.type] = { ...it, group: g.group, color: g.color })));
 
 /* Hover help for the canvas palette: what each node is for + a tiny concrete example.
-   Keep these in plain product language — they're the first thing a new user reads. */
+   Keep these in plain product language - they're the first thing a new user reads. */
 export const NODE_HELP: Record<string, { what: string; example: string }> = {
   start: {
-    what: "The entry point. Every run begins here — wire it to your first real step.",
+    what: "The entry point. Every run begins here - wire it to your first real step.",
     example: "Start → Retrieval → Agent → End",
   },
   end: {
@@ -77,31 +77,31 @@ export const NODE_HELP: Record<string, { what: string; example: string }> = {
     example: "FAQ hit → End (answered early), miss → Agent → End",
   },
   router: {
-    what: "Branches the flow based on a value already in state — no model call. One labeled connector per case, plus Else. With 'multi' on, a list value (multi-label Classifier) runs EVERY matching branch in parallel. Always set a Default — without one, an unmatched value ends the run silently.",
+    what: "Branches the flow based on a value already in state - no model call. One labeled connector per case, plus Else. With 'multi' on, a list value (multi-label Classifier) runs EVERY matching branch in parallel. Always set a Default - without one, an unmatched value ends the run silently.",
     example: "intent = 'refund' → refund_agent · 'cancel' → retention_agent · Else → general_agent",
   },
   classifier: {
-    what: "Calls the model once (structured output) to pick a label from your list and writes it to state (default: intent). Multi-label mode writes EVERY applicable label (a list) — pair with a multi Router so two-part questions reach both specialists. Put a Router after it to branch.",
-    example: "labels: return_item, cancel, question — “I want my money back” → return_item",
+    what: "Calls the model once (structured output) to pick a label from your list and writes it to state (default: intent). Multi-label mode writes EVERY applicable label (a list) - pair with a multi Router so two-part questions reach both specialists. Put a Router after it to branch.",
+    example: "labels: return_item, cancel, question - “I want my money back” → return_item",
   },
   agent: {
     what: "A model with tools and a system prompt that loops reason → act until it can answer (ReAct). The workhorse node for answering users.",
     example: "Support agent with a weather tool + knowledge-base grounding",
   },
   deep_agent: {
-    what: "An agent plus planning (write_todos), a virtual filesystem, and subagents — for long, multi-step tasks that need decomposition.",
+    what: "An agent plus planning (write_todos), a virtual filesystem, and subagents - for long, multi-step tasks that need decomposition.",
     example: "“Research our top 3 competitors and draft a comparison”",
   },
   llm: {
-    what: "One single model call — no tools, no loop. A cheap text step for rewriting, summarizing, or extracting.",
+    what: "One single model call - no tools, no loop. A cheap text step for rewriting, summarizing, or extracting.",
     example: "“Summarize the conversation so far into 2 sentences”",
   },
   transform: {
-    what: "Reshapes state with a JMESPath expression — pure data, no model. Reads input_key, writes output_key.",
+    what: "Reshapes state with a JMESPath expression - pure data, no model. Reads input_key, writes output_key.",
     example: "messages[-1].content → question",
   },
   tool_call: {
-    what: "Invokes one specific project tool directly with fixed arguments — no model deciding whether to call it. Result lands in a state key.",
+    what: "Invokes one specific project tool directly with fixed arguments - no model deciding whether to call it. Result lands in a state key.",
     example: "Always fetch get_weather before the agent answers",
   },
   human_input: {
@@ -109,20 +109,20 @@ export const NODE_HELP: Record<string, { what: string; example: string }> = {
     example: "Agent drafts a refund email → human approves → it goes out",
   },
   webhook_out: {
-    what: "Sends data from the run to an external URL (POST/PUT/…) — push results into your own systems.",
+    what: "Sends data from the run to an external URL (POST/PUT/…) - push results into your own systems.",
     example: "POST the final answer to your Slack webhook",
   },
   emit_event: {
-    what: "Emits a named custom event into the run's live stream — for UI badges, metrics, or integrations listening to the run.",
+    what: "Emits a named custom event into the run's live stream - for UI badges, metrics, or integrations listening to the run.",
     example: "Emit 'escalated' when the agent hands off to a human",
   },
   retrieval: {
-    what: "Pulls the most relevant knowledge into context for the user's question — place it right before a grounded agent. Toggle DOCUMENTS (RAG over your chunks) and Q&A PAIRS independently: use either or both. Tip: for multi-part questions, give the agent a knowledge_search TOOL instead, so it can search per sub-question.",
+    what: "Pulls the most relevant knowledge into context for the user's question - place it right before a grounded agent. Toggle DOCUMENTS (RAG over your chunks) and Q&A PAIRS independently: use either or both. Tip: for multi-part questions, give the agent a knowledge_search TOOL instead, so it can search per sub-question.",
     example: "KB says “returns within 30 days” → agent answers with that policy",
   },
   // --- flow ---
   loop: {
-    what: "Repeats a section of the graph until a condition is false or a max-iteration cap is hit. It increments _loop_count and writes _loop = continue/done — wire a Router on _loop and point the 'continue' branch back to this node.",
+    what: "Repeats a section of the graph until a condition is false or a max-iteration cap is hit. It increments _loop_count and writes _loop = continue/done - wire a Router on _loop and point the 'continue' branch back to this node.",
     example: "Refine a draft up to 3 times: loop → agent → loop (until good enough)",
   },
   parallel_fanout: {
@@ -134,7 +134,7 @@ export const NODE_HELP: Record<string, { what: string; example: string }> = {
     example: "Fanout → (summarize each) → Join → final agent composes the digest",
   },
   subworkflow: {
-    what: "Runs ANOTHER workflow in this project as a reusable component (shares the messages state). Build a flow once — 'verify identity', 'look up order' — and drop it into many workflows.",
+    what: "Runs ANOTHER workflow in this project as a reusable component (shares the messages state). Build a flow once - 'verify identity', 'look up order' - and drop it into many workflows.",
     example: "Support flow → Subworkflow: 'verify_identity' → continue",
   },
   handoff: {
@@ -147,7 +147,7 @@ export const NODE_HELP: Record<string, { what: string; example: string }> = {
     example: "Your app POSTs {text: '…'} → the workflow runs and replies",
   },
   schedule: {
-    what: "Runs the workflow on a recurring schedule — every N minutes or a cron expression. Sends a fixed message into the flow each time.",
+    what: "Runs the workflow on a recurring schedule - every N minutes or a cron expression. Sends a fixed message into the flow each time.",
     example: "Every weekday 9am → 'Summarize overnight tickets'",
   },
   email_in: {
@@ -155,7 +155,7 @@ export const NODE_HELP: Record<string, { what: string; example: string }> = {
     example: "support@yourco.com receives a question → agent replies by email",
   },
   chat_in: {
-    what: "Starts the workflow from a chat surface — Microsoft Teams (configured under Channels). The user's message flows straight into the graph.",
+    what: "Starts the workflow from a chat surface - Microsoft Teams (configured under Channels). The user's message flows straight into the graph.",
     example: "A teammate messages the Teams bot → grounded agent answers",
   },
   app_event: {
@@ -285,11 +285,11 @@ export const KB_SOURCES = [
   { id: "k2", name: "Billing FAQ.pdf", kind: "file", status: "ready", chunks: 96, size: "740 KB", model: "text-embedding-3-small", updated: "1d ago" },
   { id: "k3", name: "API Reference.pdf", kind: "file", status: "processing", prog: 62, chunks: 210, size: "2.4 MB", model: "text-embedding-3-small", updated: "now" },
   { id: "k4", name: "s3://acme-docs/policies", kind: "s3", status: "ready", chunks: 154, size: "1.2 MB", model: "text-embedding-3-small", updated: "3d ago" },
-  { id: "k5", name: "Onboarding notes", kind: "text", status: "error", chunks: 0, size: "12 KB", model: "—", updated: "5d ago" },
+  { id: "k5", name: "Onboarding notes", kind: "text", status: "error", chunks: 0, size: "12 KB", model: "-", updated: "5d ago" },
 ];
 export const QA_PAIRS = [
   { id: "q1", q: "How do I reset my password?", a: "Go to Settings → Security → Reset password. A link is emailed to you.", kind: "faq", tags: ["account"], upvotes: 42, used: "3m ago" },
-  { id: "q2", q: 'Why is my order stuck in "processing"?', a: "Processing clears within 30 min. If longer, the payment hold failed — retry the card.", kind: "error_workaround", tags: ["orders", "billing"], upvotes: 31, used: "18m ago" },
+  { id: "q2", q: 'Why is my order stuck in "processing"?', a: "Processing clears within 30 min. If longer, the payment hold failed - retry the card.", kind: "error_workaround", tags: ["orders", "billing"], upvotes: 31, used: "18m ago" },
   { id: "q3", q: "Can I change my plan mid-cycle?", a: "Yes. Upgrades are prorated immediately; downgrades apply next cycle.", kind: "faq", tags: ["billing"], upvotes: 27, used: "1h ago" },
   { id: "q4", q: "Error E-4012 on checkout", a: "E-4012 means an expired CSRF token. Refresh the page and retry.", kind: "error_workaround", tags: ["errors"], upvotes: 19, used: "2h ago" },
 ];
@@ -309,13 +309,13 @@ export const TRACE_RUNS = [
 ];
 export const SPANS = [
   { id: "s0", name: "Support Router", kind: "chain", depth: 0, start: 0, dur: 4200, tokens: "12.4k", cost: "$0.038" },
-  { id: "s1", name: "faq_deflect", kind: "retriever", depth: 1, start: 40, dur: 210, tokens: "—", cost: "$0.000" },
-  { id: "s2", name: "intent_router", kind: "node", depth: 1, start: 260, dur: 60, tokens: "—", cost: "$0.000" },
+  { id: "s1", name: "faq_deflect", kind: "retriever", depth: 1, start: 40, dur: 210, tokens: "-", cost: "$0.000" },
+  { id: "s2", name: "intent_router", kind: "node", depth: 1, start: 260, dur: 60, tokens: "-", cost: "$0.000" },
   { id: "s3", name: "billing_agent", kind: "agent", depth: 1, start: 330, dur: 3600, tokens: "11.9k", cost: "$0.036" },
   { id: "s4", name: "model · claude-sonnet-4-6", kind: "llm", depth: 2, start: 360, dur: 1400, tokens: "4.1k", cost: "$0.013" },
   { id: "s5", name: "tool · get_order", kind: "tool", depth: 2, start: 1780, dur: 320, tokens: "92", cost: "$0.000" },
   { id: "s6", name: "model · claude-sonnet-4-6", kind: "llm", depth: 2, start: 2130, dur: 1700, tokens: "7.7k", cost: "$0.023" },
-  { id: "s7", name: "approve_refund", kind: "node", depth: 1, start: 3950, dur: 250, tokens: "—", cost: "$0.000" },
+  { id: "s7", name: "approve_refund", kind: "node", depth: 1, start: 3950, dur: 250, tokens: "-", cost: "$0.000" },
 ];
 export const COST_BY_NODE = [
   { name: "billing_agent", cost: 0.036, color: "var(--accent)" },
@@ -346,27 +346,27 @@ export type NavGroup = { section: string; items: NavLeaf[] };
 export type NavEntry = NavLeaf | NavGroup;
 
 export const PROJECT_NAV: NavEntry[] = [
-  { id: "overview", label: "Overview", icon: "overview", help: "Project dashboard — usage, cost, and recent activity at a glance." },
+  { id: "overview", label: "Overview", icon: "overview", help: "Project dashboard - usage, cost, and recent activity at a glance." },
   { section: "Build", items: [
     { id: "playground", label: "Playground", icon: "playground", help: "Chat with a workflow to test it live, with token + cost metering." },
-    { id: "workflows", label: "Workflows", icon: "workflows", countKey: "workflows", help: "The visual canvas — wire nodes (agents, tools, routers, triggers) into a graph." },
+    { id: "workflows", label: "Workflows", icon: "workflows", countKey: "workflows", help: "The visual canvas - wire nodes (agents, tools, routers, triggers) into a graph." },
     { id: "agents", label: "Agents", icon: "agents", countKey: "agents", help: "Reusable agent presets (model + prompt + tools + middleware) to drop into workflows." },
     { id: "tools", label: "Tools", icon: "tools", countKey: "tools", help: "Capabilities an agent can call: REST, GraphQL, Code, SQL, or built-ins." },
-    { id: "components", label: "Components", icon: "grid", countKey: "components", help: "User-defined UI widgets (HTML/CSS) an agent can render in chat — tables, cards, forms, actions." },
+    { id: "components", label: "Components", icon: "grid", countKey: "components", help: "User-defined UI widgets (HTML/CSS) an agent can render in chat - tables, cards, forms, actions." },
     { id: "knowledge", label: "Knowledge", icon: "knowledge", countKey: "knowledge", help: "Documents + Q&A pairs that ground answers (RAG). Add text, URLs, files, or crawl a site." },
     { id: "auth", label: "Auth Providers", icon: "auth", countKey: "auth", help: "Reusable credential strategies (Bearer, API key, OAuth, CSRF) that tools attach to." },
     { id: "mcp", label: "External MCP", icon: "connect", help: "Connect external MCP servers (GitHub, Slack, …) and toggle which of their tools agents and workflows can use." },
   ] },
   { section: "Deploy", items: [
     { id: "channels", label: "Channels", icon: "msg", help: "Deploy a workflow to a surface: email or Microsoft Teams." },
-    { id: "triggers", label: "Triggers", icon: "bolt", help: "Event-driven entry points — webhook URLs, schedules, and pollers that start runs." },
+    { id: "triggers", label: "Triggers", icon: "bolt", help: "Event-driven entry points - webhook URLs, schedules, and pollers that start runs." },
     { id: "connect", label: "Connect (MCP)", icon: "connect", help: "Expose this project's tools as an MCP server, and register external MCP servers to consume." },
     { id: "embed", label: "Embed", icon: "grid", help: "Embed this project's chatbot as a widget on any website (publishable key + allowed origins)." },
   ] },
   { section: "Observe", items: [
     { id: "traces", label: "Traces", icon: "traces", help: "Per-run span waterfall with model calls, tokens, latency, and cost." },
     { id: "datasets", label: "Evaluations", icon: "validate", help: "Test datasets (input + expected) scored against a workflow to catch regressions." },
-    { id: "handoff", label: "Agent inbox", icon: "user", help: "Live conversations escalated to a human — reply here to resume the run." },
+    { id: "handoff", label: "Agent inbox", icon: "user", help: "Live conversations escalated to a human - reply here to resume the run." },
   ] },
   { id: "settings", label: "Settings", icon: "settings", help: "Model defaults, provider keys, secrets, team & roles, and the audit log." },
 ];

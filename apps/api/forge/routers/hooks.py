@@ -1,7 +1,7 @@
 """Public inbound webhook endpoint for `webhook_in` triggers.
 
 Authenticated by the unguessable per-trigger key in the path (+ optional HMAC
-signature). No JWT — external systems POST here. Rate-limited per trigger.
+signature). No JWT - external systems POST here. Rate-limited per trigger.
 """
 
 from __future__ import annotations

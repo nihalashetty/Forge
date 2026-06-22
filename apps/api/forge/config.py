@@ -1,8 +1,8 @@
-"""Application settings — environment-driven (pydantic-settings).
+"""Application settings - environment-driven (pydantic-settings).
 
 Local defaults need **no external infra** (SQLite + embedded Chroma + in-process cache).
 Every value can be overridden via `.env` or real env vars; the production swaps
-(Postgres, Redis, Vault) are pure configuration changes — no code changes.
+(Postgres, Redis, Vault) are pure configuration changes - no code changes.
 """
 
 from __future__ import annotations
@@ -64,10 +64,10 @@ class Settings(BaseSettings):
     # the 30-day refresh token (rotated on use) keeps sessions alive without re-login.
     access_token_ttl_minutes: int = 60 * 8
     refresh_token_ttl_days: int = 30
-    # Auth is ON by default — the app behaves like production (real login required), so the
+    # Auth is ON by default - the app behaves like production (real login required), so the
     # flow is actually exercised in dev. The seeded owner (bootstrap_admin_email/password
     # below) lets you log in immediately; self-service signup creates additional workspaces.
-    # (Public surfaces — webhooks/MCP/OAuth callback — authenticate by their own key,
+    # (Public surfaces - webhooks/MCP/OAuth callback - authenticate by their own key,
     # never the JWT, so they keep working regardless.)
     auth_required: bool = True
     # Allow open self-service signup. When False, only an existing admin can invite users.
@@ -79,7 +79,7 @@ class Settings(BaseSettings):
     # emailed to new teammates, e.g. https://app.forge.yourco.com.
     public_console_url: str = "http://localhost:3000"
 
-    # --- Outbound email (SMTP) — used for team invites & notifications. When smtp_host is
+    # --- Outbound email (SMTP) - used for team invites & notifications. When smtp_host is
     # unset, email sending is a no-op and the API returns the invite link so an admin can
     # share it manually. Point at any SMTP relay (Postmark/SendGrid/SES/Mailgun/etc.). ---
     smtp_host: str | None = None
@@ -105,7 +105,7 @@ class Settings(BaseSettings):
     # in. The production guard refuses to boot with this on unless explicitly acknowledged.
     enable_code_tools: bool = False
     # Set true to run code tools in production despite the lack of OS isolation (you accept
-    # the in-process RCE/DoS risk — e.g. a trusted single-tenant deployment).
+    # the in-process RCE/DoS risk - e.g. a trusted single-tenant deployment).
     allow_unsandboxed_code_tools: bool = False
     # Prune the assistant's ~19 tools to the relevant subset per turn (cuts tool-schema
     # tokens). Opt-in: the selection itself is an extra model call, so it's a tradeoff.
@@ -121,7 +121,7 @@ class Settings(BaseSettings):
     default_model: str = "fake:echo"  # offline-safe default; set a real provider model in prod
     request_timeout_seconds: int = 600
 
-    # LangGraph checkpoint durability for runs: "async" (default — persist while the
+    # LangGraph checkpoint durability for runs: "async" (default - persist while the
     # next step executes), "sync" (persist before next step), or "exit" (persist only
     # at the end; fastest, but HITL interrupts mid-run rely on per-step checkpoints,
     # so keep async/sync when using human_input nodes).
@@ -183,7 +183,7 @@ class Settings(BaseSettings):
     trusted_hosts: list[str] = []
 
     # --- LangGraph checkpointer backend: "sqlite" (default, dev), "memory" (ephemeral),
-    # or "postgres" (durable, shared across workers — required for prod/HITL). When
+    # or "postgres" (durable, shared across workers - required for prod/HITL). When
     # "postgres", set FORGE_CHECKPOINT_POSTGRES_URL (or it falls back to database_url). ---
     checkpoint_backend: str = "sqlite"
     checkpoint_postgres_url: str | None = None
@@ -197,7 +197,7 @@ class Settings(BaseSettings):
         Path(self.chroma_path).mkdir(parents=True, exist_ok=True)
 
     # Environments treated as local/insecure-OK. ANY other value (staging, prod, an
-    # unknown string, or the empty string) is treated as security-enforced — so a
+    # unknown string, or the empty string) is treated as security-enforced - so a
     # misconfigured/typo'd FORGE_ENVIRONMENT fails CLOSED rather than silently skipping
     # every guard.
     _DEV_ENVIRONMENTS = ("development", "dev", "local", "test")
@@ -220,18 +220,18 @@ class Settings(BaseSettings):
         if not self.enforce_security:
             return problems
         if self.jwt_secret in ("", "dev-insecure-change-me"):
-            problems.append("FORGE_JWT_SECRET is unset/default — set a strong random secret.")
+            problems.append("FORGE_JWT_SECRET is unset/default - set a strong random secret.")
         if not self.auth_required:
             problems.append("FORGE_AUTH_REQUIRED must be true outside local development.")
         if self.bootstrap_admin_password == "forge-admin":
-            problems.append("FORGE_BOOTSTRAP_ADMIN_PASSWORD is the dev default — set a real one.")
+            problems.append("FORGE_BOOTSTRAP_ADMIN_PASSWORD is the dev default - set a real one.")
         if not self.egress_block_private:
             problems.append("FORGE_EGRESS_BLOCK_PRIVATE must stay true outside dev (SSRF guard).")
         if self.database_url.startswith("sqlite"):
-            problems.append("SQLite is not supported outside dev — set a Postgres FORGE_DATABASE_URL.")
+            problems.append("SQLite is not supported outside dev - set a Postgres FORGE_DATABASE_URL.")
         if self.checkpoint_backend not in ("postgres",):
             problems.append(
-                "FORGE_CHECKPOINT_BACKEND must be 'postgres' outside dev — a sqlite/memory "
+                "FORGE_CHECKPOINT_BACKEND must be 'postgres' outside dev - a sqlite/memory "
                 "checkpointer loses run/HITL state on restart and can't be shared across workers."
             )
         if self.enable_code_tools and not self.allow_unsandboxed_code_tools:
@@ -246,15 +246,15 @@ class Settings(BaseSettings):
         environment so an insecure local default is never silently shipped."""
         warns: list[str] = []
         if self.jwt_secret == "dev-insecure-change-me":
-            warns.append("JWT secret is the built-in dev default — tokens are forgeable. Set FORGE_JWT_SECRET.")
+            warns.append("JWT secret is the built-in dev default - tokens are forgeable. Set FORGE_JWT_SECRET.")
         if self.bootstrap_admin_password == "forge-admin":
             warns.append("Bootstrap admin password is the dev default. Set FORGE_BOOTSTRAP_ADMIN_PASSWORD.")
         if not self.auth_required:
-            warns.append("auth_required is false — unauthenticated requests act as the workspace owner.")
+            warns.append("auth_required is false - unauthenticated requests act as the workspace owner.")
         if self.enable_code_tools:
             warns.append("Code tools are enabled and run unsandboxed (RestrictedPython only).")
         if self.environment.lower() not in (*self._DEV_ENVIRONMENTS, "production", "prod", "staging"):
-            warns.append(f"Unrecognized FORGE_ENVIRONMENT={self.environment!r} — treated as security-enforced.")
+            warns.append(f"Unrecognized FORGE_ENVIRONMENT={self.environment!r} - treated as security-enforced.")
         return warns
 
 

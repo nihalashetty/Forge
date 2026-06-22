@@ -1,4 +1,4 @@
-"""Forge Assistant — a meta-agent whose tools are the Forge platform itself.
+"""Forge Assistant - a meta-agent whose tools are the Forge platform itself.
 
 It can inspect a project and *build* into it: create tools, auth providers, Q&A,
 knowledge, and workflows; and explain how the pieces fit together. It runs with the
@@ -185,7 +185,7 @@ def build_assistant_tools(tenant_id: str, project_id: str, mutated: list) -> lis
     async def create_builtin_tool(name: str, builtin: str, description: str = "") -> str:
         """Create a builtin tool. `builtin` is one of: current_time, calculator, web_fetch,
         web_search, knowledge_search. knowledge_search lets an AGENT search the project
-        knowledge base itself (docs + FAQs, optional folder filter) — attach it to one agent
+        knowledge base itself (docs + FAQs, optional folder filter) - attach it to one agent
         instead of a classifier→router when a question may have several parts."""
         from forge.services.tools import ToolService
         if builtin not in ("current_time", "calculator", "web_fetch", "web_search", "knowledge_search", "remember", "recall"):
@@ -227,7 +227,7 @@ def build_assistant_tools(tenant_id: str, project_id: str, mutated: list) -> lis
 
     async def add_qa_pair(question: str, answer: str, kind: str = "faq") -> str:
         """Add a Q&A pair to the knowledge base so the workflow can answer this question with
-        this exact answer. `kind` is a free-form category — 'faq', 'error_workaround', or any
+        this exact answer. `kind` is a free-form category - 'faq', 'error_workaround', or any
         custom kind the user wants (retrieval nodes and agent Q&A can filter by it)."""
         async with SessionLocal() as s:
             qa = await KnowledgeService.create_qa(s, tenant_id, project_id, question=question, answer=answer, kind=kind or "faq")
@@ -236,7 +236,7 @@ def build_assistant_tools(tenant_id: str, project_id: str, mutated: list) -> lis
 
     async def add_knowledge_text(name: str, text: str, folder: str = "") -> str:
         """Add a document of text to the knowledge base (it is split, embedded, and made
-        searchable for grounding). `folder` (optional, free-form) organizes sources —
+        searchable for grounding). `folder` (optional, free-form) organizes sources -
         retrieval nodes and knowledge_search tools can filter by folder."""
         async with SessionLocal() as s:
             src = await KnowledgeService.create_source(s, tenant_id, project_id, kind="text", name=name, text=text, folder=folder)
@@ -308,7 +308,7 @@ def build_assistant_tools(tenant_id: str, project_id: str, mutated: list) -> lis
         context (include_qa), and the agent answers strictly from that context. Idempotent by name.
         `instructions` sets the agent's system prompt; `model` overrides the model.
         HUMAN-IN-THE-LOOP (real interrupts, not prompt text):
-        - review_before_reply=True inserts a human_input node before end — the run PAUSES and a
+        - review_before_reply=True inserts a human_input node before end - the run PAUSES and a
           human must approve/reject the agent's draft before it is final.
         - approve_tools='tool_a, tool_b' attaches HumanInTheLoopMiddleware so those tool calls
           pause for approval before executing.
@@ -387,7 +387,7 @@ def build_assistant_tools(tenant_id: str, project_id: str, mutated: list) -> lis
         """Insert a REAL human-approval pause (a human_input interrupt node) into an EXISTING
         workflow, right before it ends. The run will PAUSE in the Playground until a person
         approves or rejects. Use this whenever the user wants HITL/approval added to a workflow
-        that already exists — never simulate approval through agent instructions. Idempotent:
+        that already exists - never simulate approval through agent instructions. Idempotent:
         if the workflow already has a human_input node, only its prompt is updated."""
         async with SessionLocal() as s:
             wfs = await WorkflowService.list(s, tenant_id, project_id)
@@ -404,7 +404,7 @@ def build_assistant_tools(tenant_id: str, project_id: str, mutated: list) -> lis
             else:
                 end_ids = {n["id"] for n in nodes if n["type"] == "end"}
                 if not end_ids:
-                    return f"Workflow '{wf.name}' has no end node — open it on the canvas first."
+                    return f"Workflow '{wf.name}' has no end node - open it on the canvas first."
                 first_end = next(n for n in nodes if n["type"] == "end")
                 gate = _node("human_review", "human_input",
                              {"prompt": prompt, "allowed_decisions": ["approve", "reject"]},
@@ -424,7 +424,7 @@ def build_assistant_tools(tenant_id: str, project_id: str, mutated: list) -> lis
             verb, err, warns = await _save_workflow(s, name=wf.name, description=wf.description or "", nodes=nodes, edges=edges, state=ex.get("state") or _CHAT_STATE, entry_node=ex.get("entry_node") or "start")
         if err:
             return "ERROR: " + err
-        return f"Added a human-review pause to '{wf.name}': every reply now stops at an approval gate before finishing.{_warn_note(warns)} Test it in the Playground — the run will pause with approve/reject buttons."
+        return f"Added a human-review pause to '{wf.name}': every reply now stops at an approval gate before finishing.{_warn_note(warns)} Test it in the Playground - the run will pause with approve/reject buttons."
 
     async def test_workflow(name_or_id: str, message: str) -> str:
         """Run a workflow with a test message and return its final answer plus the nodes it
@@ -510,7 +510,7 @@ def build_assistant_tools(tenant_id: str, project_id: str, mutated: list) -> lis
         return json.dumps(out)
 
     async def get_node_schema(node_type: str) -> str:
-        """Full JSON config schema for one node type — field types, defaults, and help
+        """Full JSON config schema for one node type - field types, defaults, and help
         text. Use when you need exact config details for a custom workflow."""
         from forge.engine.registry import NODE_REGISTRY
         from forge.schemas import contracts
@@ -530,11 +530,11 @@ def build_assistant_tools(tenant_id: str, project_id: str, mutated: list) -> lis
         return json.dumps(out)
 
     async def create_custom_workflow(name: str, description: str, definition_json: str) -> str:
-        """Build ANY workflow shape — not just the canned patterns. `definition_json` is a
+        """Build ANY workflow shape - not just the canned patterns. `definition_json` is a
         JSON object: {"state": {...}, "entry_node": "start", "nodes": [{id,type,config}...],
         "edges": [{source,target}...]}. Node positions are auto-laid-out if omitted. State
         keys written by known node configs are auto-declared. The definition is VALIDATED:
-        on failure you get field-pointer errors — fix the definition and call again.
+        on failure you get field-pointer errors - fix the definition and call again.
         Idempotent by name (same name = update in place). Use list_node_types /
         get_node_schema first so configs are correct, and ALWAYS test_workflow afterwards."""
         try:
@@ -558,7 +558,7 @@ def build_assistant_tools(tenant_id: str, project_id: str, mutated: list) -> lis
                 nodes=nodes, edges=edges, state=state, entry_node=entry,
             )
         if err:
-            return "ERROR: " + err + " — fix the definition and call create_custom_workflow again."
+            return "ERROR: " + err + " - fix the definition and call create_custom_workflow again."
         shape = " → ".join(n["id"] for n in nodes[:6]) + ("…" if len(nodes) > 6 else "")
         return f"{verb} custom workflow '{name}' ({len(nodes)} nodes: {shape}).{_warn_note(warns)} Now VERIFY it with test_workflow."
 
@@ -597,7 +597,7 @@ def build_assistant_tools(tenant_id: str, project_id: str, mutated: list) -> lis
     async def delete_workflow(name_or_id: str) -> str:
         """Delete a workflow by its exact name or id (also removes its run history). Use this to
         clean up duplicates. If the name matches several workflows, this refuses and lists their
-        ids so you can delete a specific one — never bulk-deletes on an ambiguous name."""
+        ids so you can delete a specific one - never bulk-deletes on an ambiguous name."""
         async with SessionLocal() as s:
             wfs = await WorkflowService.list(s, tenant_id, project_id)
             by_id = next((w for w in wfs if w.id == name_or_id), None)
@@ -638,33 +638,33 @@ def build_assistant_tools(tenant_id: str, project_id: str, mutated: list) -> lis
     ]
 
 
-SYSTEM_PROMPT = """You are the Forge Assistant — an expert copilot embedded in Forge, a platform for \
+SYSTEM_PROMPT = """You are the Forge Assistant - an expert copilot embedded in Forge, a platform for \
 building, testing, and shipping AI agents and workflows. You help the user build INTO their current project \
 by calling your tools, and you explain how Forge works.
 
-What you can do (use your tools to actually do these — don't just describe them):
-- Inspect the project (list_resources, describe_workflow) and the platform itself (list_node_types, get_node_schema, list_middleware_types — the LIVE node/middleware catalog; read these before building anything custom).
-- Create tools (create_rest_tool, create_builtin_tool — builtins include knowledge_search, which lets an agent search the knowledge base itself), reusable agent presets (create_agent_preset — takes instructions/model/tools), and auth providers (create_auth_provider).
-- Grow the knowledge base (add_qa_pair — `kind` is a free-form category; add_knowledge_text — `folder` organizes documents).
+What you can do (use your tools to actually do these - don't just describe them):
+- Inspect the project (list_resources, describe_workflow) and the platform itself (list_node_types, get_node_schema, list_middleware_types - the LIVE node/middleware catalog; read these before building anything custom).
+- Create tools (create_rest_tool, create_builtin_tool - builtins include knowledge_search, which lets an agent search the knowledge base itself), reusable agent presets (create_agent_preset - takes instructions/model/tools), and auth providers (create_auth_provider).
+- Grow the knowledge base (add_qa_pair - `kind` is a free-form category; add_knowledge_text - `folder` organizes documents).
 - Build workflows (all idempotent by name):
-  • create_grounded_workflow — start → retrieval (BOTH docs + Q&A) → grounded agent → end. Use for "answer from my knowledge base" chatbots, including "check my Q&A/FAQs and the knowledge base" — the retrieval step pulls both. HITL options: review_before_reply=True (human approves the draft before it's final) and approve_tools='a, b' (those tool calls pause for approval).
-  • create_intent_router_workflow — start → classifier (structured output picks ONE intent) → router (one case per intent) → a specialist agent per intent + a general fallback. Use when different request types need different handling AND each request has a single intent.
-  • create_custom_workflow — ANY other shape, from a full definition JSON (state/entry_node/nodes/edges). It validates and returns field-pointer errors you must fix. Use for multi-intent fan-out (classifier multi_label + router multi + synthesizer agent), tool_call pipelines, webhook flows, or anything the canned builders can't express. Read the forge-platform skill first.
-- GIVE AGENTS KNOWLEDGE DIRECTLY. An agent node can search the project knowledge base itself — set its config.knowledge: {"rag": {"enabled": true, "folders": [...], "top_k": 4}, "qa": {"enabled": true, "kinds": [...]}}. This compiles to agent-callable tools (search_knowledge_base for documents, lookup_faq for curated answers), each toggled and scoped independently. PREFER this over wiring a separate retrieval node OR creating a knowledge_search Tool whenever the agent is conversational or may get multi-part questions — the agent searches per sub-question with its own phrasing instead of one fixed search on the whole message. Use the fixed retrieval NODE only when grounding must be guaranteed (the agent can't skip it).
-- MULTI-INTENT questions ("one message asks two things"): prefer ONE agent with config.knowledge enabled (rag and/or qa) — it searches each sub-question separately and composes one answer — over a classifier→router, which answers only one part. For parallel specialists, use classifier multi_label=true + router multi=true + a synthesizer agent before end (see the forge-platform skill).
+  • create_grounded_workflow - start → retrieval (BOTH docs + Q&A) → grounded agent → end. Use for "answer from my knowledge base" chatbots, including "check my Q&A/FAQs and the knowledge base" - the retrieval step pulls both. HITL options: review_before_reply=True (human approves the draft before it's final) and approve_tools='a, b' (those tool calls pause for approval).
+  • create_intent_router_workflow - start → classifier (structured output picks ONE intent) → router (one case per intent) → a specialist agent per intent + a general fallback. Use when different request types need different handling AND each request has a single intent.
+  • create_custom_workflow - ANY other shape, from a full definition JSON (state/entry_node/nodes/edges). It validates and returns field-pointer errors you must fix. Use for multi-intent fan-out (classifier multi_label + router multi + synthesizer agent), tool_call pipelines, webhook flows, or anything the canned builders can't express. Read the forge-platform skill first.
+- GIVE AGENTS KNOWLEDGE DIRECTLY. An agent node can search the project knowledge base itself - set its config.knowledge: {"rag": {"enabled": true, "folders": [...], "top_k": 4}, "qa": {"enabled": true, "kinds": [...]}}. This compiles to agent-callable tools (search_knowledge_base for documents, lookup_faq for curated answers), each toggled and scoped independently. PREFER this over wiring a separate retrieval node OR creating a knowledge_search Tool whenever the agent is conversational or may get multi-part questions - the agent searches per sub-question with its own phrasing instead of one fixed search on the whole message. Use the fixed retrieval NODE only when grounding must be guaranteed (the agent can't skip it).
+- MULTI-INTENT questions ("one message asks two things"): prefer ONE agent with config.knowledge enabled (rag and/or qa) - it searches each sub-question separately and composes one answer - over a classifier→router, which answers only one part. For parallel specialists, use classifier multi_label=true + router multi=true + a synthesizer agent before end (see the forge-platform skill).
 - Verify and judge your own work (test_workflow, then evaluate_build).
-- Delete a workflow to clean up duplicates (delete_workflow — the run PAUSES for human approval before deleting).
+- Delete a workflow to clean up duplicates (delete_workflow - the run PAUSES for human approval before deleting).
 
 How Forge concepts work, so you can explain them:
 - A WORKFLOW is a graph of nodes wired start → … → end. Messages flow through. Common nodes: \
-'retrieval' (RAG — pulls relevant knowledge-base docs + Q&A pairs for the question), \
+'retrieval' (RAG - pulls relevant knowledge-base docs + Q&A pairs for the question), \
 'agent' (a model with tools and a system prompt that reasons and replies), 'classifier' (structured output picks one \
 intent label into state), 'router' (branches on a state value via cases), 'human_input' (PAUSES the run with a real \
 LangGraph interrupt until a human approves/rejects in the Playground). The recommended grounded chatbot is \
 start → retrieval → agent → end, where the agent's prompt restricts it to the retrieved knowledge.
 - HUMAN-IN-THE-LOOP means a real interrupt: either a 'human_input' node in the graph (review_before_reply on \
 create_grounded_workflow, or add_human_review for an EXISTING workflow) or HumanInTheLoopMiddleware on the agent \
-(approve_tools). NEVER fake HITL by telling the agent to "ask for approval" or "reply yes/no" in its instructions — \
+(approve_tools). NEVER fake HITL by telling the agent to "ask for approval" or "reply yes/no" in its instructions - \
 prompt text does not pause anything. If the user says HITL/approval/review and the workflow exists, call \
 add_human_review; if building new, pass review_before_reply=True. Then VERIFY with test_workflow that the run \
 pauses (nodes_visited ends in '__interrupt__').
@@ -674,16 +674,16 @@ pauses (nodes_visited ends in '__interrupt__').
 
 Rules:
 - When the user asks you to build/add/create something, CALL the appropriate tool, then confirm in one or two plain sentences what you did and what to do next (e.g. 'Test it in the Playground').
-- WORK UNTIL IT'S CORRECT. For any build or change: (1) plan the steps with write_todos, (2) inspect what exists with list_resources, (3) build with the right tool, (4) VERIFY with test_workflow — try a realistic question, a greeting, an off-topic question, and EVERY branch/intent, (5) JUDGE with evaluate_build (pass it the user's request, what you built, and the test results) — if the verdict is 'fail', fix the issues and re-verify. Do not report success until both verification and the judge passed.
-- MATCH THE REQUEST. Read what the user actually described and pick the right builder + parameters — do NOT default everything to create_grounded_workflow. If they say "use my Q&A/FAQs and the knowledge base", that's still create_grounded_workflow — its retrieval step already pulls BOTH Q&A pairs and documents. If they give specific agent instructions, persona, or a model, pass them via `instructions`/`model`. Name the workflow after what they asked for.
-- TRIAGE FIRST (design for real conversations). Real users open with greetings and meta questions ("hi", "what can you do?", "how can you help me?") as often as real support questions. Do NOT pipe those straight into retrieval — they miss and dead-end at a "no relevant data → create a ticket" path, which is a terrible first impression. For any support/Q&A/RAG/ticketing workflow you design with create_custom_workflow, put a triage step right after start: a classifier (e.g. labels: general, support) → router that sends greetings/smalltalk/meta/capability questions to a small friendly agent that answers directly ("here's what I can help with…") and ends, and routes ONLY genuine product/support questions into the retrieval/ticket pipeline. (A single front agent with config.knowledge enabled — so it both chats AND searches the KB per sub-question — is an acceptable, often simpler, alternative.) When you VERIFY, always test a greeting and a "what can you do?" message and confirm they get a friendly direct reply — never the ticket path.
-- AVOID DUPLICATES. Before creating a workflow, call list_resources to see what already exists. If a suitable workflow is already there, UPDATE it (reuse the same name — the builders update in place) or point the user to it. Only create a new one when the user clearly wants an additional, distinct workflow. Never create the same workflow twice in a session.
+- WORK UNTIL IT'S CORRECT. For any build or change: (1) plan the steps with write_todos, (2) inspect what exists with list_resources, (3) build with the right tool, (4) VERIFY with test_workflow - try a realistic question, a greeting, an off-topic question, and EVERY branch/intent, (5) JUDGE with evaluate_build (pass it the user's request, what you built, and the test results) - if the verdict is 'fail', fix the issues and re-verify. Do not report success until both verification and the judge passed.
+- MATCH THE REQUEST. Read what the user actually described and pick the right builder + parameters - do NOT default everything to create_grounded_workflow. If they say "use my Q&A/FAQs and the knowledge base", that's still create_grounded_workflow - its retrieval step already pulls BOTH Q&A pairs and documents. If they give specific agent instructions, persona, or a model, pass them via `instructions`/`model`. Name the workflow after what they asked for.
+- TRIAGE FIRST (design for real conversations). Real users open with greetings and meta questions ("hi", "what can you do?", "how can you help me?") as often as real support questions. Do NOT pipe those straight into retrieval - they miss and dead-end at a "no relevant data → create a ticket" path, which is a terrible first impression. For any support/Q&A/RAG/ticketing workflow you design with create_custom_workflow, put a triage step right after start: a classifier (e.g. labels: general, support) → router that sends greetings/smalltalk/meta/capability questions to a small friendly agent that answers directly ("here's what I can help with…") and ends, and routes ONLY genuine product/support questions into the retrieval/ticket pipeline. (A single front agent with config.knowledge enabled - so it both chats AND searches the KB per sub-question - is an acceptable, often simpler, alternative.) When you VERIFY, always test a greeting and a "what can you do?" message and confirm they get a friendly direct reply - never the ticket path.
+- AVOID DUPLICATES. Before creating a workflow, call list_resources to see what already exists. If a suitable workflow is already there, UPDATE it (reuse the same name - the builders update in place) or point the user to it. Only create a new one when the user clearly wants an additional, distinct workflow. Never create the same workflow twice in a session.
 - When the user asks how something works or to explain their setup, call list_resources / describe_workflow first, then explain clearly and briefly.
 - If the user wants to remove something or clean up duplicates, use delete_workflow (by exact name or id). Confirm the specific target first if the name is ambiguous.
 - Be concise and concrete. Prefer doing over talking. Never claim you did something you didn't do via a tool."""
 
 
-# The orchestrating assistant juggles ~19 tools and a long policy prompt — small models
+# The orchestrating assistant juggles ~19 tools and a long policy prompt - small models
 # routinely ignore parameters like review_before_reply. Prefer the provider's strong
 # model for the assistant itself (workflow agents keep the cheaper project default).
 # Override per project via project.config.assistant_model.
@@ -706,7 +706,7 @@ class AssistantService:
     @staticmethod
     async def _build_agent(*, tenant_id: str, project_id: str, checkpointer, mutated: list):
         # Deep agent: adds planning (write_todos), virtual files, summarization, skills,
-        # and HITL on top of the Forge tools — so it can take a multi-step request,
+        # and HITL on top of the Forge tools - so it can take a multi-step request,
         # build, verify with test_workflow, judge with evaluate_build, and keep
         # iterating until the result is actually correct.
         from deepagents import FilesystemPermission, create_deep_agent
@@ -751,7 +751,7 @@ class AssistantService:
             kwargs["permissions"] = [
                 FilesystemPermission(operations=["write"], paths=["/skills/**"], mode="deny"),
             ]
-        # Destructive ops pause for human approval — REAL interrupts (needs checkpointer).
+        # Destructive ops pause for human approval - REAL interrupts (needs checkpointer).
         if checkpointer is not None:
             kwargs["checkpointer"] = checkpointer
             kwargs["interrupt_on"] = {"delete_workflow": True}
@@ -802,7 +802,7 @@ class AssistantService:
         async for mode, chunk in agent.astream(payload, config, stream_mode=["messages", "updates"]):
             if mode == "messages":
                 msg, _meta = chunk if isinstance(chunk, (list, tuple)) and len(chunk) == 2 else (chunk, {})
-                # Only the agent's own narration — never echo tool-result or human messages.
+                # Only the agent's own narration - never echo tool-result or human messages.
                 if getattr(msg, "type", "") not in ("ai", "AIMessageChunk"):
                     continue
                 text = content_to_text(getattr(msg, "content", ""))

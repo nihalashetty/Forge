@@ -1,4 +1,4 @@
-# Forge — production-shaped local stack: Postgres (app DB + durable checkpointer),
+# Forge - production-shaped local stack: Postgres (app DB + durable checkpointer),
 # Redis (shared rate-limit/idempotency + future worker queue), the API, and the web
 # console. Copy .env from apps/api/.env.example and SET REAL SECRETS before using.
 #
@@ -8,7 +8,7 @@
 # - FORGE_ENVIRONMENT=production turns on the hardening guard (validate_production); the
 #   app refuses to boot with default secrets / sqlite / non-durable checkpointer.
 # - The scheduler runs only on the single `api` service (scheduler_leader); scale `api`
-#   replicas freely behind a load balancer — limits/idempotency are shared via Redis.
+#   replicas freely behind a load balancer - limits/idempotency are shared via Redis.
 
 services:
   postgres:

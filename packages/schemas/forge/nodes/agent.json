@@ -4,7 +4,7 @@
   "type": "object",
   "anyOf": [{ "required": ["model"] }, { "required": ["agent_ref"] }],
   "properties": {
-    "agent_ref": { "type": "string", "description": "Id of a saved Agent preset this node mirrors. When set, the saved agent's config drives this node (live — edits in the Agents tab apply).", "x-ui": { "widget": "reference", "refType": "agent", "section": "Flavor", "order": 0 } },
+    "agent_ref": { "type": "string", "description": "Id of a saved Agent preset this node mirrors. When set, the saved agent's config drives this node (live - edits in the Agents tab apply).", "x-ui": { "widget": "reference", "refType": "agent", "section": "Flavor", "order": 0 } },
     "flavor": { "type": "string", "enum": ["agent", "deep_agent"], "default": "agent", "x-ui": { "widget": "segmented", "order": 1, "section": "Flavor" } },
     "name": { "$ref": "forge/common#/$defs/Identifier", "x-ui": { "section": "Flavor" } },
     "model": { "$ref": "forge/common#/$defs/ModelRef", "x-ui": { "section": "Model", "order": 2 } },
@@ -59,7 +59,7 @@
             "folders": { "type": "array", "items": { "type": "string" }, "x-ui": { "widget": "chips", "refType": "kb_folder" }, "description": "Restrict to these knowledge folders (empty = all)." },
             "top_k": { "type": "integer", "default": 4, "description": "Document chunks returned per search." },
             "min_score": { "type": "number", "default": 0.18, "description": "Drop chunks below this similarity so off-topic queries surface nothing." },
-            "hybrid": { "type": "boolean", "default": false, "description": "Blend lexical BM25 keyword ranking with vector search (RRF) so exact terms — codes, names, SKUs — aren't missed." }
+            "hybrid": { "type": "boolean", "default": false, "description": "Blend lexical BM25 keyword ranking with vector search (RRF) so exact terms - codes, names, SKUs - aren't missed." }
           }
         },
         "qa": {
@@ -77,7 +77,7 @@
     "mcp_servers": {
       "type": "array",
       "items": { "type": "string" },
-      "description": "Registered MCP servers (by id) this agent can use — each server's enabled tools become agent-callable.",
+      "description": "Registered MCP servers (by id) this agent can use - each server's enabled tools become agent-callable.",
       "x-ui": { "widget": "chips", "refType": "mcp_client", "section": "MCP Servers", "order": 5.5 }
     },
     "response_format": { "$ref": "#/$defs/ResponseFormat", "x-ui": { "section": "Output", "order": 6 } },

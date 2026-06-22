@@ -3,7 +3,7 @@ import type { NextRequest } from "next/server";
 
 /* Restrict which sites may embed the /embed widget via the response's `frame-ancestors` CSP,
    derived from the project's configured allowed_origins (Phase 3b). Default 'self' blocks
-   external embedding until the project explicitly allow-lists an origin — a secure default. */
+   external embedding until the project explicitly allow-lists an origin - a secure default. */
 export const config = { matcher: ["/embed"] };
 
 export async function middleware(req: NextRequest) {

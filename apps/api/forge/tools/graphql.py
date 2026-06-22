@@ -1,6 +1,6 @@
-"""GraphQL tool — a REST POST with a query + variables, then response projection."""
+"""GraphQL tool - a REST POST with a query + variables, then response projection."""
 
-# NO `from __future__ import annotations` here — see rest.py: the runtime-injection
+# NO `from __future__ import annotations` here - see rest.py: the runtime-injection
 # machinery needs the real ToolRuntime class on inspect.signature, not a string.
 import time
 from typing import Any
@@ -66,7 +66,7 @@ async def execute_graphql(
 def build_graphql_tool(cfg: dict, ctx):
     args_schema = build_args_schema(cfg, fields_key="variables")
 
-    # Bare ToolRuntime annotation + None default — see rest.py for why (zero-arg tools).
+    # Bare ToolRuntime annotation + None default - see rest.py for why (zero-arg tools).
     async def _call(runtime: ToolRuntime = None, **kwargs):  # type: ignore[assignment]
         context = getattr(runtime, "context", None) or {}
         res = await execute_graphql(

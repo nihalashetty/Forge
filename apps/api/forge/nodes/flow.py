@@ -37,7 +37,7 @@ def make_router_path(config: dict):
     """Build a LangGraph path function: state -> target node id (or END).
 
     With `multi: true`, a list-valued expression (e.g. a multi-label classifier's
-    output) routes to EVERY matching case target — LangGraph runs them in parallel
+    output) routes to EVERY matching case target - LangGraph runs them in parallel
     within one superstep, which is how one question with several intents reaches
     several specialists at once.
     """
@@ -92,7 +92,7 @@ def subworkflow_factory(config: dict, ctx: CompileContext):
     """Compile a referenced workflow as a nested graph node (reusable component).
 
     The sub-graph shares the parent's tool/agent/auth context but carries NO checkpointer
-    (the top-level workflow owns durability — same rule as embedded agents). Recursion is
+    (the top-level workflow owns durability - same rule as embedded agents). Recursion is
     broken by tracking in-progress workflow ids on the context."""
     import dataclasses
 
@@ -129,7 +129,7 @@ def loop_factory(config: dict, ctx: CompileContext):
 
     def _node(state: dict) -> dict:
         # `_loop_count` is the running firing count; stop once it reaches max_iter. (Counting
-        # contract is intentionally stable — see test_loop_node_counts_and_stops.)
+        # contract is intentionally stable - see test_loop_node_counts_and_stops.)
         i = int(state.get("_loop_count", 0)) + 1
         cont = i < max_iter
         if cont and condition:
@@ -226,7 +226,7 @@ register(
         category="flow",
         label="Parallel Fanout",
         description="Map a list: run a child node per item in parallel (Send).",
-        summarize=lambda c: [f"over {c.get('over', '—')} → {c.get('child_node', '—')}"],
+        summarize=lambda c: [f"over {c.get('over', '-')} → {c.get('child_node', '-')}"],
     )
 )
 
@@ -254,7 +254,7 @@ register(
         category="flow",
         label="Subworkflow",
         description="Run another workflow as a reusable component.",
-        summarize=lambda c: [f"→ {c.get('workflow_id', '—')}"],
+        summarize=lambda c: [f"→ {c.get('workflow_id', '-')}"],
     )
 )
 

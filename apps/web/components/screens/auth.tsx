@@ -1,5 +1,5 @@
 "use client";
-/* Auth Providers — master/detail: left list, right Strategy + Credentials forms + masked test. */
+/* Auth Providers - master/detail: left list, right Strategy + Credentials forms + masked test. */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Icon } from "../icons";
 import { Field, Modal, StatusPill, Tile, Toggle } from "../primitives";
@@ -9,12 +9,12 @@ const KIND_LABEL: Record<string, string> = {
   csrf_session: "CSRF + session", oauth2_client_credentials: "OAuth2 client-creds", oauth2_authorization_code: "OAuth2 (user login)", bearer: "Bearer token", basic: "Basic auth", api_key: "API key", custom_script: "Custom script",
 };
 
-// One-line "use this when…" per strategy — shown in the create picker so the choice is legible.
+// One-line "use this when…" per strategy - shown in the create picker so the choice is legible.
 const KIND_DESC: Record<string, string> = {
   bearer: "A static token sent in a header. The simplest option.",
   api_key: "A key sent as a header or query param.",
   basic: "Username + password (HTTP Basic).",
-  oauth2_client_credentials: "Machine-to-machine — Forge trades a client id/secret for a short-lived token.",
+  oauth2_client_credentials: "Machine-to-machine - Forge trades a client id/secret for a short-lived token.",
   oauth2_authorization_code: "A user signs in on the provider's consent page; tokens auto-refresh.",
   csrf_session: "Log in to a web app, capture its CSRF token + session cookie, and replay them. For targets with no real API auth.",
 };
@@ -112,7 +112,7 @@ function CreateModal({ open, onClose, onCreate }: { open: boolean; onClose: () =
   return (
     <Modal open={open} onClose={onClose} title="New auth provider" width={520}
       footer={<><button className="btn btn-ghost" onClick={onClose}>Cancel</button><button className="btn btn-primary" onClick={() => onCreate(name.trim().replace(/\s+/g, "_"), kind)}>Create</button></>}>
-      <Field label="Strategy" help="How the target API expects to be authenticated — pick whichever scheme it requires.">
+      <Field label="Strategy" help="How the target API expects to be authenticated - pick whichever scheme it requires.">
         <div className="col gap2">
           {Object.keys(TEMPLATES).map((k) => {
             const on = kind === k;
@@ -284,7 +284,7 @@ function OAuthConnect({ project, provider }: { project: any; provider: AuthProvi
       const t = setInterval(() => refresh(), 2500);
       setTimeout(() => { clearInterval(t); try { w?.close(); } catch { /* ignore */ } }, 60000);
     } catch {
-      setErr("Could not start OAuth — save the provider first and set the client_id secret in Settings → Secrets.");
+      setErr("Could not start OAuth - save the provider first and set the client_id secret in Settings → Secrets.");
     }
   }
 

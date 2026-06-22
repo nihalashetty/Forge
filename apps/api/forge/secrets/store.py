@@ -1,9 +1,9 @@
-"""SecretStore — encrypted read/write over the `secrets` table.
+"""SecretStore - encrypted read/write over the `secrets` table.
 
 Values are stored as encrypted JSON (so a credential can be a string OR a structured
 object like {"username","password"}). References use `secret://proj/<name>`; the
 tenant + project scope comes from the caller (never the ref), so refs can't cross
-tenants. Reads are audited (Doc 2 §12) — TODO: wire audit_log.
+tenants. Reads are audited (Doc 2 §12) - TODO: wire audit_log.
 """
 
 from __future__ import annotations
@@ -59,7 +59,7 @@ class SecretStore:
         await session.refresh(secret)
         return secret
 
-    # last_used_at is bookkeeping, not security audit — committing it on EVERY read
+    # last_used_at is bookkeeping, not security audit - committing it on EVERY read
     # added a write+fsync (~12ms+) to every node that resolves a key. Throttle to
     # at most one write per ref per window.
     _LAST_USED_WRITE_WINDOW = timedelta(minutes=5)

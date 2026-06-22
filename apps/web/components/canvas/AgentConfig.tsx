@@ -22,14 +22,14 @@ export function AgentConfig({ config, onChange, tools = [], agents = [], folders
   const toggleComponent = (id: string) =>
     set({ components: selectedComponents.includes(id) ? selectedComponents.filter((c) => c !== id) : [...selectedComponents, id] });
 
-  // Built-in knowledge access — compiles to agent-callable RAG / Q&A tools (see
+  // Built-in knowledge access - compiles to agent-callable RAG / Q&A tools (see
   // tools/builtin.py build_knowledge_capability_tools). Each capability is independent.
   const knowledge = config.knowledge || {};
   const setKnowledge = (key: "rag" | "qa", patch: Cfg) =>
     set({ knowledge: { ...knowledge, [key]: { ...(knowledge[key] || {}), ...patch } } });
 
   // Bind this node to a saved agent (from the Agents tab). When bound, the saved agent's
-  // config drives the node LIVE — the backend resolves `agent_ref` at compile time, so
+  // config drives the node LIVE - the backend resolves `agent_ref` at compile time, so
   // editing the agent once updates every node that uses it. A snapshot of its config is
   // also copied in so the canvas card + validation stay populated. "None" detaches and
   // keeps the current fields for inline editing.
@@ -50,9 +50,9 @@ export function AgentConfig({ config, onChange, tools = [], agents = [], folders
   return (
     <div className="col" style={{ gap: 18 }}>
       {agents.length > 0 && (
-        <Section label="Saved agent" hint={boundId ? undefined : "Bind this node to a saved agent — it mirrors that agent live, so editing the agent once updates every node that uses it."}>
+        <Section label="Saved agent" hint={boundId ? undefined : "Bind this node to a saved agent - it mirrors that agent live, so editing the agent once updates every node that uses it."}>
           <select className="select" value={boundId} onChange={(e) => bindTo(e.target.value)}>
-            <option value="">None — configure inline</option>
+            <option value="">None - configure inline</option>
             {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
           </select>
         </Section>
@@ -66,10 +66,10 @@ export function AgentConfig({ config, onChange, tools = [], agents = [], folders
                 <Tile icon={boundAgent.config?.flavor === "deep_agent" ? "n_deepagent" : "n_agent"} color="var(--accent)" size={26} />
                 <div style={{ minWidth: 0 }}>
                   <div className="t-h3 truncate">{boundAgent.name}</div>
-                  <div className="t-caption fg-2 truncate">{boundAgent.config?.model || "—"} · {(boundAgent.config?.tools || []).length} tools · {(boundAgent.config?.middleware || []).length} middleware</div>
+                  <div className="t-caption fg-2 truncate">{boundAgent.config?.model || "-"} · {(boundAgent.config?.tools || []).length} tools · {(boundAgent.config?.middleware || []).length} middleware</div>
                 </div>
               </div>
-              <div className="field-help">This node mirrors the saved agent. Edit its model, instructions, tools, and middleware in the Agents tab — changes apply everywhere it's used.</div>
+              <div className="field-help">This node mirrors the saved agent. Edit its model, instructions, tools, and middleware in the Agents tab - changes apply everywhere it's used.</div>
             </>
           ) : (
             <div className="field-help" style={{ color: "var(--warn)" }}>The saved agent this node referenced wasn’t found (it may have been deleted). Pick another above, or detach to configure inline.</div>
@@ -97,7 +97,7 @@ export function AgentConfig({ config, onChange, tools = [], agents = [], folders
       </Section>
 
       <CollapsibleSection label="Tools" badge={selectedTools.length ? `${selectedTools.length} selected` : undefined}
-        hint={tools.length ? undefined : "No tools in this project yet — add them on the Tools screen."}>
+        hint={tools.length ? undefined : "No tools in this project yet - add them on the Tools screen."}>
         <div className="row gap2 wrap">
           {tools.map((t) => {
             const on = selectedTools.includes(t.id);
@@ -113,7 +113,7 @@ export function AgentConfig({ config, onChange, tools = [], agents = [], folders
 
       {components.length > 0 && (
         <CollapsibleSection label="Components" badge={selectedComponents.length ? `${selectedComponents.length} selected` : undefined}
-          hint="UI widgets this agent can render in chat — it calls one like a tool and the client draws the saved template.">
+          hint="UI widgets this agent can render in chat - it calls one like a tool and the client draws the saved template.">
           <div className="row gap2 wrap">
             {components.map((c) => {
               const on = selectedComponents.includes(c.id);
@@ -129,7 +129,7 @@ export function AgentConfig({ config, onChange, tools = [], agents = [], folders
       )}
 
       <CollapsibleSection label="Knowledge" badge={knowledge.rag?.enabled ? "enabled" : undefined}
-        hint="Give this agent built-in RAG over your documents — it searches per sub-question, so one agent can answer multi-part questions.">
+        hint="Give this agent built-in RAG over your documents - it searches per sub-question, so one agent can answer multi-part questions.">
         <div className="col gap2">
           <label className="row gap2" style={{ cursor: "pointer" }}>
             <Toggle on={!!knowledge.rag?.enabled} onChange={(on) => setKnowledge("rag", { enabled: on })} />
@@ -154,7 +154,7 @@ export function AgentConfig({ config, onChange, tools = [], agents = [], folders
                 <Toggle on={!!knowledge.rag?.hybrid} onChange={(on) => setKnowledge("rag", { hybrid: on })} />
                 <span className="t-body-sm">Hybrid search (BM25 + vector)</span>
               </label>
-              <div className="field-help">Blend lexical keyword (BM25) ranking with semantic vectors so exact terms — codes, names, SKUs — aren’t missed.</div>
+              <div className="field-help">Blend lexical keyword (BM25) ranking with semantic vectors so exact terms - codes, names, SKUs - aren’t missed.</div>
             </div>
           )}
         </div>
@@ -236,7 +236,7 @@ function Section({ label, hint, children }: { label: string; hint?: string; chil
 
 /* Collapsible section for the agent panel only (Tools / Knowledge / FAQs / Middleware),
    so a dense agent config can be folded down to just the parts being edited. Open/closed
-   is transient UI state kept local — it never flows into the config via onChange. */
+   is transient UI state kept local - it never flows into the config via onChange. */
 export function CollapsibleSection({ label, hint, badge, defaultOpen = false, children }: { label: string; hint?: string; badge?: string; defaultOpen?: boolean; children: React.ReactNode }) {
   const [open, setOpen] = useState(defaultOpen);
   return (

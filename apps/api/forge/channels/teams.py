@@ -1,9 +1,9 @@
-"""Microsoft Teams channel — Bot Framework Activity handling.
+"""Microsoft Teams channel - Bot Framework Activity handling.
 
 Inbound: Teams POSTs an Activity to the bot messaging endpoint. Outbound: reply via the
 Bot Connector REST API at the Activity's `serviceUrl`, authenticated with an AAD app
 token (client-credentials). The Azure bot registration (app id + password) is supplied
-by the customer and stored as channel secrets — Forge wires the protocol; you provide
+by the customer and stored as channel secrets - Forge wires the protocol; you provide
 the credentials.
 """
 

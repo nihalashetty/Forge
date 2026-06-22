@@ -1,5 +1,5 @@
 /* ============================================================
-   FORGE — Design tokens (Doc 3 §3) + base component styles.
+   FORGE - Design tokens (Doc 3 §3) + base component styles.
    Ported verbatim from the design handoff (assets/tokens.css).
    Light is the default theme; dark is the "console" toggle.
    ============================================================ */
@@ -225,7 +225,7 @@ body {
 .sidenav-item:not(.active):hover { background:var(--bg-3); }
 .sidenav-item.active { background:var(--accent-glow); }
 
-/* ---------- markdown (assistant replies: Feature 1 — structured responses) ----------
+/* ---------- markdown (assistant replies: Feature 1 - structured responses) ----------
    Inherits font-size from the chat bubble; only sets structure + theme-aware colors. */
 .md { line-height:1.6; overflow-wrap:anywhere; }
 .md > :first-child { margin-top:0; }

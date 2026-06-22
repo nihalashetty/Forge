@@ -1,4 +1,4 @@
-"""arq worker entrypoint — offloaded run execution (audit P1).
+"""arq worker entrypoint - offloaded run execution (audit P1).
 
 Run it (needs the `workers` + `postgres` extras and FORGE_REDIS_URL):
 

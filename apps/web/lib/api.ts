@@ -260,7 +260,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ args, context }),
     }),
-  // components (Feature 2 — generative UI widgets)
+  // components (Feature 2 - generative UI widgets)
   listComponents: (pid: string) => json<ComponentT[]>(`/v1/projects/${pid}/components`),
   getComponent: (pid: string, cid: string) => json<ComponentT>(`/v1/projects/${pid}/components/${cid}`),
   createComponent: (pid: string, body: Record<string, unknown> & { name: string }) =>
@@ -414,7 +414,7 @@ export interface SSEFrame {
 }
 
 /** Open an SSE stream and invoke `onFrame` per event. Supports GET (default) or POST
- *  (pass init.method/body) — the backend assistant endpoint streams over POST. */
+ *  (pass init.method/body) - the backend assistant endpoint streams over POST. */
 export async function openSSE(
   url: string,
   onFrame: (frame: SSEFrame) => void,
@@ -435,7 +435,7 @@ export async function openSSE(
     const { done, value } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
-    // SSE frames are separated by a blank line — handle both \n\n and \r\n\r\n.
+    // SSE frames are separated by a blank line - handle both \n\n and \r\n\r\n.
     const chunks = buffer.split(/\r?\n\r?\n/);
     buffer = chunks.pop() || "";
     for (const chunk of chunks) {

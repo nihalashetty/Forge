@@ -1,4 +1,4 @@
-/* Forge chat launcher — a self-contained, dependency-free floating chat bubble that embeds the
+/* Forge chat launcher - a self-contained, dependency-free floating chat bubble that embeds the
  * Forge widget (/embed) in an iframe. Drop one <script> tag on any allowed site:
  *
  *   <script src="https://YOUR-FORGE/launcher.js"
@@ -10,7 +10,7 @@
  *           defer></script>
  *
  * The host site must be in the project's allowed_origins (the /embed page sets a
- * frame-ancestors CSP) — the launcher cannot bypass that. The publishable key is safe to ship;
+ * frame-ancestors CSP) - the launcher cannot bypass that. The publishable key is safe to ship;
  * the optional session_token must be minted server-side and injected per request.
  */
 (function () {

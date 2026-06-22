@@ -175,7 +175,7 @@ register(NodeSpec(
     input_ports=[Port(id="in", io_type="json", direction="in")],
     output_ports=[Port(id="out", io_type="json", direction="out")],
     factory=tool_call_factory, category="model_tools", label="Tool Call", description="Run a specific tool",
-    summarize=lambda c: [str(c.get("tool_id", "—")), f"→ {c.get('output_key', 'tool_result')}"],
+    summarize=lambda c: [str(c.get("tool_id", "-")), f"→ {c.get('output_key', 'tool_result')}"],
 ))
 register(NodeSpec(
     type="webhook_out", schema_id="forge/nodes/webhook_out",

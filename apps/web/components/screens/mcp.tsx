@@ -1,5 +1,5 @@
 "use client";
-/* External MCP — register MCP servers, discover their tools, toggle which are live.
+/* External MCP - register MCP servers, discover their tools, toggle which are live.
    Server-scoped: agents and workflow nodes consume a server's *enabled* tools. */
 import { useCallback, useEffect, useState } from "react";
 import { Icon } from "../icons";
@@ -11,7 +11,7 @@ export function McpClientsScreen({ project }: { project: any }) {
   const [selId, setSelId] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   // Session cache of discovered tools per server, so re-selecting one is instant
-  // (the server is the source of truth — "Re-discover" forces a fresh fetch).
+  // (the server is the source of truth - "Re-discover" forces a fresh fetch).
   const [toolCache, setToolCache] = useState<Record<string, { name: string; description?: string }[]>>({});
 
   const reload = useCallback(() => {

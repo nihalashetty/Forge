@@ -1,4 +1,4 @@
-"""ChannelService — CRUD for deployment surfaces + inbound routing.
+"""ChannelService - CRUD for deployment surfaces + inbound routing.
 
 A Channel binds a project workflow to a surface (email/teams). Inbound events look the
 channel up by its public `key`, resolve the workflow, dispatch a run, and the

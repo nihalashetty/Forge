@@ -1,5 +1,5 @@
 "use client";
-/* Forge shared UI primitives — ported from the design handoff (primitives.jsx). */
+/* Forge shared UI primitives - ported from the design handoff (primitives.jsx). */
 import { CSSProperties, ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "./icons";
 

@@ -164,7 +164,7 @@ export function CommandPalette({ open, onClose, onGo, projects }: { open: boolea
     const first = projects[0]?.id || "p_support";
     const list = [
       { sec: "Go to", label: "Home / Dashboard", icon: "dashboard", go: { name: "dashboard" } },
-      { sec: "Go to", label: "Workflow Canvas — Support Router", icon: "workflows", go: { name: "project", project: first, screen: "workflow-canvas" } },
+      { sec: "Go to", label: "Workflow Canvas - Support Router", icon: "workflows", go: { name: "project", project: first, screen: "workflow-canvas" } },
       { sec: "Go to", label: "Tool Builder", icon: "tools", go: { name: "project", project: first, screen: "tool-builder" } },
       { sec: "Go to", label: "Agent Config", icon: "agents", go: { name: "project", project: first, screen: "agent-config" } },
       { sec: "Go to", label: "Playground", icon: "playground", go: { name: "project", project: first, screen: "playground" } },
@@ -353,7 +353,7 @@ export function AssistantPanel({ open, onClose, project, onMutate }: { open: boo
       if (answer || thought || acted) {
         setMsgs((m) => [...m, {
           role: "assistant",
-          content: answer || (interruptPrompt ? "(paused for your approval)" : "(done — see Steps for details)"),
+          content: answer || (interruptPrompt ? "(paused for your approval)" : "(done - see Steps for details)"),
           ...(thought ? { thinking: thought, thinkSecs: secs } : {}),
         }]);
       }
@@ -402,7 +402,7 @@ export function AssistantPanel({ open, onClose, project, onMutate }: { open: boo
       <div ref={scrollRef} className="scroll-y col gap4" style={{ padding: 16, flex: 1, minHeight: 0 }}>
         {msgs.length === 0 && !streaming && (
           <div className="col gap2" style={{ color: "var(--fg-2)" }}>
-            <div className="row gap2"><Tile icon="sparkles" color="var(--accent)" size={28} /><div style={{ fontSize: 13, lineHeight: "19px", color: "var(--fg-1)" }}>I can build tools, auth providers, Q&A, knowledge, and whole workflows — and explain how Forge works. What should we build?</div></div>
+            <div className="row gap2"><Tile icon="sparkles" color="var(--accent)" size={28} /><div style={{ fontSize: 13, lineHeight: "19px", color: "var(--fg-1)" }}>I can build tools, auth providers, Q&A, knowledge, and whole workflows - and explain how Forge works. What should we build?</div></div>
           </div>
         )}
         {msgs.map((m, i) => (

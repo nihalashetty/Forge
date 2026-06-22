@@ -1,7 +1,7 @@
 """Bootstrap + optional demo seed.
 
 `bootstrap` always ensures a single tenant (+ owner user) exists so the app has a
-tenant context — but creates NO projects, so you start from an empty workspace and
+tenant context - but creates NO projects, so you start from an empty workspace and
 build from scratch in the UI.
 
 `seed_demo_data` (only when FORGE_SEED_DEMO=true) populates the showcase project,
@@ -42,7 +42,7 @@ SEED_EXECUTABLE: dict = {
             "config": {
                 "flavor": "agent",
                 "name": "billing_agent",
-                "model": "fake:Thanks — your billing question is resolved.",
+                "model": "fake:Thanks - your billing question is resolved.",
                 "system_prompt": "You are the billing support agent. Be concise and helpful.",
                 "middleware": [
                     {"type": "summarization", "config": {"trigger": ["tokens", 4000]}},

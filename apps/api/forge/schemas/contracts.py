@@ -74,7 +74,7 @@ def node_schema_ref(node_type: str) -> dict:
     """A schema that simply $refs the node type's schema (resolved via registry).
 
     Uses the node's registered `schema_id` (so types whose schema file isn't named after
-    the type — e.g. webhook_in -> forge/nodes/trigger_webhook — still resolve)."""
+    the type - e.g. webhook_in -> forge/nodes/trigger_webhook - still resolve)."""
     from forge.engine.registry import NODE_REGISTRY
 
     spec = NODE_REGISTRY.get(node_type)

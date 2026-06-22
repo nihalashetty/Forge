@@ -84,7 +84,7 @@ async def test_invite_without_password_emails_link_and_can_be_accepted():
         assert "invite=" in body.get("invite_url", "")
         token = body["invite_url"].split("invite=", 1)[1]
 
-        # can't log in yet — no password set
+        # can't log in yet - no password set
         assert (await c.post("/v1/auth/login", json={"email": invitee_email, "password": "whatever1"})).status_code == 401
 
         # invite-info reflects the pending invite

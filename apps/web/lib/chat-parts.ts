@@ -3,10 +3,10 @@
    The problem this solves: a component is rendered as a side-effect of a tool call, which the
    agent runs BEFORE it writes its prose (the prose is generated in the final turn, after every
    tool returns). So if we placed components in frame-arrival order, every widget would jump to
-   the TOP of the reply, ahead of all text — never in the middle, never at the end.
+   the TOP of the reply, ahead of all text - never in the middle, never at the end.
 
    The fix (how ChatGPT/Claude interleave widgets): the component tool returns a tiny placeholder
-   marker — [[forge:component:<instance_id>]] — and the model copies it into its reply text at the
+   marker - [[forge:component:<instance_id>]] - and the model copies it into its reply text at the
    exact spot the widget belongs. Here we split the text on those markers and splice each
    already-received component instance into its place. The heavy props/markup never enter the
    token stream (only the ~10-token marker does); the model gets full control over ordering. */
@@ -32,9 +32,9 @@ const MARKER_RE = /\[\[forge:component:([A-Za-z0-9_-]+)\]\]/g;
 
 /* While streaming, the closing `]]` of a marker may not have arrived yet (e.g. the buffer ends
    with "…[[forge:comp"). Return the index where such a half-typed marker begins so the caller can
-   hide it until it completes — otherwise it flashes as raw text. -1 when there's no partial tail. */
+   hide it until it completes - otherwise it flashes as raw text. -1 when there's no partial tail. */
 function trailingPartialMarkerStart(text: string): number {
-  // 1) the "[[forge:component:" prefix itself is still being typed — longest suffix of `text`
+  // 1) the "[[forge:component:" prefix itself is still being typed - longest suffix of `text`
   //    that equals a non-empty prefix of MARKER_PREFIX.
   for (let n = Math.min(MARKER_PREFIX.length, text.length); n > 0; n--) {
     if (text.slice(text.length - n) === MARKER_PREFIX.slice(0, n)) return text.length - n;
@@ -47,7 +47,7 @@ function trailingPartialMarkerStart(text: string): number {
 /* Split `raw` on component markers and produce ordered parts, resolving each marker to its
    component instance. Unknown markers (no matching instance) are dropped from the text. When
    not streaming, any rendered component the model never referenced with a marker is appended at
-   the end (in arrival order) so a widget is never lost — and never jumps ahead of the prose. */
+   the end (in arrival order) so a widget is never lost - and never jumps ahead of the prose. */
 function assembleParts(
   raw: string,
   instances: Record<string, ComponentInstance>,
@@ -87,7 +87,7 @@ function assembleParts(
       if (!used.has(id) && instances[id]) parts.push({ kind: "component", inst: instances[id] });
     }
   }
-  // Drop whitespace-only text parts (e.g. the blank line between two adjacent components) — each
+  // Drop whitespace-only text parts (e.g. the blank line between two adjacent components) - each
   // text part renders as its own markdown block, so leading/trailing whitespace is meaningless.
   return parts.filter((p) => p.kind === "component" || p.text.trim().length > 0);
 }
@@ -126,8 +126,8 @@ export class ReplyAccumulator {
   }
 
   /** Reconcile the streamed token buffer with the run's authoritative final answer. Prefer the
-      streamed text (it spans every turn, in order, and carries the markers); fall back to — or
-      append — the final answer only when it adds something the stream didn't (a non-LLM node's
+      streamed text (it spans every turn, in order, and carries the markers); fall back to - or
+      append - the final answer only when it adds something the stream didn't (a non-LLM node's
       output, or an error message). */
   resolveText(finalAnswer?: string): string {
     const buf = this.text;

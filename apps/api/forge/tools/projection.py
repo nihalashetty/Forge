@@ -1,10 +1,10 @@
-"""Response projection — the primary token-cost lever (Doc 2 §10).
+"""Response projection - the primary token-cost lever (Doc 2 §10).
 
 `project_response` cuts a raw API payload down to what the model actually needs,
 *before* it becomes a ToolMessage. Three strategies, in priority order:
 
-1. JMESPath projection (`projection_jmespath`) — most expressive (rename/reshape).
-2. Field list (`fields[].include_in_llm`) — keep selected dotted paths.
+1. JMESPath projection (`projection_jmespath`) - most expressive (rename/reshape).
+2. Field list (`fields[].include_in_llm`) - keep selected dotted paths.
 3. Otherwise return the full payload unchanged.
 """
 

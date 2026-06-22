@@ -1,4 +1,4 @@
-"""MCP tool kind — consume tools from an external MCP server.
+"""MCP tool kind - consume tools from an external MCP server.
 
 Wiring the `mcp` kind unlocks the whole MCP connector ecosystem (GitHub, Slack,
 Postgres, Stripe, filesystem, …) without hand-writing each integration. An `McpClient`
@@ -99,7 +99,7 @@ async def _client_and_tools(client_row: McpClient, tenant_id: str, project_id: s
 
 
 async def discover_tools(client_row: McpClient, tenant_id: str, project_id: str) -> list[dict]:
-    """List the tools an MCP server exposes — [{name, description}].
+    """List the tools an MCP server exposes - [{name, description}].
 
     Connects fresh (not via the execution cache) so the result always reflects the
     current McpClient config, and drops any stale cached client so the next run

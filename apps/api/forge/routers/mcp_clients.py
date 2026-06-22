@@ -1,4 +1,4 @@
-"""MCP client CRUD — register external MCP servers a project's tools can consume."""
+"""MCP client CRUD - register external MCP servers a project's tools can consume."""
 
 from __future__ import annotations
 
@@ -88,7 +88,7 @@ async def update_client(project_id: str, client_id: str, body: McpClientPatch, s
 @router.get("/{client_id}/tools")
 async def list_remote_tools(project_id: str, client_id: str, session: AsyncSession = Depends(get_session),
                             tenant_id: str = Depends(current_tenant_id)):
-    """Connect to the server and list the tools it exposes — drives the 'pick which to add' UI."""
+    """Connect to the server and list the tools it exposes - drives the 'pick which to add' UI."""
     from forge.tools.mcp import McpUnavailable, discover_tools
 
     row = (await session.execute(

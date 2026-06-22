@@ -1,4 +1,4 @@
-"""HandoffService — the live-agent queue.
+"""HandoffService - the live-agent queue.
 
 When a channel run pauses at a `handoff` interrupt, a HandoffRequest is opened. A human
 agent lists the queue and replies; that resumes the paused run with their text (which the

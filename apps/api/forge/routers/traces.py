@@ -1,4 +1,4 @@
-"""Trace endpoints — runs list + span detail."""
+"""Trace endpoints - runs list + span detail."""
 
 from __future__ import annotations
 

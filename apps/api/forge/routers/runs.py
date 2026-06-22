@@ -1,4 +1,4 @@
-"""Run endpoints — create a run and stream its execution over SSE."""
+"""Run endpoints - create a run and stream its execution over SSE."""
 
 from __future__ import annotations
 
@@ -55,7 +55,7 @@ async def create_run(
     # Resolve the end-user identity (Phase 3b): a verified session token (browser widget)
     # wins; else the body end_user. Body identity is only fully trusted for editor+ callers
     # (server-to-server integrators); a lower-privilege console user may NOT self-assert
-    # roles/entitlements that gate tools (audit S4) — those fields are stripped.
+    # roles/entitlements that gate tools (audit S4) - those fields are stripped.
     end_user = None
     if body.session_token:
         from forge.security import TokenError, decode_token
@@ -72,7 +72,7 @@ async def create_run(
         if not role_at_least(user.role, "editor"):
             for privileged in ("roles", "entitlements"):
                 if end_user.pop(privileged, None) is not None:
-                    pass  # silently dropped — a viewer can't escalate via the run body
+                    pass  # silently dropped - a viewer can't escalate via the run body
 
     # Per-tenant DAILY quota, enforced atomically with run creation so concurrent POSTs
     # can't all pass a stale pre-insert count (audit F2).

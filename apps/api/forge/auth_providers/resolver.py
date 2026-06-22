@@ -1,4 +1,4 @@
-"""AuthResolver — resolve an Auth Provider to headers/cookies/params for a tool call.
+"""AuthResolver - resolve an Auth Provider to headers/cookies/params for a tool call.
 
 Caches per (provider, per-user-context-hash) with TTL (in-process here; Redis in
 prod). Invalidates on 401/403 (handled by the calling tool). Per-user secrets the
@@ -89,7 +89,7 @@ class AuthResolver:
 
         # `credentials_ref` is the primary secret for csrf_session/custom_script, but only a
         # *fallback* for bearer/api_key (and unused for basic/oauth2). A stale or missing
-        # fallback must not abort a provider whose own ref (token_ref/value_ref/…) resolves —
+        # fallback must not abort a provider whose own ref (token_ref/value_ref/…) resolves -
         # the per-kind branches below still raise clearly if their primary ref is absent.
         try:
             creds = await read(provider.credentials_ref or cfg.get("credentials_ref"))
@@ -167,7 +167,7 @@ class AuthResolver:
         bundle_ref = cfg.get("token_bundle_ref") or f"secret://proj/{self.bundle_secret_name(provider.id)}"
         bundle = await read(bundle_ref)
         if not isinstance(bundle, dict) or not bundle.get("access_token"):
-            raise KeyError(f"OAuth provider {provider.id!r} is not connected — run the connect flow first")
+            raise KeyError(f"OAuth provider {provider.id!r} is not connected - run the connect flow first")
         now = time.time()
         expires_at = bundle.get("expires_at")
         if expires_at and now >= (float(expires_at) - 60) and bundle.get("refresh_token"):

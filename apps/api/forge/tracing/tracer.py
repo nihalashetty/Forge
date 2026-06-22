@@ -1,4 +1,4 @@
-"""ForgeTracer — a LangChain callback handler that records spans for a run.
+"""ForgeTracer - a LangChain callback handler that records spans for a run.
 
 Captures LLM spans (model, token usage, cost) and tool/chain spans, nested by
 run_id/parent_run_id. Spans are collected in memory for the run; the RunService

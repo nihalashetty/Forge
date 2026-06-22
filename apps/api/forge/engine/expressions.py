@@ -1,6 +1,6 @@
 """Safe expression evaluation over run state/context (Doc 4 `Expression`).
 
-Forge uses TWO expression languages, by role — keep them straight:
+Forge uses TWO expression languages, by role - keep them straight:
 - **This one (RestrictedPython)** is for BOOLEAN/VALUE DECISIONS over state: `router`
   `expression`/`cases`, `loop` conditions, `dynamic_model_by_state`, `tenant_budget`.
   State keys are bare names, so `intent == 'billing'` and `len(messages) > 10` work.

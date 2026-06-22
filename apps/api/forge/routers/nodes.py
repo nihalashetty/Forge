@@ -1,4 +1,4 @@
-"""Node-type catalog — drives the canvas palette + validation (from the registry)."""
+"""Node-type catalog - drives the canvas palette + validation (from the registry)."""
 
 from __future__ import annotations
 

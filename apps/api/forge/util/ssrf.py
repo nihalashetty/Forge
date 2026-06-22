@@ -72,7 +72,7 @@ def _ip_is_blocked(ip_str: str) -> bool:
         addr = ipaddress.ip_address(ip_str)
     except ValueError:
         return True  # un-parseable -> refuse
-    # IPv4-mapped IPv6 (::ffff:a.b.c.d) — unwrap and re-check the v4 address.
+    # IPv4-mapped IPv6 (::ffff:a.b.c.d) - unwrap and re-check the v4 address.
     if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
         addr = addr.ipv4_mapped
     return (
@@ -127,7 +127,7 @@ async def validate_host_port(host: str | None, port: int, policy: EgressPolicy |
     policy = policy or EgressPolicy.from_settings()
     host = (host or "").lower().rstrip(".")
     if not host:
-        return  # no network host (e.g. a local sqlite file) — nothing to guard
+        return  # no network host (e.g. a local sqlite file) - nothing to guard
     if _host_matches(host, policy.deny_hosts):
         raise EgressBlocked(f"host {host!r} is on the egress deny list")
     if policy.allow_hosts and not _host_matches(host, policy.allow_hosts):
@@ -152,7 +152,7 @@ async def guarded_request(
 
     httpx's own redirect-following is never enabled (it would connect to a hop without
     the egress check). Instead each hop is fetched with `follow_redirects=False`, and the
-    follow-up is driven from httpx's `response.next_request` — which httpx already builds
+    follow-up is driven from httpx's `response.next_request` - which httpx already builds
     with cross-origin `Authorization`/`Cookie` stripping (so a redirect to a foreign host
     cannot exfiltrate the caller's credentials), relative-Location resolution, and the
     correct method/body downgrade. We add only the per-hop `validate_url` httpx lacks.

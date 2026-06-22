@@ -1,4 +1,4 @@
-"""Middleware-Stack Compiler (Doc 2 §8) — the engine of "limitless customization".
+"""Middleware-Stack Compiler (Doc 2 §8) - the engine of "limitless customization".
 
 An agent node's `middleware: [{type, config, enabled}]` list compiles to a concrete
 `list[AgentMiddleware]`. Prebuilt builders wrap LangChain's catalog (signatures
@@ -308,7 +308,7 @@ MW_BUILDERS: dict[str, Builder] = {
     "anthropic_prompt_caching": _anthropic_prompt_caching,
     "openai_moderation": _openai_moderation,
     # custom / advanced
-    # (request_signing was removed: it was a no-op stub — auth injection already
+    # (request_signing was removed: it was a no-op stub - auth injection already
     # happens inside materialized REST tools via the AuthResolver.)
     "dynamic_model_by_state": _dynamic_model_by_state,
     "tool_filter_by_context": _tool_filter_by_context,

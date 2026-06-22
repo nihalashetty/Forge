@@ -23,7 +23,7 @@ class TokenError(ValueError):
 
 # In-process revocation denylist: jti -> expiry (epoch seconds). Identity-bearing tokens
 # (session tokens for the embed widget) can't otherwise be cancelled before their TTL, so
-# `revoke()` lets an operator kill a leaked one (audit S11). In-process only — back with
+# `revoke()` lets an operator kill a leaked one (audit S11). In-process only - back with
 # Redis for multi-worker (same interface). Entries self-expire at the token's own exp.
 _REVOKED: dict[str, float] = {}
 
@@ -105,7 +105,7 @@ def create_session_token(*, tenant_id: str, project_id: str, end_user: dict, ori
     """Short-lived signed token carrying a VERIFIED end-user identity for the browser widget
     (Phase 3b). Minted server-to-server by the integrator's authenticated backend; the widget
     sends it on each run so Forge trusts the identity without trusting the browser. The secret
-    stays server-side — only this scoped, expiring token reaches the client."""
+    stays server-side - only this scoped, expiring token reaches the client."""
     return _encode(
         {"tid": tenant_id, "pid": project_id, "end_user": end_user, "origins": origins or []},
         timedelta(minutes=ttl_minutes),

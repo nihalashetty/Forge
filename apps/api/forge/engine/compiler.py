@@ -1,6 +1,6 @@
 """The workflow compiler (Doc 2 §6): executable JSON -> `CompiledStateGraph`.
 
-Topologically agnostic — it trusts the validator (schemas/workflow.json + extra
+Topologically agnostic - it trusts the validator (schemas/workflow.json + extra
 rules) to have already rejected bad definitions. Routing:
 
 - `router` nodes route via their own `config.cases`/`default` (conditional edges);

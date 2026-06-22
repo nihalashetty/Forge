@@ -1,4 +1,4 @@
-"""Secret endpoints — write-only; plaintext is never returned."""
+"""Secret endpoints - write-only; plaintext is never returned."""
 
 from __future__ import annotations
 

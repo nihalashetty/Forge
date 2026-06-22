@@ -47,7 +47,7 @@ async def test_handoff_node_interrupts_then_resumes():
             run_id=result["run_id"], thread_id=result["thread_id"], customer="widget-user",
             customer_message="I need help", reason="needs a human", reply_context={},
         )
-        out = await HandoffService.reply(s, rs, handoff=h, agent_id="agent1", message="Hi, this is Sam — happy to help!")
+        out = await HandoffService.reply(s, rs, handoff=h, agent_id="agent1", message="Hi, this is Sam - happy to help!")
         assert out["ok"] is True
         refreshed = await s.get(HandoffRequest, h.id)
         assert refreshed.status == "answered" and refreshed.agent_id == "agent1"

@@ -72,7 +72,7 @@ def upgrade() -> None:
         op.create_index("ix_components_tenant_id", "components", ["tenant_id"])
         op.create_index("ix_components_project_id", "components", ["project_id"])
     else:
-        # Table predates the uniqueness constraint — add it (create_all never alters).
+        # Table predates the uniqueness constraint - add it (create_all never alters).
         existing_uqs = {u["name"] for u in insp.get_unique_constraints("components")}
         if _UQ not in existing_uqs:
             op.create_unique_constraint(_UQ, "components", ["tenant_id", "project_id", "name"])

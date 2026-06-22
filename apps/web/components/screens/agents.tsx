@@ -49,7 +49,7 @@ export function AgentsScreen({ project, onOpen }: { project: any; onOpen: (a: Ag
         <div className="row spread" style={{ marginBottom: 18 }}>
           <div>
             <div className="t-display">Agents</div>
-            <div className="fg-1" style={{ marginTop: 3 }}>Reusable agent presets — model, tools, and a middleware stack. Drop them into workflows.</div>
+            <div className="fg-1" style={{ marginTop: 3 }}>Reusable agent presets - model, tools, and a middleware stack. Drop them into workflows.</div>
           </div>
           <button className="btn btn-primary" onClick={create} disabled={busy}><Icon name="plus" size={15} />{busy ? "Creating…" : "New agent"}</button>
         </div>
@@ -72,7 +72,7 @@ export function AgentsScreen({ project, onOpen }: { project: any; onOpen: (a: Ag
                     <Tile icon={c.flavor === "deep_agent" ? "n_deepagent" : "n_agent"} color="var(--accent)" size={38} />
                     <div className="grow">
                       <div className="row gap2"><span className="t-h2 mono">{a.name}</span><span className="typechip">{c.flavor || "agent"}</span></div>
-                      <div className="fg-2 t-caption mono" style={{ marginTop: 3 }}>{c.model || "—"} · {tools} tools · {mw} middleware{a.created_by_email ? ` · by ${a.created_by_email}` : ""}</div>
+                      <div className="fg-2 t-caption mono" style={{ marginTop: 3 }}>{c.model || "-"} · {tools} tools · {mw} middleware{a.created_by_email ? ` · by ${a.created_by_email}` : ""}</div>
                     </div>
                     <button className="iconbtn" title="Delete agent" disabled={deleting === a.id} onClick={(e) => del(e, a)}><Icon name="trash" size={15} /></button>
                     <Icon name="chevright" size={16} style={{ color: "var(--fg-2)" }} />
@@ -143,7 +143,7 @@ export function AgentConfigScreen({ project, agentId, onBack }: { project: any; 
           <div className="t-micro" style={{ marginBottom: 10 }}>What the model sees</div>
           <div className="card" style={{ padding: 12, marginBottom: 12 }}>
             <div className="t-caption fg-2">System prompt</div>
-            <div className="t-body-sm" style={{ marginTop: 4, whiteSpace: "pre-wrap" }}>{config.system_prompt || <span className="fg-2">— none —</span>}</div>
+            <div className="t-body-sm" style={{ marginTop: 4, whiteSpace: "pre-wrap" }}>{config.system_prompt || <span className="fg-2">- none -</span>}</div>
           </div>
           <div className="card" style={{ padding: 12 }}>
             <div className="t-caption fg-2">Compiled stack (execution order)</div>

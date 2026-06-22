@@ -1,7 +1,7 @@
 """Service-tool redirect handling.
 
 Two behaviours, both new:
-1. A 3xx that is NOT followed (the default) is no longer an empty response — the
+1. A 3xx that is NOT followed (the default) is no longer an empty response - the
    target `location` is captured and surfaced to the model.
 2. With `request.follow_redirects` on, redirects are chased SSRF-safely via
    `guarded_request`: the final URL + hop chain are captured, and a hop pointing at
@@ -71,7 +71,7 @@ async def test_unfollowed_redirect_is_wrapped_for_the_agent():
 
 
 async def test_no_redirect_returns_bare_body_unchanged():
-    """A normal 200 must behave exactly as before — no envelope, no redirect key."""
+    """A normal 200 must behave exactly as before - no envelope, no redirect key."""
     client = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"v": 1})))
     res = await execute_rest(_cfg(), {}, tenant_id="t", project_id="p", client=client)
     await client.aclose()
@@ -98,7 +98,7 @@ async def test_follow_resolves_final_url_and_chain():
 
 
 async def test_follow_revalidates_each_hop_and_blocks_private_target():
-    """A redirect to a blocked address (cloud metadata) must be refused on the hop —
+    """A redirect to a blocked address (cloud metadata) must be refused on the hop -
     the SSRF guard is not bypassed by following."""
     client = _redirecting_client("http://169.254.169.254/latest/meta-data/")
     cfg = _cfg()
@@ -125,7 +125,7 @@ def _auth_capturing_client(location: str) -> tuple[httpx.AsyncClient, dict]:
 
 async def test_follow_strips_authorization_on_cross_origin_redirect():
     """SECURITY: a redirect to a DIFFERENT origin must NOT forward the tenant's
-    Authorization header — otherwise following redirects exfiltrates credentials."""
+    Authorization header - otherwise following redirects exfiltrates credentials."""
     client, seen = _auth_capturing_client("https://evil.example/collect")
     cfg = _cfg()
     cfg["request"]["headers"] = [{"name": "Authorization", "value": "Bearer SECRET-TOKEN"}]

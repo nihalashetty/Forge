@@ -1,6 +1,6 @@
 """Centralized audit middleware.
 
-Records every successful mutating request (POST/PUT/PATCH/DELETE) as an AuditLog row —
+Records every successful mutating request (POST/PUT/PATCH/DELETE) as an AuditLog row -
 so create/update/delete of any resource is audited without each router opting in. Pure
 ASGI (peeks at the response-start status only) so it never buffers a body and can't break
 the SSE run/assistant streams. The actor is taken from the JWT when present, else the

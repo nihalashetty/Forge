@@ -50,7 +50,7 @@ async def readyz(request: Request) -> JSONResponse:
 async def metrics() -> PlainTextResponse:
     """Prometheus text-format exposition of the in-process counters so operators can scrape
     them (per-worker; aggregate across replicas at the scraper). Complements the OTLP trace
-    export. No new dependency — rendered directly from the counter snapshot."""
+    export. No new dependency - rendered directly from the counter snapshot."""
     lines: list[str] = []
     for name, value in sorted(snapshot().items()):
         metric = "forge_" + "".join(c if (c.isalnum() or c == "_") else "_" for c in name)

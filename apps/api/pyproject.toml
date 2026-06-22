@@ -5,12 +5,12 @@ build-backend = "hatchling.build"
 [project]
 name = "forge-api"
 version = "0.1.0"
-description = "Forge — self-hosted platform for visually building, testing, and shipping LangChain/LangGraph agents & workflows."
+description = "Forge - self-hosted platform for visually building, testing, and shipping LangChain/LangGraph agents & workflows."
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
-license = { text = "Apache-2.0" }
+license = { text = "MIT" }
 
-# Pins validated against PyPI on 2026-06-07 (see docs/2-technical-design-and-implementation.md §2).
+# Pins validated against PyPI on 2026-06-07.
 # Semver promise: langchain/langgraph 1.x minor upgrades are non-breaking. Re-verify each phase.
 dependencies = [
   # --- Web / API ---
@@ -51,7 +51,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Vector store (user-mandated: Chroma). Embedded persistent client — zero infra.
+# Vector store (user-mandated: Chroma). Embedded persistent client - zero infra.
 vectors = ["chromadb>=1.5,<2"]
 # Native big-three model providers + universal gateways.
 providers = [

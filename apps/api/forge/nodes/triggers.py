@@ -1,4 +1,4 @@
-"""Trigger nodes — event-driven entry points (Phase 3).
+"""Trigger nodes - event-driven entry points (Phase 3).
 
 A trigger node is the workflow's entry: the dispatcher (webhook route / scheduler /
 inbound email / chat channel) creates a run whose `input` already carries the inbound
@@ -37,7 +37,7 @@ register(NodeSpec(
     type="schedule", schema_id="forge/nodes/trigger_schedule",
     input_ports=[], output_ports=_out, factory=_passthrough_factory,
     category="triggers", label="Schedule", description="Run on a recurring schedule (cron or every N minutes).",
-    summarize=lambda c: [c.get("cron") or (f"every {c.get('every_minutes', '—')} min")],
+    summarize=lambda c: [c.get("cron") or (f"every {c.get('every_minutes', '-')} min")],
 ))
 register(NodeSpec(
     type="email_in", schema_id="forge/nodes/trigger_email",

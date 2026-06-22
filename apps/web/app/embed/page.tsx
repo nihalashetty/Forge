@@ -17,7 +17,7 @@ interface Msg { role: "user" | "assistant"; content?: string; parts?: Part[] }
 
 const EMBED = (key: string, path: string) => `/api/forge/v1/embed/${encodeURIComponent(key)}${path}`;
 
-/* Normalize a LangGraph interrupt payload into {prompt, decisions, middleware} — ported
+/* Normalize a LangGraph interrupt payload into {prompt, decisions, middleware} - ported
    verbatim from the Playground so the widget builds the same buttons AND the same resume value
    encoding. The `middleware` flag is load-bearing: it selects {decisions:[{type}]} vs a bare
    string at resume time and MUST be recomputed from the stored payload then. */

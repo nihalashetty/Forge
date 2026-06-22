@@ -1,4 +1,4 @@
-# Forge API — FastAPI on the MIT LangChain/LangGraph stack.
+# Forge API - FastAPI on the MIT LangChain/LangGraph stack.
 FROM python:3.12-slim AS base
 
 ENV PYTHONUNBUFFERED=1 \

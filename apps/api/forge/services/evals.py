@@ -1,8 +1,8 @@
-"""EvalService — run a dataset against a workflow and score it.
+"""EvalService - run a dataset against a workflow and score it.
 
 Scoring modes:
-- contains / exact / regex — deterministic, offline, no model spend.
-- judge — an LLM grades whether the answer satisfies the expected behavior.
+- contains / exact / regex - deterministic, offline, no model spend.
+- judge - an LLM grades whether the answer satisfies the expected behavior.
 
 Used for quality dashboards and regression-on-publish (compare pass rate vs the last
 run). Generalizes the assistant's one-off `evaluate_build` into a reusable harness.
@@ -81,7 +81,7 @@ class EvalService:
         workflow_id = dataset.workflow_id
         if not workflow_id:
             return {"error": "dataset has no workflow bound"}
-        # Eval runs are billable model calls — gate the whole batch on the tenant's daily quota.
+        # Eval runs are billable model calls - gate the whole batch on the tenant's daily quota.
         try:
             await check_run_quota(session, dataset.tenant_id)
         except QuotaExceeded as e:

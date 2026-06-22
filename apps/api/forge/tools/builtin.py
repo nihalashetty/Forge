@@ -65,7 +65,7 @@ def build_builtin_tool(cfg: dict, ctx):
             return r.text[:8000]
         return StructuredTool.from_function(coroutine=fetch, name=name, description=desc or "Fetch a URL and return its text.", args_schema=_FetchArgs)
 
-    if builtin == "web_search":  # requires a provider key (Tavily/Exa) — wired in Phase 7
+    if builtin == "web_search":  # requires a provider key (Tavily/Exa) - wired in Phase 7
         def search(query: str) -> str:
             return "web_search is not configured. Add a Tavily/Exa key to enable it."
         class _Q(BaseModel):
@@ -74,7 +74,7 @@ def build_builtin_tool(cfg: dict, ctx):
 
     if builtin == "knowledge_search":
         # Retrieval as a TOOL (vs the fixed `retrieval` node): the agent can search per
-        # sub-question, multiple times, with its own phrasing — which is what makes a
+        # sub-question, multiple times, with its own phrasing - which is what makes a
         # single agent handle multi-part questions instead of a classifier→router
         # picking one path.
         class _KSearchArgs(BaseModel):
@@ -154,12 +154,12 @@ def build_builtin_tool(cfg: dict, ctx):
 
 
 class _KbQuery(BaseModel):
-    query: str = Field(description="A focused search query — use one per distinct sub-question, in your own words (not the user's whole message).")
+    query: str = Field(description="A focused search query - use one per distinct sub-question, in your own words (not the user's whole message).")
 
 
 def build_knowledge_capability_tools(knowledge: dict | None, ctx) -> list:
     """Built-in knowledge access attached straight to an agent node via its `knowledge`
-    config — no separate Tool row needed. Two independent, separately-toggleable tools:
+    config - no separate Tool row needed. Two independent, separately-toggleable tools:
 
     - RAG  (`search_knowledge_base`): vector search over knowledge DOCUMENTS, scoped to the
       configured folders (empty = all).
@@ -168,7 +168,7 @@ def build_knowledge_capability_tools(knowledge: dict | None, ctx) -> list:
 
     Unlike the fixed `retrieval` node (one search per run, before the agent), these are
     agent-driven: the agent decides when to search and rewrites the query per
-    sub-question — which is what lets ONE agent answer multi-part questions.
+    sub-question - which is what lets ONE agent answer multi-part questions.
     """
     tools: list = []
     if not knowledge:

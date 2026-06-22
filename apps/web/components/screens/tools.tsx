@@ -45,7 +45,7 @@ export function ToolsScreen({ project, onOpen }: { project: any; onOpen: (t: Too
         <div className="row spread" style={{ marginBottom: 18 }}>
           <div>
             <div className="t-display" style={{ fontSize: 21 }}>Tools</div>
-            <div className="fg-1" style={{ marginTop: 3, maxWidth: 560 }}>External capabilities — REST, GraphQL, code, SQL, or builtins — with response projection.</div>
+            <div className="fg-1" style={{ marginTop: 3, maxWidth: 560 }}>External capabilities - REST, GraphQL, code, SQL, or builtins - with response projection.</div>
           </div>
           <div className="row gap2">
             <Segmented options={[{ value: "grid", label: "Grid" }, { value: "list", label: "List" }]} value={view} onChange={(v) => setView(v as any)} />
@@ -73,8 +73,8 @@ export function ToolsScreen({ project, onOpen }: { project: any; onOpen: (t: Too
                     <tr key={t.id} className="row" style={{ cursor: "pointer" }} onClick={() => onOpen(t)}>
                       <td><div className="row gap2"><Icon name={KIND_ICON[t.kind] || "k_rest"} size={15} style={{ color: "var(--io-tool)" }} /><span className="mono-sm" style={{ fontWeight: 600 }}>{t.name}</span></div></td>
                       <td><span className="chip chip-mono">{KIND_LABEL[t.kind] || t.kind}</span></td>
-                      <td>{t.auth_provider_id ? <span className="chip chip-mono"><Icon name="auth" size={12} />{t.auth_provider_id.slice(0, 8)}</span> : <span className="fg-2">—</span>}</td>
-                      <td>{lt ? <TokenMeter compact raw={lt.raw_tokens} projected={lt.projected_tokens} animateKey={t.id} /> : <span className="fg-2">—</span>}</td>
+                      <td>{t.auth_provider_id ? <span className="chip chip-mono"><Icon name="auth" size={12} />{t.auth_provider_id.slice(0, 8)}</span> : <span className="fg-2">-</span>}</td>
+                      <td>{lt ? <TokenMeter compact raw={lt.raw_tokens} projected={lt.projected_tokens} animateKey={t.id} /> : <span className="fg-2">-</span>}</td>
                       <td><StatusPill status={t.last_tested || "untested"} /></td>
                       <td style={{ textAlign: "right" }}><span className="mono-sm fg-2">v{t.version}</span></td>
                       <td style={{ textAlign: "right" }}><button className="iconbtn" title="Delete tool" onClick={(e) => { e.stopPropagation(); del(e, t); }}><Icon name="trash" size={14} /></button></td>
@@ -155,7 +155,7 @@ function NewToolModal({ project, open, onClose, onOpenTool, onReload }: { projec
       <Field label="Kind"><Segmented options={[{ value: "rest_api", label: "REST" }, { value: "graphql", label: "GraphQL" }, { value: "code", label: "Code" }, { value: "sql", label: "SQL" }, { value: "builtin", label: "Builtin" }]} value={kind} onChange={(v) => { setKind(v); setErr(null); }} /></Field>
       <Field label="Name"><input className="input mono" value={name} onChange={(e) => setName(e.target.value)} placeholder="get_order" /></Field>
       <Field label="Description" help="What the model reads to decide when to call this tool."><textarea className="textarea" rows={2} value={description} onChange={(e) => setDescription(e.target.value)} /></Field>
-      {kind === "builtin" && <Field label="Builtin" help={builtin === "knowledge_search" ? "Lets an agent search this project's knowledge base (docs + Q&A) itself — one call per sub-question, optional folder filter." : undefined}><Segmented options={[{ value: "current_time", label: "Time" }, { value: "calculator", label: "Calc" }, { value: "web_fetch", label: "Fetch" }, { value: "web_search", label: "Search" }, { value: "knowledge_search", label: "Knowledge" }, { value: "remember", label: "Remember" }, { value: "recall", label: "Recall" }]} value={builtin} onChange={setBuiltin} /></Field>}
+      {kind === "builtin" && <Field label="Builtin" help={builtin === "knowledge_search" ? "Lets an agent search this project's knowledge base (docs + Q&A) itself - one call per sub-question, optional folder filter." : undefined}><Segmented options={[{ value: "current_time", label: "Time" }, { value: "calculator", label: "Calc" }, { value: "web_fetch", label: "Fetch" }, { value: "web_search", label: "Search" }, { value: "knowledge_search", label: "Knowledge" }, { value: "remember", label: "Remember" }, { value: "recall", label: "Recall" }]} value={builtin} onChange={setBuiltin} /></Field>}
       {err && <div className="card" style={{ padding: 12, color: "var(--err)", marginTop: 4 }}>{err}</div>}
     </Modal>
   );
@@ -251,7 +251,7 @@ export function ToolBuilderScreen({ project, toolId, onBack }: { project: any; t
                   </>
                 ) : isCode ? (
                   <>
-                    <Field label="Python source" help="Sandboxed (RestrictedPython). Define def main(**kwargs): return … — imports limited to pure stdlib.">
+                    <Field label="Python source" help="Sandboxed (RestrictedPython). Define def main(**kwargs): return … - imports limited to pure stdlib.">
                       <textarea className="textarea mono" rows={8} value={draft.source} onChange={(e) => set({ source: e.target.value })} placeholder={"def main(text):\n    return text.upper()"} />
                     </Field>
                     <Field label="Arguments (JSON Schema)" help='The LLM-visible args, e.g. {"properties": {"text": {"type": "string"}}, "required": ["text"]}'>
@@ -323,7 +323,7 @@ export function ToolBuilderScreen({ project, toolId, onBack }: { project: any; t
                       <div className="row spread" style={{ marginBottom: 8 }}><span className="t-h3 mono">{p.name}</span><StatusPill status="pass" /></div>
                       <div className="col gap1 mono-sm fg-1">
                         <div>strategy · {p.kind}</div>
-                        <div>credentials · {p.credentials_ref || "—"}</div>
+                        <div>credentials · {p.credentials_ref || "-"}</div>
                       </div>
                     </div>
                   );
@@ -429,7 +429,7 @@ function FieldsEditor({ fields, onChange }: { fields: any[]; onChange: (f: any[]
   );
 }
 
-/* RIGHT panel — the token-meter signature: real /test, or a client-side projection preview. */
+/* RIGHT panel - the token-meter signature: real /test, or a client-side projection preview. */
 function LiveResponse({ project, tool, draft, llmFields, result, setResult }: { project: any; tool: Tool; draft: any; llmFields: any[]; result: ToolTestResult | null; setResult: (r: ToolTestResult | null) => void }) {
   const [args, setArgs] = useState<Record<string, string>>({});
   const [ctxText, setCtxText] = useState("");
@@ -485,13 +485,13 @@ function LiveResponse({ project, tool, draft, llmFields, result, setResult }: { 
           {result && !result.ok && <div className="t-caption" style={{ color: "var(--err)", marginTop: 8 }}>{result.error}</div>}
         </div>
 
-        {/* redirect banner — the API redirected; show where (and whether we followed) */}
+        {/* redirect banner - the API redirected; show where (and whether we followed) */}
         {tested && result!.redirect && (
           <div className="card" style={{ padding: 12, marginBottom: 14, borderColor: "var(--io-tool)" }}>
             <div className="row gap2" style={{ marginBottom: 4 }}>
               <Icon name="auth" size={15} style={{ color: "var(--io-tool)" }} />
               <span style={{ fontSize: 12.5, fontWeight: 600 }}>
-                {result!.redirect!.followed ? "Followed redirect" : `Redirect (${result!.redirect!.status}) — not followed`}
+                {result!.redirect!.followed ? "Followed redirect" : `Redirect (${result!.redirect!.status}) - not followed`}
               </span>
             </div>
             <div className="mono-sm fg-1" style={{ wordBreak: "break-all" }}>
@@ -529,7 +529,7 @@ function LiveResponse({ project, tool, draft, llmFields, result, setResult }: { 
         {!tested && (
           <Field
             label="Try projection on a sample (no live call)"
-            help="Paste an example of what this API returns, then tweak the Projection expression on the left — the meter above previews the token savings. Disappears once a real Test has run (the live payload is shown and remembered instead)."
+            help="Paste an example of what this API returns, then tweak the Projection expression on the left - the meter above previews the token savings. Disappears once a real Test has run (the live payload is shown and remembered instead)."
           >
             <textarea className="textarea mono" value={sample} onChange={(e) => setSample(e.target.value)} rows={7} style={{ fontSize: 11.5, marginTop: 12 }} />
           </Field>

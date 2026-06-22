@@ -2,7 +2,7 @@
 /* Self-rendered canvas connections.
 
    React Flow v12's own edge renderer doesn't draw loaded edges reliably in this dev
-   setup (handle-bounds race), so we draw the wires ourselves inside the ViewportPortal —
+   setup (handle-bounds race), so we draw the wires ourselves inside the ViewportPortal -
    which lives in flow coordinate space, so it pans/zooms with the canvas. Native edges
    are hidden via CSS to avoid double-draw. New connections (onConnect) land in the same
    `edges` array, so hand-drawn wires show here too. */
@@ -17,7 +17,7 @@ const NODE_HEIGHT: Record<string, number> = {
   transform: 64, tool_call: 64, webhook_out: 64, emit_event: 64, retrieval: 64,
 };
 const NODE_WIDTH = 230;
-// Router case-row geometry — must mirror ForgeNode's router body (header + expr line + rows).
+// Router case-row geometry - must mirror ForgeNode's router body (header + expr line + rows).
 const ROUTER_GEOM = { header: 37, exprLine: 22, rowH: 24, pad: 6 };
 
 function routerHeight(cfg: any): number {

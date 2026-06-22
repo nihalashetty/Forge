@@ -1,5 +1,5 @@
 "use client";
-/* Forge — root app: routing + chrome assembly (a single navigable SPA, like the handoff). */
+/* Forge - root app: routing + chrome assembly (a single navigable SPA, like the handoff). */
 import { ReactNode, useEffect, useMemo, useState } from "react";
 import { Topbar, ProjectSidebar, CommandPalette, AssistantPanel, Crumb } from "@/components/shell";
 import { DashboardScreen, OverviewScreen, OnboardingScreen, ProjectCard } from "@/components/screens/home";
@@ -136,7 +136,7 @@ function App() {
         <button className="btn btn-secondary btn-sm" onClick={() => setAssistantOpen(true)}><Icon name="sparkles" size={14} />Assistant</button>
         <button className="btn btn-primary btn-sm" onClick={publishWorkflow} disabled={!selWorkflow || publishState === "publishing"}>
           <Icon name={publishState === "published" ? "check" : "bolt"} size={14} />
-          {publishState === "publishing" ? "Publishing…" : publishState === "published" ? "Published" : publishState === "error" ? "Invalid — fix problems" : "Publish"}
+          {publishState === "publishing" ? "Publishing…" : publishState === "published" ? "Published" : publishState === "error" ? "Invalid - fix problems" : "Publish"}
         </button>
       </div>
     ) : (

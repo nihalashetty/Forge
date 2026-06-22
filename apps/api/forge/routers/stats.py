@@ -1,4 +1,4 @@
-"""Dashboard stats — tenant-wide rollups over real traces (no placeholder numbers)."""
+"""Dashboard stats - tenant-wide rollups over real traces (no placeholder numbers)."""
 
 from __future__ import annotations
 
@@ -79,7 +79,7 @@ async def dashboard(session: AsyncSession = Depends(get_session), tenant_id: str
         {
             "id": t.id,
             "workflow": wf_names.get(t.workflow_id or "", "run"),
-            "project": proj_names.get(t.project_id, "—"),
+            "project": proj_names.get(t.project_id, "-"),
             "status": t.status,
             "tokens": t.total_tokens,
             "latency_ms": t.latency_ms,

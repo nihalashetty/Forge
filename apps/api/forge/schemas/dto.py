@@ -130,7 +130,7 @@ class AgentUpdate(BaseModel):
 
 # --- runs ---
 class EndUser(BaseModel):
-    """The end user a run acts for (identity). Generic + app-defined — put any custom claims
+    """The end user a run acts for (identity). Generic + app-defined - put any custom claims
     in `attributes`. Set server-to-server by the integrator's authenticated backend on the
     run-create body, or minted into a verified session token for the browser widget (3b)."""
 

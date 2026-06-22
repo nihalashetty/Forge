@@ -1,5 +1,5 @@
 "use client";
-/* Declarative config forms — FieldSpec lists render as friendly widgets (toggle/number/
+/* Declarative config forms - FieldSpec lists render as friendly widgets (toggle/number/
    select/model/csv/textarea) instead of raw JSON. Shared by the canvas node inspector
    (workflows.tsx) and the middleware stack (AgentConfig.tsx). A form merges only its own
    keys into the config, so unknown/advanced keys are preserved. */
@@ -37,7 +37,7 @@ export function MultiSelectChips({ value, options, placeholder, onChange }: { va
     const next = selected.includes(opt) ? selected.filter((s) => s !== opt) : [...selected, opt];
     onChange(next);
   };
-  // No live options: don't render an input — just a hint. (Keep any stored values visible
+  // No live options: don't render an input - just a hint. (Keep any stored values visible
   // as removable chips so they aren't silently lost.)
   const chipBtn = (opt: string, on: boolean) => (
     <button key={opt} type="button" onClick={() => toggle(opt)} className="chip"
@@ -47,7 +47,7 @@ export function MultiSelectChips({ value, options, placeholder, onChange }: { va
   );
   if (!options.length) {
     if (!selected.length) {
-      return <div className="field-help" style={{ marginTop: 0 }}>{placeholder || "Nothing to choose from yet — manage these on the Knowledge screen."}</div>;
+      return <div className="field-help" style={{ marginTop: 0 }}>{placeholder || "Nothing to choose from yet - manage these on the Knowledge screen."}</div>;
     }
     return <div className="row gap2 wrap">{selected.map((opt) => chipBtn(opt, true))}</div>;
   }
@@ -189,7 +189,7 @@ export const MW_FIELDS: Record<string, FieldSpec[]> = {
   human_in_the_loop: [
     {
       key: "interrupt_on", label: "Tools requiring approval", widget: "csv", placeholder: "send_email, delete_record",
-      help: "Comma-separated tool names — the run pauses for approval before these execute.",
+      help: "Comma-separated tool names - the run pauses for approval before these execute.",
       format: (v: any) => (v && typeof v === "object" ? Object.keys(v) : []),
       parse: (arr: string[]) => Object.fromEntries((arr || []).map((n) => [n, true])),
     },
@@ -241,7 +241,7 @@ export const MW_FIELDS: Record<string, FieldSpec[]> = {
   ],
   tool_emulator: [
     { key: "model", label: "Emulator model", widget: "model" },
-    { key: "tools", label: "Tools to emulate (empty = all)", widget: "csv", help: "Emulated tools return LLM-invented results — for testing flows without live APIs." },
+    { key: "tools", label: "Tools to emulate (empty = all)", widget: "csv", help: "Emulated tools return LLM-invented results - for testing flows without live APIs." },
   ],
   context_editing: [
     {

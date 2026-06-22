@@ -1,5 +1,5 @@
 "use client";
-/* Forge canvas node — a chip on a circuit board, with IOType-colored typed handles.
+/* Forge canvas node - a chip on a circuit board, with IOType-colored typed handles.
    Ports come from the backend Node Type Registry (/v1/node-types) via context. */
 import { Handle, Position, useUpdateNodeInternals, type NodeProps } from "@xyflow/react";
 import { createContext, useContext, useEffect, useState } from "react";
@@ -18,19 +18,19 @@ function summarize(type: string, c: Record<string, any>): string[] {
   switch (type) {
     case "agent":
     case "deep_agent":
-      // Show only the model on the card — tools / middleware / components / knowledge are
+      // Show only the model on the card - tools / middleware / components / knowledge are
       // all partial here; the right-hand inspector shows the full config.
-      return [String(c.model || "—")];
+      return [String(c.model || "-")];
     case "router":
-      return [`expr · ${c.expression || "—"}`, Object.keys(c.cases || {}).concat(c.default ? ["default"] : []).join(" · ")];
+      return [`expr · ${c.expression || "-"}`, Object.keys(c.cases || {}).concat(c.default ? ["default"] : []).join(" · ")];
     case "llm":
-      return [String(c.model || "—"), "single call"];
+      return [String(c.model || "-"), "single call"];
     case "classifier":
       return [`→ ${c.output_key || "intent"}`, (c.labels || []).slice(0, 4).join(" · ") || "no labels"];
     case "transform":
       return [`${c.engine || "jmespath"} → ${c.output_key || "data"}`];
     case "tool_call":
-      return [String(c.tool_id || "—")];
+      return [String(c.tool_id || "-")];
     case "retrieval": {
       const lines: string[] = [];
       if (c.include_docs !== false) lines.push(`docs top_k ${c.top_k ?? 5}${c.hybrid ? " · hybrid" : ""}`);
@@ -62,7 +62,7 @@ function HandleStack({ ports, dir }: { ports: { id: string; io_type: string }[];
         <Handle
           key={p.id}
           // With a single port per side (every Forge node today), omit the id so this is
-          // React Flow's *default* handle — then loaded edges (which carry no handle id)
+          // React Flow's *default* handle - then loaded edges (which carry no handle id)
           // always attach, with no id-matching that can silently drop the edge.
           id={n > 1 ? p.id : undefined}
           type={dir === "in" ? "target" : "source"}
@@ -98,7 +98,7 @@ export function ForgeNode({ id, data, selected }: NodeProps) {
   const outputPreview = debugPreview(debug.output);
 
   // The port registry loads after the node first mounts, so the handles appear later.
-  // Tell React Flow to re-measure this node's handle bounds when its port count changes —
+  // Tell React Flow to re-measure this node's handle bounds when its port count changes -
   // without this, edges that connect to those handles never get drawn. Router case rows
   // each carry a handle, so case-count changes also need a re-measure.
   const caseKeys = type === "router" ? Object.keys(config.cases || {}).join("|") : "";
@@ -132,7 +132,7 @@ export function ForgeNode({ id, data, selected }: NodeProps) {
         // Dragging from a row's handle wires that case (see onConnect in workflows.tsx).
         // Geometry must stay in sync with ROUTER_GEOM in workflows.tsx (EdgeOverlay).
         <div className="col" style={{ paddingBottom: 6 }}>
-          <div className="t-caption fg-2 truncate" style={{ padding: "4px 11px", height: 22 }}>expr · {config.expression || "—"}</div>
+          <div className="t-caption fg-2 truncate" style={{ padding: "4px 11px", height: 22 }}>expr · {config.expression || "-"}</div>
           {[...Object.keys(config.cases || {}), "__default__"].map((k) => (
             <div key={k} style={{ position: "relative", height: 24, display: "flex", alignItems: "center", justifyContent: "flex-end", padding: "0 12px", borderTop: "1px solid var(--line)", background: "var(--bg-3)" }}>
               <span className="mono-sm truncate" style={{ color: k === "__default__" ? "var(--fg-2)" : "var(--fg-1)" }}>{k === "__default__" ? "Else" : k}</span>

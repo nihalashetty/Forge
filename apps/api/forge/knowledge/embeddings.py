@@ -90,7 +90,7 @@ class _LCEmbedder:
         return self._e.embed_query(text)
 
     # Async variants keep network embed calls off the event loop's back (the sync
-    # ones block the loop — and the SSE stream — for the whole round trip).
+    # ones block the loop - and the SSE stream - for the whole round trip).
     async def aembed(self, texts: list[str]) -> list[list[float]]:
         return await self._e.aembed_documents(texts)
 
@@ -104,7 +104,7 @@ class _LCEmbedder:
 _EMBEDDER_CACHE: dict[tuple[str, str], Embedder] = {}
 _FAKE = FakeEmbedder()
 # Warn once per model when we silently fall back to the offline embedder for a real provider
-# model — the dim-keyed collection then won't match content indexed under the real model.
+# model - the dim-keyed collection then won't match content indexed under the real model.
 _FALLBACK_WARNED: set[str] = set()
 
 
@@ -118,7 +118,7 @@ def resolve_embedder(model: str | None = None, api_key: str | None = None) -> Em
     """Return an embedder for the given model ref + (project) key.
 
     Uses a real provider embedder (e.g. 'openai:text-embedding-3-small') when the
-    model is provider-prefixed AND a key is available — the per-project key first,
+    model is provider-prefixed AND a key is available - the per-project key first,
     then the env var. Otherwise the offline FakeEmbedder. A Chroma collection is
     fixed-dim, so we key the collection by `embedder.dim` (switching needs re-ingest).
     Instances are cached (construction is ~1s on Windows).
@@ -150,7 +150,7 @@ def resolve_embedder(model: str | None = None, api_key: str | None = None) -> Em
                 return _FAKE
         elif model not in _FALLBACK_WARNED:
             # A real provider model was requested but no key resolved. The silent dim-256
-            # fallback indexes/queries a DIFFERENT collection than the real model — the
+            # fallback indexes/queries a DIFFERENT collection than the real model - the
             # dim-flip trap that makes RAG/Q&A go quietly empty. Make it loud (once).
             _FALLBACK_WARNED.add(model)
             log.warning(

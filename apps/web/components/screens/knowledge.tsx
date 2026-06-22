@@ -1,5 +1,5 @@
 "use client";
-/* Knowledge: vertical-tab layout — Files (sources organized in folders), Q&A pairs
+/* Knowledge: vertical-tab layout - Files (sources organized in folders), Q&A pairs
    (free-form kinds/categories + tags), and the search debugger. */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Icon } from "../icons";
@@ -63,7 +63,7 @@ function Files({ project }: { project: any }) {
   const [busy, setBusy] = useState(false);
   const [addErr, setAddErr] = useState<string | null>(null);
   const [newFolder, setNewFolder] = useState<string | null>(null); // non-null = naming a new folder
-  // The modal never asks for a folder — sources land in the folder open at the time
+  // The modal never asks for a folder - sources land in the folder open at the time
   // ("" = Unfiled, e.g. from the All files view).
   const [targetFolder, setTargetFolder] = useState<string>("");
   const [form, setForm] = useState<{ kind: string; name: string; text: string; uri: string; file: globalThis.File | null; chunkStrategy: string }>({ kind: "text", name: "", text: "", uri: "", file: null, chunkStrategy: "recursive" });
@@ -86,7 +86,7 @@ function Files({ project }: { project: any }) {
 
   const visible = folder === null ? rows : rows.filter((s) => (s.folder || UNFILED) === folder);
   const hasUnfiled = rows.some((s) => !s.folder);
-  // Folder column is redundant when already viewing one named folder — show it only in
+  // Folder column is redundant when already viewing one named folder - show it only in
   // the All-files and Unfiled views (where moving files between folders is useful).
   const showFolderCol = folder === null || folder === UNFILED;
   const inNamedFolder = folder !== null && folder !== UNFILED;
@@ -135,7 +135,7 @@ function Files({ project }: { project: any }) {
       {health?.needs_reembed && (
         <div className="card row spread" style={{ padding: "10px 14px", background: "var(--signal-glow)", borderColor: "transparent" }}>
           <div className="row gap2" style={{ minWidth: 0 }}><Icon name="bolt" size={15} style={{ color: "var(--signal)" }} />
-            <span className="t-body-sm">{health.mismatched.length} source(s) were embedded with a different model than the current one ({health.current_model}) — they won&apos;t appear in search until re-embedded.</span>
+            <span className="t-body-sm">{health.mismatched.length} source(s) were embedded with a different model than the current one ({health.current_model}) - they won&apos;t appear in search until re-embedded.</span>
           </div>
           <button className="btn btn-secondary btn-sm" style={{ flex: "none" }} onClick={async () => { for (const m of health.mismatched) await reingest(m.id); }}><Icon name="refresh" size={13} />Re-embed all</button>
         </div>
@@ -277,7 +277,7 @@ function QA({ project }: { project: any }) {
   const lockedKind = kind;
   const effectiveKind = lockedKind ?? (form.kind.trim() || "faq");
   const visible = kind === null ? rows : rows.filter((q) => q.kind === kind);
-  // Hide the Kind column when viewing one kind — the rail already says which.
+  // Hide the Kind column when viewing one kind - the rail already says which.
   const showKindCol = kind === null;
 
   async function add() {
@@ -368,7 +368,7 @@ function QA({ project }: { project: any }) {
                   <td style={{ fontWeight: 600, maxWidth: 260 }} className="truncate">{q.question}</td>
                   <td className="fg-1 truncate" style={{ maxWidth: 280 }}>{q.answer}</td>
                   {showKindCol && <td><span className="typechip">{q.kind}</span></td>}
-                  <td className="fg-2 t-caption truncate" style={{ maxWidth: 140 }}>{(q.tags || []).join(", ") || "—"}</td>
+                  <td className="fg-2 t-caption truncate" style={{ maxWidth: 140 }}>{(q.tags || []).join(", ") || "-"}</td>
                   <td style={{ textAlign: "right" }}><button className="iconbtn" onClick={async () => { await api.deleteQa(project.id, q.id); reload(); }}><Icon name="trash" size={15} /></button></td>
                 </tr>
               ))}
@@ -410,7 +410,7 @@ function SearchDebugger({ project }: { project: any }) {
         {hits.map((h, i) => (
           <div key={i} className="card" style={{ padding: 12 }}>
             <div className="row spread" style={{ marginBottom: 4 }}>
-              <span className="t-caption fg-2 mono">{h.source_id?.slice(0, 12) || "—"}</span>
+              <span className="t-caption fg-2 mono">{h.source_id?.slice(0, 12) || "-"}</span>
               <span className="chip chip-mono" style={{ color: "var(--signal)" }}>score {h.score.toFixed(3)}</span>
             </div>
             <div className="t-body-sm">{h.text}</div>

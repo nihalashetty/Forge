@@ -42,7 +42,7 @@ export function WorkflowTestPanel({
   const [liveParts, setLiveParts] = useState<Part[]>([]);  // in-flight assistant reply parts (audit H3)
   const activeRef = useRef(true);
   const scrollRef = useRef<HTMLDivElement>(null);
-  // One backend thread per test session — the checkpointer holds prior turns.
+  // One backend thread per test session - the checkpointer holds prior turns.
   const threadRef = useRef<string | null>(null);
   useEffect(() => {
     threadRef.current = null; setMsgs([]);

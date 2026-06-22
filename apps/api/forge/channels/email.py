@@ -1,4 +1,4 @@
-"""Email channel — inbound parsing and outbound (SMTP) replies.
+"""Email channel - inbound parsing and outbound (SMTP) replies.
 
 Inbound supports two shapes:
 - A raw RFC-822 message (bytes/str), e.g. from an IMAP poll.
@@ -51,7 +51,7 @@ def parse_inbound(payload: Any) -> dict:
     if msg.is_multipart():
         for part in msg.walk():
             if part.get_content_type() == "text/plain" and "attachment" not in str(part.get("Content-Disposition", "")):
-                # decode=True returns None for a part with no decodable payload — guard it
+                # decode=True returns None for a part with no decodable payload - guard it
                 # so a malformed MIME message can't 500 the public inbound webhook (audit F-low).
                 raw_payload = part.get_payload(decode=True) or b""
                 body = raw_payload.decode(part.get_content_charset() or "utf-8", "replace")

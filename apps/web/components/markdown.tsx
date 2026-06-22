@@ -1,5 +1,5 @@
 "use client";
-/* Renders an assistant reply as GitHub-Flavored Markdown (Feature 1 — structured responses).
+/* Renders an assistant reply as GitHub-Flavored Markdown (Feature 1 - structured responses).
    Safe by default: react-markdown does NOT render raw HTML (no rehype-raw), so agent output
    cannot inject markup. Visual styling lives in the `.md` block in app/globals.css and uses
    the app's design tokens, so it adapts to light/dark automatically. Memoized so finalized

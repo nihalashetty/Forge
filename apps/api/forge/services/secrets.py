@@ -52,7 +52,7 @@ class SecretService:
 
     @staticmethod
     async def usage(session: AsyncSession, tenant_id: str, project_id: str, *, name: str) -> list[dict]:
-        """Entities in this project that reference secret://…/<name> — used to warn before delete."""
+        """Entities in this project that reference secret://…/<name> - used to warn before delete."""
         refs: list[dict] = []
 
         aps = (await session.execute(

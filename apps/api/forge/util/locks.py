@@ -18,8 +18,8 @@ from contextlib import asynccontextmanager
 class KeyedLocks:
     """A registry of asyncio.Locks keyed by an arbitrary string.
 
-    Locks are created lazily and kept for the process lifetime (the key space —
-    thread ids / tenant ids — is bounded in practice and each lock is tiny).
+    Locks are created lazily and kept for the process lifetime (the key space -
+    thread ids / tenant ids - is bounded in practice and each lock is tiny).
     """
 
     def __init__(self) -> None:

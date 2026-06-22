@@ -1,5 +1,5 @@
 "use client";
-/* Playground — chat that runs a real workflow over SSE with token-by-token streaming. */
+/* Playground - chat that runs a real workflow over SSE with token-by-token streaming. */
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "../icons";
 import { Tile } from "../primitives";
@@ -58,8 +58,8 @@ export function PlaygroundScreen({ project }: { project: any }) {
     setStreaming(""); setSteps([]); setMeter(null); setRunning(true); setLiveParts([]);
     let finalAnswer = "";
     // The reply is an ordered list of parts (text + components). Components are positioned by the
-    // [[forge:component:ID]] markers the agent writes into its text — NOT by the order their
-    // frames arrive — so a widget lands in its natural place instead of always at the top.
+    // [[forge:component:ID]] markers the agent writes into its text - NOT by the order their
+    // frames arrive - so a widget lands in its natural place instead of always at the top.
     const acc = new ReplyAccumulator();
     try {
       // The thread's checkpointer holds prior turns, so send only the new message when a
@@ -97,7 +97,7 @@ export function PlaygroundScreen({ project }: { project: any }) {
         }
       });
       if (interrupted) {
-        // Preserve anything streamed before the pause (audit M4) — mirror the finalize commit.
+        // Preserve anything streamed before the pause (audit M4) - mirror the finalize commit.
         if (acc.hasComponents() || acc.text.trim()) {
           setMsgs((m) => [...m, acc.hasComponents()
             ? { role: "assistant", parts: acc.parts() }
@@ -153,7 +153,7 @@ export function PlaygroundScreen({ project }: { project: any }) {
       const msgsOut = res.messages || [];
       const last = [...msgsOut].reverse().find((m: any) => (m.type === "ai" || m.role === "assistant") && m.content);
       const content = last ? (typeof last.content === "string" ? last.content : JSON.stringify(last.content)) : (res.error || "(resumed)");
-      setMsgs((m) => [...m, { role: "assistant", content: res.interrupted ? content + "\n⏸ paused again for another approval — check Traces." : content }]);
+      setMsgs((m) => [...m, { role: "assistant", content: res.interrupted ? content + "\n⏸ paused again for another approval - check Traces." : content }]);
     } catch (e: any) {
       setMsgs((m) => [...m, { role: "assistant", content: `⚠ resume failed: ${e.message || e}` }]);
     } finally {
@@ -169,7 +169,7 @@ export function PlaygroundScreen({ project }: { project: any }) {
     if (msg) send(msg);
   }
 
-  // "Acting as" must be a JSON object (or blank) — drives the red-border hint + gates send (F20).
+  // "Acting as" must be a JSON object (or blank) - drives the red-border hint + gates send (F20).
   const actingAsValid = !actingAs.trim() || (() => {
     try { const v = JSON.parse(actingAs); return v !== null && typeof v === "object" && !Array.isArray(v); }
     catch { return false; }
@@ -210,7 +210,7 @@ export function PlaygroundScreen({ project }: { project: any }) {
           )}
           <input value={actingAs} onChange={(e) => setActingAs(e.target.value)} disabled={running}
             placeholder={'Acting as… {"id":"u_1","roles":["admin"]}'}
-            title="Optional end_user object to test identity — sent to the run as end_user. In production the integrator's backend supplies this."
+            title="Optional end_user object to test identity - sent to the run as end_user. In production the integrator's backend supplies this."
             className="input mono" style={{ width: 230, height: 26, fontSize: 11, borderColor: actingAsValid ? undefined : "var(--err)" }} />
           <span className="chip chip-mono"><Icon name="knowledge" size={12} />grounded</span>
           <button className="btn btn-ghost btn-sm" onClick={() => { setMsgs([]); setSteps([]); setMeter(null); }} disabled={running}>
@@ -219,7 +219,7 @@ export function PlaygroundScreen({ project }: { project: any }) {
         </div>
       </div>
 
-      {/* alignItems:stretch — the global .row centers children, which stops the chat column
+      {/* alignItems:stretch - the global .row centers children, which stops the chat column
           from filling the height: it then sizes to content, overflows the viewport, and the
           scroll area never scrolls. Stretch restores the fixed-height column + inner scroll. */}
       <div className="row" style={{ flex: 1, minHeight: 0, alignItems: "stretch" }}>
@@ -233,7 +233,7 @@ export function PlaygroundScreen({ project }: { project: any }) {
                 <div className="col center" style={{ minHeight: 300, gap: 10, color: "var(--fg-2)", textAlign: "center", margin: "auto 0" }}>
                   <Tile icon="sparkles" color="var(--accent)" size={44} glow />
                   <div className="t-h2" style={{ color: "var(--fg-1)" }}>Run “{wf?.name || "your workflow"}” live</div>
-                  <div className="t-caption">Answers are grounded in this project’s knowledge base & Q&A — it streams token by token.</div>
+                  <div className="t-caption">Answers are grounded in this project’s knowledge base & Q&A - it streams token by token.</div>
                   <div className="row gap2 wrap center" style={{ maxWidth: 460, marginTop: 6 }}>
                     {samples.map((s) => (
                       <button key={s} className="chip" style={{ cursor: "pointer" }} onClick={() => setInput(s)}>{s}</button>
@@ -314,8 +314,8 @@ export function PlaygroundScreen({ project }: { project: any }) {
 }
 
 /* One chat turn. User turns keep the colored bubble. An assistant turn is ONE flowing reply
-   under a single avatar — bare markdown text and inline components in order, with NO bubble
-   chrome — so a rendered component reads as part of the reply, not a detached card below it
+   under a single avatar - bare markdown text and inline components in order, with NO bubble
+   chrome - so a rendered component reads as part of the reply, not a detached card below it
    (audit Priority C). Missing component defs degrade to a visible notice (audit M5). */
 function MessageBlock({ role, content, streaming, parts, compDefs, onAction }: {
   role: "user" | "assistant";

@@ -1,10 +1,10 @@
 "use client";
-/* Renders a user-authored UI component (Feature 2 — generative UI) inside a SANDBOXED
+/* Renders a user-authored UI component (Feature 2 - generative UI) inside a SANDBOXED
    iframe. Mustache interpolates the agent-supplied props into the saved HTML (values are
    HTML-escaped by Mustache), the CSS is scoped to the iframe document, and a tiny injected
    bridge reports content height (for auto-sizing) and posts button/form actions back to the
    host. sandbox="allow-scripts" (NO allow-same-origin) means the component can never reach
-   the parent DOM, cookies, or storage — only postMessage. */
+   the parent DOM, cookies, or storage - only postMessage. */
 import { useEffect, useMemo, useRef, useState } from "react";
 import Mustache from "mustache";
 
@@ -38,14 +38,14 @@ export function ComponentRenderer({
 }) {
   const ref = useRef<HTMLIFrameElement>(null);
   const [height, setHeight] = useState(60);
-  // Keep latest def/onAction in refs so the message listener registers ONCE — new def/onAction
+  // Keep latest def/onAction in refs so the message listener registers ONCE - new def/onAction
   // object identities on each parent render would otherwise re-bind it every render (F19/F33).
   const defRef = useRef(def);
   defRef.current = def;
   const actionRef = useRef(onAction);
   actionRef.current = onAction;
 
-  // Rebuild the iframe document only when the template or props actually change — not on every
+  // Rebuild the iframe document only when the template or props actually change - not on every
   // parent re-render (e.g. while a sibling message streams), which would reload the iframe (F19).
   const srcDoc = useMemo(() => {
     let body = "";

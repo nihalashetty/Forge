@@ -215,7 +215,7 @@ function CanvasInner({ project, workflowId, onWorkflowChange, onBack, onRun }: {
   const [wf, setWf] = useState<Workflow | null>(null);
   const [registry, setRegistry] = useState<Record<string, NodeType>>({});
   const [tools, setTools] = useState<Tool[]>([]);
-  // Saved agent presets (from the Agents tab) — loadable into an agent node.
+  // Saved agent presets (from the Agents tab) - loadable into an agent node.
   const [agents, setAgents] = useState<Agent[]>([]);
   const [mcpServers, setMcpServers] = useState<McpClientT[]>([]);
   const [components, setComponents] = useState<ComponentT[]>([]);
@@ -231,7 +231,7 @@ function CanvasInner({ project, workflowId, onWorkflowChange, onBack, onRun }: {
   const [testOpen, setTestOpen] = useState(false);
   const [showProblems, setShowProblems] = useState(false);
   const [paletteQuery, setPaletteQuery] = useState("");
-  // Hover help for palette items — rendered as a fixed-position card so the palette's
+  // Hover help for palette items - rendered as a fixed-position card so the palette's
   // own scroll container can't clip it. Positioned from the hovered item's rect (the
   // palette's viewport offset varies with the rail/sidebar, so no hardcoded left).
   const [paletteTip, setPaletteTip] = useState<{ type: string; top: number; left: number } | null>(null);
@@ -370,7 +370,7 @@ function CanvasInner({ project, workflowId, onWorkflowChange, onBack, onRun }: {
     if (!isValidConnection(params)) return;
     const sn = nodes.find((n) => n.id === params.source);
     const fromRouterCase = !!params.sourceHandle?.startsWith("case:") && sn?.data.nodeType === "router";
-    // Dragging from a router's case row wires that case to the target node — the canvas
+    // Dragging from a router's case row wires that case to the target node - the canvas
     // edge is the picture, config.cases/default is what the compiler routes on.
     if (params.sourceHandle?.startsWith("case:") && sn?.data.nodeType === "router") {
       const key = params.sourceHandle.slice(5);
@@ -424,7 +424,7 @@ function CanvasInner({ project, workflowId, onWorkflowChange, onBack, onRun }: {
     try {
       const res = await api.saveCanvas(project.id, wf.id, canvas, executable);
       // Errors block publish; warnings are wiring smells (e.g. a router whose expression
-      // nothing writes) — show both in the tray, tagged by level.
+      // nothing writes) - show both in the tray, tagged by level.
       const warns = ((res as any).warnings || []).map((w: any) => ({ ...w, level: "warning" }));
       setProblems([...res.errors, ...warns]);
       setSaveState(res.valid ? "saved" : "invalid");
@@ -605,11 +605,11 @@ function CanvasInner({ project, workflowId, onWorkflowChange, onBack, onRun }: {
 
         {/* canvas */}
         <div className="grow forge-canvas" style={{ position: "relative", minWidth: 0, height: "100%" }}>
-          {/* Hide React Flow's native edge layer — we draw connections via EdgeOverlay. */}
+          {/* Hide React Flow's native edge layer - we draw connections via EdgeOverlay. */}
           <style>{`.forge-canvas .react-flow__edge { display: none; }`}</style>
           <NodeTypesContext.Provider value={registry}>
             {/* Wait for the node-type registry before mounting React Flow so nodes render
-                WITH their handles on first paint — otherwise React Flow measures handle-less
+                WITH their handles on first paint - otherwise React Flow measures handle-less
                 nodes and loaded edges never get drawn (their handle bounds stay empty). */}
             {registryReady ? (
               <ReactFlow
@@ -772,7 +772,7 @@ function NodeInspector({
 
       {type === "tool_call" && (
         <div className="col gap3">
-          <Field label="Tool" help={tools.length ? "Which project tool to invoke." : "No tools in this project yet — add them on the Tools screen."}>
+          <Field label="Tool" help={tools.length ? "Which project tool to invoke." : "No tools in this project yet - add them on the Tools screen."}>
             <select className="select" value={c.tool_id || ""} onChange={(e) => set({ tool_id: e.target.value || undefined })}>
               <option value="">Select a tool…</option>
               {tools.map((t) => <option key={t.id} value={t.id}>{t.name} · {t.kind}</option>)}
@@ -832,7 +832,7 @@ const NODE_FIELDS: Record<string, FieldSpec[]> = {
   // --- flow ---
   loop: [
     { key: "max_iter", label: "Max iterations", widget: "number", min: 1, step: 1, help: "Safety cap on how many times the body runs." },
-    { key: "condition", label: "Continue while (expression)", widget: "textarea", placeholder: "keep_going == True", help: "Sandboxed expression over state; loops while truthy. Writes _loop = continue/done — wire a Router on _loop and point its body back to this node." },
+    { key: "condition", label: "Continue while (expression)", widget: "textarea", placeholder: "keep_going == True", help: "Sandboxed expression over state; loops while truthy. Writes _loop = continue/done - wire a Router on _loop and point its body back to this node." },
   ],
   parallel_fanout: [
     { key: "over", label: "List state key", widget: "text", placeholder: "items", help: "State field holding the list to map over." },
@@ -877,7 +877,7 @@ const NODE_FIELDS: Record<string, FieldSpec[]> = {
 // Node types that render a real form (agent/router/llm/tool_call have bespoke forms; the rest come from NODE_FIELDS).
 const FORM_NODES = new Set<string>(["agent", "deep_agent", "router", "llm", "tool_call", "retrieval", "start", "end", ...Object.keys(NODE_FIELDS)]);
 
-/** State keys written by upstream-capable nodes, with the values they can take —
+/** State keys written by upstream-capable nodes, with the values they can take -
  *  shown in the router form so users branch on real values, not made-up labels. */
 function stateWriters(nodes: FlowNode[]): { key: string; values: string[]; from: string }[] {
   const out: { key: string; values: string[]; from: string }[] = [];
@@ -898,7 +898,7 @@ function stateWriters(nodes: FlowNode[]): { key: string; values: string[]; from:
   return out;
 }
 
-/* Retrieval node config — toggleable Knowledge (RAG over documents) + FAQs / Q&A sections,
+/* Retrieval node config - toggleable Knowledge (RAG over documents) + FAQs / Q&A sections,
    mirroring the agent panel's Knowledge sections (AgentConfig). Document search (include_docs)
    and Q&A lookup (include_qa) are independent: use either or both. The flat retrieval config is
    read/written directly. */
@@ -933,7 +933,7 @@ function RetrievalForm({ c, set, folders, kinds }: { c: Record<string, any>; set
                 <Toggle on={!!c.hybrid} onChange={(on) => set({ hybrid: on })} />
                 <span className="t-body-sm">Hybrid search (BM25 + vector)</span>
               </label>
-              <div className="field-help">Blend lexical keyword (BM25) ranking with semantic vectors so exact terms — codes, names, SKUs — aren’t missed.</div>
+              <div className="field-help">Blend lexical keyword (BM25) ranking with semantic vectors so exact terms - codes, names, SKUs - aren’t missed.</div>
             </div>
           )}
         </div>
@@ -980,7 +980,7 @@ function RetrievalForm({ c, set, folders, kinds }: { c: Record<string, any>; set
 
       {!ragOn && !qaOn && (
         <div className="field-help" style={{ color: "var(--warn)" }}>
-          ⚠ Both sources are off — this node will retrieve nothing. Turn on Knowledge and/or Q&amp;A above.
+          ⚠ Both sources are off - this node will retrieve nothing. Turn on Knowledge and/or Q&amp;A above.
         </div>
       )}
     </div>
@@ -1049,15 +1049,15 @@ function RouterForm({
           </div>
         ) : (
           <div className="field-help" style={{ color: "var(--warn)" }}>
-            ⚠ No node in this workflow writes a routable state key yet. Add a Classifier (writes a label), or set a route/decision flag on Retrieval or Human Input — otherwise every run takes the Default path.
+            ⚠ No node in this workflow writes a routable state key yet. Add a Classifier (writes a label), or set a route/decision flag on Retrieval or Human Input - otherwise every run takes the Default path.
           </div>
         )}
       </div>
       <div>
-        <div className="field-label">Cases — when the expression VALUE equals… → go to</div>
+        <div className="field-label">Cases - when the expression VALUE equals… → go to</div>
         {activeWriter && (
           <div className="field-help" style={{ marginBottom: 6 }}>
-            '{activeWriter.key}' takes the values: <b>{activeWriter.values.join(", ") || "(set by " + activeWriter.from + ")"}</b> — use those exact values as case keys.
+            '{activeWriter.key}' takes the values: <b>{activeWriter.values.join(", ") || "(set by " + activeWriter.from + ")"}</b> - use those exact values as case keys.
           </div>
         )}
         <div className="col gap2">

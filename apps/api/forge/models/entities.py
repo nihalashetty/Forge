@@ -87,11 +87,11 @@ class Tool(PkTimestamp, Base):
 
 
 class Component(PkTimestamp, Base):
-    """A user-authored UI component (Feature 2 — generative UI): saved HTML + CSS,
+    """A user-authored UI component (Feature 2 - generative UI): saved HTML + CSS,
     declarative button `actions`, and a JSON-Schema for the `props` the agent supplies.
     Attached to agents like tools (agent config["components"]); at runtime each becomes a
     widget-tool that, when called, emits a `component` stream frame for the client to
-    render — so the markup never enters the model's token stream, only the props do."""
+    render - so the markup never enters the model's token stream, only the props do."""
 
     __tablename__ = "components"
     # The name is used verbatim as the LLM tool name → unique per project so two components
@@ -293,7 +293,7 @@ class HandoffRequest(PkTimestamp, Base):
 
 
 class Memory(PkTimestamp, Base):
-    """A long-term memory an agent stored — facts that should persist across threads
+    """A long-term memory an agent stored - facts that should persist across threads
     (vs. the per-thread checkpointer). Recalled by semantic search; scoped per project
     (+ optional `scope` for per-user/per-conversation memory)."""
 

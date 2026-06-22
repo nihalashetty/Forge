@@ -3,10 +3,10 @@
 `execute_rest` is the standalone core (used by the /test endpoint with a manual
 context). `build_rest_tool` wraps it as a StructuredTool whose hidden `runtime`
 arg supplies per-user context at agent-run time. Response projection cuts the
-payload before it reaches the model — the primary token lever.
+payload before it reaches the model - the primary token lever.
 """
 
-# NO `from __future__ import annotations` here — on purpose. LangChain detects the
+# NO `from __future__ import annotations` here - on purpose. LangChain detects the
 # injectable `runtime: ToolRuntime` parameter via inspect.signature(fn), which does NOT
 # evaluate string annotations; postponed annotations make the runtime arg invisible, so
 # it gets stripped during args_schema validation and _call crashes with
@@ -145,7 +145,7 @@ def _redirect_info(r: httpx.Response, followed: bool) -> dict | None:
     Two shapes:
     - followed: the redirect was chased SSRF-safely. `final_url` is the resolved target
       and `chain` lists the hop URLs; the response body IS the target's content.
-    - a 3xx that was NOT followed: `location` is the target URL the API pointed at — the
+    - a 3xx that was NOT followed: `location` is the target URL the API pointed at - the
       single most actionable thing for the agent (call a fetch tool on it, or the user
       can enable Follow redirects). Without this, a bare 3xx looks like an empty response.
     """
@@ -168,7 +168,7 @@ def _redirect_info(r: httpx.Response, followed: bool) -> dict | None:
         "location": location,
         "note": (
             "The API returned an HTTP redirect that Forge did not follow. 'location' is "
-            "the target URL — call a fetch tool on it, or enable 'Follow redirects' on "
+            "the target URL - call a fetch tool on it, or enable 'Follow redirects' on "
             "this tool to fetch it automatically."
             if location else
             "The API returned a redirect status with no Location header."
@@ -181,7 +181,7 @@ def _tool_return(res: dict, cfg: dict) -> Any:
 
     Normally just the projected body (an un-projected payload is char-capped so a huge
     response can't blow the model's context). When the API redirected, wrap it as
-    {"body": ..., "redirect": {...}} so the model can see and act on the redirect target —
+    {"body": ..., "redirect": {...}} so the model can see and act on the redirect target -
     otherwise a non-followed 3xx would reach the model as an empty body."""
     has_jmespath = bool((cfg.get("response") or {}).get("projection_jmespath"))
     body = res["projected"] if has_jmespath else cap_payload(res["projected"], settings.max_tool_response_chars)
@@ -265,7 +265,7 @@ async def execute_rest(
     async def _send() -> httpx.Response:
         kw = dict(headers=headers, params=params or None, json=body, cookies=cookies or None, timeout=timeout)
         if follow_redirects:
-            # Chase redirects SSRF-safely — each hop is re-validated. Never enable httpx's
+            # Chase redirects SSRF-safely - each hop is re-validated. Never enable httpx's
             # own redirect-following, which would connect to a hop without the egress guard.
             return await guarded_request(client, method, url, policy=egress_policy, follow_redirects=True, **kw)
         return await client.request(method, url, **kw)
@@ -276,7 +276,7 @@ async def execute_rest(
             await apply_auth(force=True)
             r = await _send()
         # A 3xx we didn't follow is a capturable result (we surface the target URL to the
-        # model via `redirect`), not a failure — only raise on real 4xx/5xx errors. httpx's
+        # model via `redirect`), not a failure - only raise on real 4xx/5xx errors. httpx's
         # raise_for_status() otherwise treats a redirect response as an error.
         if not (300 <= r.status_code < 400 and not follow_redirects):
             r.raise_for_status()
@@ -327,7 +327,7 @@ def build_rest_tool(cfg: dict, ctx):
     # `runtime` must be annotated with the BARE ToolRuntime class (not Optional[...]) so the
     # injection machinery detects it. The None default matters: for tools with NO llm-visible
     # fields, langchain_core's _to_args_and_kwargs short-circuits empty-schema tools to
-    # `(), {}` — dropping even the injected runtime — so zero-arg tools run uninjected.
+    # `(), {}` - dropping even the injected runtime - so zero-arg tools run uninjected.
     async def _call(runtime: ToolRuntime = None, **kwargs):  # type: ignore[assignment]
         # Server-side entitlement gate (Feature 3b): deny independently of the LLM if the
         # run's end_user lacks the entitlements this tool declares (config.required_entitlements).

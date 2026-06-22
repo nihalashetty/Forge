@@ -1,7 +1,7 @@
 """Agent node (`create_agent`) and Deep Agent node (`create_deep_agent`).
 
 Doc 2 §9. Both produce a compiled LangGraph graph used as a node inside the
-workflow. The embedded agent does NOT carry its own checkpointer/store — the
+workflow. The embedded agent does NOT carry its own checkpointer/store - the
 top-level workflow graph owns durability, and LangGraph propagates it to subgraphs
 at runtime (avoids nested-checkpointer conflicts and makes HITL interrupts bubble up).
 """
@@ -16,20 +16,20 @@ from forge.engine.models import resolve_model
 from forge.engine.registry import NodeSpec, Port, register
 
 # Forge's default output style: every agent reply renders as GitHub-Flavored Markdown
-# (Feature 1 — structured responses). It lives in the system prompt, so it costs ~nothing
+# (Feature 1 - structured responses). It lives in the system prompt, so it costs ~nothing
 # per turn (and is cached by the Anthropic prompt-caching middleware). Opt out with
 # config output_style="plain"; auto-skipped for structured-output agents (they emit JSON).
 OUTPUT_STYLE = (
     "Format every reply as GitHub-Flavored Markdown so it renders cleanly: short "
     "paragraphs; `##`/`###` headings for sections; `-` or numbered lists; GFM tables for "
     "comparisons or structured data; fenced code blocks with a language hint for code; and "
-    "**bold** for key terms. Keep the structure minimal — only as much as the answer needs "
-    "— and never output raw HTML."
+    "**bold** for key terms. Keep the structure minimal - only as much as the answer needs "
+    "- and never output raw HTML."
 )
 
 
 # When UI components are attached, structured data should be shown via a component (table/
-# card/form), NOT a markdown table — so this variant drops the "GFM tables for structured
+# card/form), NOT a markdown table - so this variant drops the "GFM tables for structured
 # data" clause to avoid competing with the widgets (audit B1).
 OUTPUT_STYLE_WITH_COMPONENTS = (
     "Format every reply as GitHub-Flavored Markdown so it renders cleanly: short paragraphs; "
@@ -41,11 +41,11 @@ OUTPUT_STYLE_WITH_COMPONENTS = (
 
 # Steer the agent to RENDER a fitting component instead of restating its data as prose, and to
 # POSITION it correctly: calling a component tool returns a placeholder marker that the agent
-# copies into its reply where the widget belongs — so the component is interleaved with the text
+# copies into its reply where the widget belongs - so the component is interleaved with the text
 # in its natural place (mid-answer, after a heading, at the end) rather than always pinned to the
 # top (which is what happens if placement is left to tool-call order). The last sentence is
 # load-bearing: it makes clear components only PRESENT data, so the agent keeps using its
-# retrieval/other tools normally — without it, the component guidance was competing with
+# retrieval/other tools normally - without it, the component guidance was competing with
 # knowledge/FAQ search and the agent skipped it (audit Priority B + the KB regression). Only
 # appended when config["components"] is non-empty.
 COMPONENT_STYLE = (
@@ -54,10 +54,10 @@ COMPONENT_STYLE = (
     "component tool with the data as its props INSTEAD of writing the same data as prose or a "
     "markdown table. The tool returns a placeholder marker like [[forge:component:ID]]; copy that "
     "marker verbatim into your reply at the exact position where the component should appear. You "
-    "control the order — write text before and after the marker so the component lands in its "
+    "control the order - write text before and after the marker so the component lands in its "
     "natural place in the answer (in the middle, after a heading, or at the end), exactly as it "
     "would read in a normal reply. Never restate the component's contents as text. This governs "
-    "only how you PRESENT data — keep using your other tools (search the knowledge base, look up "
+    "only how you PRESENT data - keep using your other tools (search the knowledge base, look up "
     "FAQs, call APIs) normally to GET the information you need."
 )
 
@@ -143,7 +143,7 @@ def _end_user_block(end_user: dict) -> str:
     """A generic identity-awareness block. Only a whitelisted, size-clamped subset of the
     (untrusted-shaped) end_user is embedded, re-serialized so the JSON stays well-formed
     (audit L4). The withhold-restriction sentence is added ONLY when the user actually carries
-    roles/entitlements — an unscoped prohibition with no entitlement list made the model
+    roles/entitlements - an unscoped prohibition with no entitlement list made the model
     over-refuse general KB/FAQ answers ("I don't have that information") (audit Priority A)."""
     import json as _json
 
@@ -157,11 +157,11 @@ def _end_user_block(end_user: dict) -> str:
     eu = _json.dumps(safe, default=str, ensure_ascii=False)
     line = (
         "[END USER] You are assisting this authenticated end user, provided by the host "
-        f"application — treat it as authoritative: {eu}."
+        f"application - treat it as authoritative: {eu}."
     )
     if safe.get("roles") or safe.get("entitlements"):
         line += (
-            " General product, FAQ, and knowledge-base information is available to everyone — "
+            " General product, FAQ, and knowledge-base information is available to everyone - "
             "always answer it. Only withhold data that is specific to OTHER users or accounts "
             "this user is not entitled to see or act on."
         )
@@ -171,7 +171,7 @@ def _end_user_block(end_user: dict) -> str:
 def _common_kwargs(config: dict, ctx: CompileContext) -> dict:
     tools = list(ctx.tools_for(config.get("tools", [])))
     # Built-in knowledge access (RAG / Q&A) attached straight to the agent via its
-    # `knowledge` config — no separate Tool row needed (see tools/builtin.py).
+    # `knowledge` config - no separate Tool row needed (see tools/builtin.py).
     if config.get("knowledge"):
         from forge.tools.builtin import build_knowledge_capability_tools
         tools += build_knowledge_capability_tools(config["knowledge"], ctx)
@@ -208,7 +208,7 @@ def _common_kwargs(config: dict, ctx: CompileContext) -> dict:
 
 
 def _resolve_config(config: dict, ctx: CompileContext) -> dict:
-    """If the node mirrors a saved agent (`agent_ref`), the live preset drives it — so
+    """If the node mirrors a saved agent (`agent_ref`), the live preset drives it - so
     edits in the Agents tab take effect without re-saving the workflow. Falls back to the
     node's own (snapshot) config when the preset is missing/unresolved."""
     ref = config.get("agent_ref")
@@ -228,7 +228,7 @@ def agent_factory(config: dict, ctx: CompileContext):
             from deepagents import create_deep_agent
         except ImportError as e:  # pragma: no cover - deepagents is a core dep
             raise ImportError(
-                "deep_agent flavor needs `deepagents` (a core dependency — "
+                "deep_agent flavor needs `deepagents` (a core dependency - "
                 "reinstall with `pip install -e .`)."
             ) from e
         subagents = build_subagents(config.get("subagents", []), ctx)
@@ -246,7 +246,7 @@ def agent_factory(config: dict, ctx: CompileContext):
 
 
 def _summary(config: dict) -> list[str]:
-    model = config.get("model", "—")
+    model = config.get("model", "-")
     n_tools = len(config.get("tools", []) or [])
     n_mw = len([m for m in (config.get("middleware") or []) if m.get("enabled", True)])
     flavor = config.get("flavor", "agent")

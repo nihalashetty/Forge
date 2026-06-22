@@ -108,7 +108,7 @@
     "CustomScript": {
       "required": ["source"],
       "properties": {
-        "source": { "type": "string", "x-ui": { "widget": "code", "language": "python", "help": "RestrictedPython returning {headers, cookies, ttl}. Advanced — audited." } }
+        "source": { "type": "string", "x-ui": { "widget": "code", "language": "python", "help": "RestrictedPython returning {headers, cookies, ttl}. Advanced - audited." } }
       }
     }
   }

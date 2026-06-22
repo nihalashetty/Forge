@@ -1,4 +1,4 @@
-"""baseline — full current schema
+"""baseline - full current schema
 
 Squash baseline: stamps the entire current schema via metadata.create_all (skips
 existing tables, so it's safe on an already-bootstrapped dev DB). Incremental

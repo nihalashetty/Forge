@@ -8,7 +8,7 @@ import { fmtUSD } from "@/lib/data";
 
 const fmtLatencyMs = (ms: number) => (ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`);
 
-/** Usage breakdown table — one row per workflow + the Forge Assistant. */
+/** Usage breakdown table - one row per workflow + the Forge Assistant. */
 function ReportTable({ rows, empty }: { rows: ReportRow[]; empty: string }) {
   return (
     <div className="card" style={{ overflow: "hidden" }}>
@@ -65,10 +65,10 @@ export function DashboardScreen({
 
   const fmtLatency = (ms: number) => (ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`);
   const kpis = [
-    { label: "Runs · 7 days", value: stats ? stats.runs_7d.toLocaleString() : "—", sub: stats ? `${stats.total_runs.toLocaleString()} all-time` : "", color: "var(--accent)" },
-    { label: "Success rate", value: stats && stats.runs_7d ? `${stats.success_rate}%` : "—", sub: "completed runs", color: "var(--ok)" },
-    { label: "Avg latency", value: stats && stats.runs_7d ? fmtLatency(stats.avg_latency_ms) : "—", sub: "per run", color: "var(--signal)" },
-    { label: "Spend · 7 days", value: stats ? fmtUSD(stats.spend_7d) : "—", sub: "tracked cost", color: "var(--io-json)" },
+    { label: "Runs · 7 days", value: stats ? stats.runs_7d.toLocaleString() : "-", sub: stats ? `${stats.total_runs.toLocaleString()} all-time` : "", color: "var(--accent)" },
+    { label: "Success rate", value: stats && stats.runs_7d ? `${stats.success_rate}%` : "-", sub: "completed runs", color: "var(--ok)" },
+    { label: "Avg latency", value: stats && stats.runs_7d ? fmtLatency(stats.avg_latency_ms) : "-", sub: "per run", color: "var(--signal)" },
+    { label: "Spend · 7 days", value: stats ? fmtUSD(stats.spend_7d) : "-", sub: "tracked cost", color: "var(--io-json)" },
   ];
   return (
     <div className="scroll-y" style={{ flex: 1, padding: "28px 32px" }}>
@@ -198,7 +198,7 @@ export function DashboardScreen({
                       <td className="mono-sm">{r.runs.toLocaleString()}</td>
                       <td className="mono-sm">{r.tokens.toLocaleString()}</td>
                       <td className="mono-sm">{fmtLatencyMs(r.avg_latency_ms)}</td>
-                      <td className="mono-sm">{r.assistant_turns ? `${fmtUSD(r.assistant_cost_usd)} · ${r.assistant_turns} turns` : "—"}</td>
+                      <td className="mono-sm">{r.assistant_turns ? `${fmtUSD(r.assistant_cost_usd)} · ${r.assistant_turns} turns` : "-"}</td>
                       <td className="mono-sm">{fmtUSD(r.cost_usd)}</td>
                     </tr>
                   ))}
@@ -233,15 +233,15 @@ export function OverviewScreen({ project, onNav, onDeleteProject }: { project: a
 
   const health = [
     { label: "Workflows", value: workflows.length, icon: "workflows", screen: "workflows", color: "var(--accent)" },
-    { label: "Agents", value: agentCount ?? "—", icon: "agents", screen: "agents", color: "var(--io-json)" },
+    { label: "Agents", value: agentCount ?? "-", icon: "agents", screen: "agents", color: "var(--io-json)" },
     { label: "Tools", value: tools.length, icon: "tools", screen: "tools", color: "var(--signal)" },
-    { label: "Knowledge", value: kbCount ?? "—", icon: "knowledge", screen: "knowledge", color: "var(--io-vector)" },
+    { label: "Knowledge", value: kbCount ?? "-", icon: "knowledge", screen: "knowledge", color: "var(--io-vector)" },
   ];
   const usage = [
-    { label: "API calls (all-time)", value: stats ? stats.totals.runs.toLocaleString() : "—", sub: stats ? `${stats.last_7d.runs.toLocaleString()} in last 7 days` : "", color: "var(--accent)" },
-    { label: "Tokens", value: stats ? stats.totals.tokens.toLocaleString() : "—", sub: "across all runs", color: "var(--signal)" },
-    { label: "Avg latency", value: stats && stats.totals.runs ? fmtLatencyMs(stats.totals.avg_latency_ms) : "—", sub: "per run", color: "var(--io-json)" },
-    { label: "Total cost", value: stats ? fmtUSD(stats.totals.cost_usd) : "—", sub: stats ? `incl. ${fmtUSD(stats.assistant.cost_usd)} Forge Assistant` : "", color: "var(--io-vector)" },
+    { label: "API calls (all-time)", value: stats ? stats.totals.runs.toLocaleString() : "-", sub: stats ? `${stats.last_7d.runs.toLocaleString()} in last 7 days` : "", color: "var(--accent)" },
+    { label: "Tokens", value: stats ? stats.totals.tokens.toLocaleString() : "-", sub: "across all runs", color: "var(--signal)" },
+    { label: "Avg latency", value: stats && stats.totals.runs ? fmtLatencyMs(stats.totals.avg_latency_ms) : "-", sub: "per run", color: "var(--io-json)" },
+    { label: "Total cost", value: stats ? fmtUSD(stats.totals.cost_usd) : "-", sub: stats ? `incl. ${fmtUSD(stats.assistant.cost_usd)} Forge Assistant` : "", color: "var(--io-vector)" },
   ];
   return (
     <div className="scroll-y" style={{ flex: 1, padding: "24px 28px" }}>
@@ -409,7 +409,7 @@ export function OnboardingScreen({ onCreate, onCancel }: { onCreate: (p: { name:
           )}
           {step === 1 && (
             <div className="fade-in">
-              <div className="fg-1" style={{ marginBottom: 14 }}>Connect at least one model provider. Keys are stored encrypted in your secret store — they never leave your instance.</div>
+              <div className="fg-1" style={{ marginBottom: 14 }}>Connect at least one model provider. Keys are stored encrypted in your secret store - they never leave your instance.</div>
               {[["anthropic", "Anthropic", "claude-sonnet-4-6, haiku-4-2"], ["openai", "OpenAI", "gpt-5.4, gpt-5.4-mini"], ["google", "Google", "gemini-3.1-pro, 3.5-flash"]].map((p) => (
                 <div key={p[0]} className="row gap3" style={{ padding: "12px 14px", borderRadius: 10, border: "1px solid var(--line)", marginBottom: 10 }}>
                   <Tile icon="n_llm" color="var(--io-json)" size={32} />

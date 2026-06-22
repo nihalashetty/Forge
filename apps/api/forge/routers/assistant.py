@@ -1,4 +1,4 @@
-"""Forge Assistant endpoint — streams the meta-agent's narration + actions over SSE."""
+"""Forge Assistant endpoint - streams the meta-agent's narration + actions over SSE."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ class AssistantMessage(BaseModel):
 
 class AssistantIn(BaseModel):
     # Preferred: one new message + a stable thread_id (the checkpointer holds history,
-    # todos, and files for the thread). `messages` remains for back-compat — when
+    # todos, and files for the thread). `messages` remains for back-compat - when
     # thread_id is absent the full transcript is replayed statelessly.
     message: str | None = None
     thread_id: str | None = None

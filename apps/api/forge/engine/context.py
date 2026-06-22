@@ -1,4 +1,4 @@
-"""CompileContext — the per-compile dependency bundle (Doc 2 §6).
+"""CompileContext - the per-compile dependency bundle (Doc 2 §6).
 
 Carries everything `NodeSpec.factory` / `MW_BUILDERS` need: tenant scoping, the
 checkpointer + store, the tracer callback, the materialized tool registry, the auth
@@ -33,7 +33,7 @@ class CompileContext:
     # pre-loaded by the runtime assembler so the sync agent factory can attach them.
     mcp_tools_by_client: dict[str, list] = field(default_factory=dict)
     # Materialized UI components (component_id -> widget StructuredTool); attached to an
-    # agent via config["components"], the same way tools are (Feature 2 — generative UI).
+    # agent via config["components"], the same way tools are (Feature 2 - generative UI).
     component_registry: dict[str, Any] = field(default_factory=dict)
 
     # Cross-cutting services.

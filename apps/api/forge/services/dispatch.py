@@ -1,4 +1,4 @@
-"""DispatchService — turn an inbound trigger event into a run and execute it.
+"""DispatchService - turn an inbound trigger event into a run and execute it.
 
 Shared by the webhook route, the scheduler, the email poller, and chat channels.
 """
@@ -67,7 +67,7 @@ async def dispatch_message(
 
     `conversation_key` (the provider's stable conversation id) maps the inbound message to
     a persisted Thread so a multi-turn conversation keeps its history via the checkpointer
-    (audit F6) — otherwise every message would start a fresh, context-free thread."""
+    (audit F6) - otherwise every message would start a fresh, context-free thread."""
     run_input = {"messages": [{"role": "user", "content": text or ""}]}
     if thread_id is None and conversation_key:
         async with SessionLocal() as s:

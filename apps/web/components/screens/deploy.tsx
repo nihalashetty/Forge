@@ -1,5 +1,5 @@
 "use client";
-/* Connect (MCP) screen — expose this project's tools as an MCP server for external clients.
+/* Connect (MCP) screen - expose this project's tools as an MCP server for external clients.
    (Consuming external MCP servers lives in the BUILD → External MCP tab.) */
 import { useEffect, useState } from "react";
 import { Icon } from "../icons";
@@ -54,7 +54,7 @@ export function ConnectScreen({ project }: { project: any }) {
             {tools.map((t) => (
               <div key={t.id} className="row gap2"><Icon name="tools" size={14} style={{ color: "var(--io-tool)" }} /><span className="mono-sm">{t.name}</span><span className="typechip">{t.kind}</span>{!t.enabled && <span className="pill pill-muted" style={{ height: 16 }}>disabled</span>}</div>
             ))}
-            {tools.length === 0 && <div className="fg-2 t-caption">No tools to expose yet — add some on the Tools screen.</div>}
+            {tools.length === 0 && <div className="fg-2 t-caption">No tools to expose yet - add some on the Tools screen.</div>}
           </div>
         </div>
       </div>

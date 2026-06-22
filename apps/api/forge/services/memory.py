@@ -1,4 +1,4 @@
-"""MemoryService — persistent long-term memory with semantic recall.
+"""MemoryService - persistent long-term memory with semantic recall.
 
 Unlike the per-thread checkpointer (which holds one conversation), memories persist
 across threads/channels and are recalled by meaning. Stored in a `memories` row + a

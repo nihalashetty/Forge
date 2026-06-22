@@ -1,10 +1,10 @@
-"""Component CRUD (Feature 2 — user-authored UI components).
+"""Component CRUD (Feature 2 - user-authored UI components).
 
 Mirrors ToolService: tenant/project-scoped CRUD over the `components` table. The
 component's HTML/CSS template and declarative button `actions` are stored as-is;
 `props_schema` (JSON Schema) describes the props the agent must supply when it
 renders the component. Rendering is client-side, so there is no server-side
-execute/test — the editor previews with `sample_props` in the browser.
+execute/test - the editor previews with `sample_props` in the browser.
 """
 
 from __future__ import annotations

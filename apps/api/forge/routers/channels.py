@@ -112,12 +112,12 @@ def _handoff_reason(result: dict) -> str | None:
 async def _maybe_open_handoff(ch, result: dict, *, customer, customer_message, reply_context) -> str | None:
     """If the run paused at an interrupt, open a HandoffRequest and return a customer-facing
     acknowledgement. A text channel (email/Teams) can't resume an HITL pause inline, so ANY
-    interrupt — explicit handoff OR an approval/input pause — must be tracked and acknowledged
+    interrupt - explicit handoff OR an approval/input pause - must be tracked and acknowledged
     rather than falling through to a stale/empty partial answer (audit F8)."""
     if not result.get("interrupted"):
         return None
     reason = _handoff_reason(result) or (
-        "Conversation paused awaiting input/approval — a team member will follow up."
+        "Conversation paused awaiting input/approval - a team member will follow up."
     )
     from forge.services.handoff import HandoffService
     async with SessionLocal() as s:

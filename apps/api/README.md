@@ -1,6 +1,6 @@
 # Forge API
 
-FastAPI backend for **Forge** — the self-hosted agent platform. Built directly on the
+FastAPI backend for **Forge** - the self-hosted agent platform. Built directly on the
 MIT-licensed LangChain v1 + LangGraph v1 framework. **Never** depends on `langgraph-api`
 (Elastic 2.0) or LangSmith (commercial).
 

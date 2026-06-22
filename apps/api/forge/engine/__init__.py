@@ -2,12 +2,12 @@
 
 The heart of the platform. Public surface:
 
-- `registry`            — Node Type Registry (`NodeSpec`, `Port`, `register`).
-- `compile_workflow`    — executable JSON -> `CompiledStateGraph`.
-- `build_state_typeddict` — state schema dict -> runtime `TypedDict` with reducers.
-- `build_middleware`    — middleware stack list -> `list[AgentMiddleware]`.
-- `resolve_model`       — model ref string -> chat model (provider or fake).
-- `CompileContext`      — per-compile dependencies (tenant, checkpointer, tools, ...).
+- `registry`            - Node Type Registry (`NodeSpec`, `Port`, `register`).
+- `compile_workflow`    - executable JSON -> `CompiledStateGraph`.
+- `build_state_typeddict` - state schema dict -> runtime `TypedDict` with reducers.
+- `build_middleware`    - middleware stack list -> `list[AgentMiddleware]`.
+- `resolve_model`       - model ref string -> chat model (provider or fake).
+- `CompileContext`      - per-compile dependencies (tenant, checkpointer, tools, ...).
 """
 
 from forge.engine.context import CompileContext

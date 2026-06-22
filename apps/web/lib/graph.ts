@@ -32,7 +32,7 @@ export function newNodeId(type: string, existing: Iterable<string>): string {
 
 /** Ensure a node's config carries schema-required fields the UI only defaults visually,
  *  so the saved executable always validates. Agent/deep_agent need an explicit `flavor`
- *  derived from the node type — a deep_agent must never silently compile as a plain agent. */
+ *  derived from the node type - a deep_agent must never silently compile as a plain agent. */
 export function normalizeNodeConfig(nodeType: string, config: Record<string, any>): Record<string, any> {
   if (nodeType === "agent" || nodeType === "deep_agent") {
     return { ...config, flavor: config.flavor || nodeType };
@@ -77,7 +77,7 @@ function normalizeRouterConfigFromEdges(node: FlowNode, edges: FlowEdge[]): Reco
 }
 
 /** State keys each node type writes (from its config), so the workflow state can declare
- *  them automatically — LangGraph rejects writes to undeclared keys, which would silently
+ *  them automatically - LangGraph rejects writes to undeclared keys, which would silently
  *  break any router branching on a classifier label, qa/retrieval route flag, or human
  *  decision in a canvas-built workflow. */
 function nodeWrittenKeys(nodeType: string, c: Record<string, any>): [string, string][] {
@@ -140,7 +140,7 @@ export function canvasToFlow(canvas: any): { nodes: FlowNode[]; edges: FlowEdge[
   }));
   const byId: Record<string, FlowNode> = Object.fromEntries(nodes.map((n) => [n.id, n]));
   // Forge nodes use React Flow's default handle (one in/out per node), so edges carry no
-  // handle id — they attach to the default handle. Any stored handle id is still honored.
+  // handle id - they attach to the default handle. Any stored handle id is still honored.
   const edges: FlowEdge[] = (canvas?.edges || []).map((e: any, i: number) => ({
     id: e.id || `e${i}`,
     source: e.source,
@@ -169,7 +169,7 @@ export function starterWorkflow(): { canvas: any; nodes: FlowNode[]; edges: Flow
 const GROUNDING_PROMPT =
   "You are the support assistant for this project. Be friendly, natural, and concise. " +
   "For greetings, thanks, or small talk (e.g. 'hi', 'thanks'), reply naturally and briefly and invite " +
-  "the user's question — do NOT refuse these. For questions about this project/product, answer using ONLY " +
+  "the user's question - do NOT refuse these. For questions about this project/product, answer using ONLY " +
   "the KNOWLEDGE BASE context provided in the conversation (documents and FAQs); if it doesn't contain the " +
   "answer, say you don't have that information and offer to connect them with a human. Never invent facts " +
   "or use outside knowledge for such questions. Use the prior conversation turns for context.";

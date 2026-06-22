@@ -1,4 +1,4 @@
-"""AuditService — append-only audit trail (Doc 2 §12).
+"""AuditService - append-only audit trail (Doc 2 §12).
 
 Writes in its own session so an audit record persists independently of the caller's
 transaction, and never raises (auditing must not break the request it records).

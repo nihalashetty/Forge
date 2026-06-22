@@ -1,4 +1,4 @@
-/* Forge icon set — lucide-style, 1.5px stroke, 24x24 viewBox. Ported from the design handoff. */
+/* Forge icon set - lucide-style, 1.5px stroke, 24x24 viewBox. Ported from the design handoff. */
 import type { CSSProperties } from "react";
 
 const P: Record<string, string> = {
