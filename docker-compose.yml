@@ -75,6 +75,12 @@ services:
       context: .
       dockerfile: apps/api/Dockerfile
     command: ["arq", "forge.worker.WorkerSettings"]
+    # The worker runs arq, not the HTTP server, so the api image's baked HEALTHCHECK
+    # (curl :8000/readyz) can never pass and would leave the container perpetually
+    # "unhealthy" (and hang anything gating on `worker: service_healthy`, incl. scaled
+    # replicas). Disable it: the container's run state already reflects arq liveness.
+    healthcheck:
+      disable: true
     depends_on:
       postgres:
         condition: service_healthy
