@@ -9,8 +9,10 @@ seeded dev tenant; auth endpoints are skipped (already audited in their router).
 
 from __future__ import annotations
 
+from forge.config import settings
 from forge.security import TokenError, decode_token
 from forge.services.audit import AuditService
+from forge.util.clientip import resolve_client_ip
 
 _SKIP_PREFIXES = ("/v1/auth", "/v1/audit")
 _MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
@@ -28,11 +30,13 @@ def _actor_from_headers(headers: dict[bytes, bytes]) -> tuple[str | None, str | 
 
 
 def _client_ip(scope, headers: dict[bytes, bytes]) -> str | None:
-    fwd = headers.get(b"x-forwarded-for")
-    if fwd:
-        return fwd.decode("latin-1").split(",")[0].strip()
+    # Believe X-Forwarded-For only from a configured reverse proxy (settings.trusted_proxies) -
+    # the SAME rule as deps.client_ip. Previously this trusted XFF unconditionally, so any
+    # client could poison the audit IP.
     client = scope.get("client")
-    return client[0] if client else None
+    peer = client[0] if client else None
+    fwd = headers.get(b"x-forwarded-for")
+    return resolve_client_ip(peer, fwd.decode("latin-1") if fwd else None, settings.trusted_proxies)
 
 
 class AuditMiddleware:

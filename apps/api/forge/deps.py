@@ -23,6 +23,7 @@ from forge.db import SessionLocal
 from forge.security import TokenError, decode_token
 from forge.services.auth import AuthService, role_at_least
 from forge.services.runs import RunService
+from forge.util.clientip import resolve_client_ip
 
 
 @dataclass
@@ -88,25 +89,12 @@ def require_role(minimum: str):
     return _dep
 
 
-def _trusts_peer(peer: str | None) -> bool:
-    """Whether to believe an X-Forwarded-For from this socket peer. Only configured
-    reverse-proxy IPs are trusted, so an arbitrary client can't spoof its IP for per-IP
-    rate limits / audit (audit L2)."""
-    tp = settings.trusted_proxies
-    if not tp:
-        return False
-    if "*" in tp:
-        return True
-    return peer in tp
-
-
 def client_ip(request: Request) -> str | None:
+    """Client IP for per-IP rate limits / audit. Believes X-Forwarded-For only when the socket
+    peer is a configured reverse proxy (settings.trusted_proxies); see forge.util.clientip.
+    Shared with the audit middleware so the two resolvers can't drift."""
     peer = request.client.host if request.client else None
-    fwd = request.headers.get("x-forwarded-for")
-    if fwd and _trusts_peer(peer):
-        # Left-most entry is the original client (proxies append on the right).
-        return fwd.split(",")[0].strip()
-    return peer
+    return resolve_client_ip(peer, request.headers.get("x-forwarded-for"), settings.trusted_proxies)
 
 
 def get_run_service(request: Request) -> RunService:

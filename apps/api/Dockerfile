@@ -51,5 +51,10 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD curl -fsS http://localhost:8000/readyz || exit 1
 
 # Apply migrations, then serve. (Schema also self-bootstraps via create_all, but on managed
-# Postgres `alembic upgrade head` is the controlled path.) Honor --proxy-headers behind an LB.
-CMD ["sh", "-c", "alembic upgrade head && uvicorn forge.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips='*'"]
+# Postgres `alembic upgrade head` is the controlled path.)
+# No uvicorn --proxy-headers/--forwarded-allow-ips: the app derives the client IP itself and
+# trusts X-Forwarded-For only from FORGE_TRUSTED_PROXIES (default none -> the real socket peer).
+# Letting uvicorn rewrite the peer from XFF for ANY client (as --forwarded-allow-ips='*' did)
+# lets clients spoof their IP to evade per-IP rate limits / poison audit logs. Behind a real
+# proxy, set FORGE_TRUSTED_PROXIES to the proxy IP(s).
+CMD ["sh", "-c", "alembic upgrade head && uvicorn forge.main:app --host 0.0.0.0 --port 8000"]
