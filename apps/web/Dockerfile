@@ -16,6 +16,11 @@ RUN corepack enable
 COPY --from=deps /repo/node_modules ./node_modules
 COPY --from=deps /repo/apps/web/node_modules ./apps/web/node_modules
 COPY . .
+# Server-side rewrite target, baked at build time (standalone freezes rewrite destinations).
+# Default keeps plain `docker build` / host behavior; compose overrides it to http://api:8000.
+# NOT exported as NEXT_PUBLIC_* so it never leaks into the browser bundle (see next.config.mjs).
+ARG FORGE_API_URL=http://127.0.0.1:8000
+ENV FORGE_API_URL=${FORGE_API_URL}
 # Clear any stale incremental cache (see memory: stale .next can break the build).
 # NEXT_OUTPUT=standalone emits the self-contained server bundle (symlinks work on Linux).
 ENV NEXT_OUTPUT=standalone

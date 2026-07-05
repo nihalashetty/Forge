@@ -6,8 +6,15 @@
 **/*.pyc
 **/.pytest_cache
 **/.ruff_cache
+**/.mypy_cache
+**/*.egg-info
 **/.git
 **/*.db
 **/*.sqlite
 **/.env
 **/.env.local
+**/.DS_Store
+# The api/worker builds now use context '.', so the old apps/api/.dockerignore is dead (Docker
+# reads only the .dockerignore at the context root). Keep tests out of the api image (nothing
+# at runtime imports them); explicit path avoids over-matching a top-level 'tests'.
+apps/api/tests

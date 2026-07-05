@@ -13,9 +13,15 @@ from pathlib import Path
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Repo layout: apps/api/forge/config.py -> parents[3] == repo root.
-REPO_ROOT = Path(__file__).resolve().parents[3]
-API_ROOT = Path(__file__).resolve().parents[1]
+# Repo layout: apps/api/forge/config.py -> parents[3] == repo root. In the container the
+# tree is flattened to /app/forge, so parents[3] doesn't exist; fall back to API_ROOT (=/app).
+# The Docker image bakes the schemas at /app/packages/schemas (apps/api/Dockerfile:
+# `COPY packages/schemas ./packages/schemas`), so the default _DEFAULT_SCHEMAS_DIR
+# (/app/packages/schemas) resolves with no FORGE_SCHEMAS_DIR override. Set FORGE_SCHEMAS_DIR
+# only to point at an out-of-tree schemas copy.
+_HERE = Path(__file__).resolve()
+API_ROOT = _HERE.parents[1]
+REPO_ROOT = _HERE.parents[3] if len(_HERE.parents) > 3 else API_ROOT
 _DEFAULT_SCHEMAS_DIR = REPO_ROOT / "packages" / "schemas"
 _DEFAULT_DATA_DIR = API_ROOT / ".data"
 

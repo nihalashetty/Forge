@@ -1,6 +1,6 @@
 # Forge - production-shaped local stack: Postgres (app DB + durable checkpointer),
 # Redis (shared rate-limit/idempotency + future worker queue), the API, and the web
-# console. Copy .env from apps/api/.env.example and SET REAL SECRETS before using.
+# console. Copy .env.example to .env at the repo root and SET REAL SECRETS before using.
 #
 #   docker compose up --build
 #
@@ -36,7 +36,8 @@ services:
 
   api:
     build:
-      context: ./apps/api
+      context: .
+      dockerfile: apps/api/Dockerfile
     depends_on:
       postgres:
         condition: service_healthy
@@ -65,12 +66,17 @@ services:
   # Offloaded run execution (webhook/schedule triggers). Scale freely: `--scale worker=N`.
   worker:
     build:
-      context: ./apps/api
+      context: .
+      dockerfile: apps/api/Dockerfile
     command: ["arq", "forge.worker.WorkerSettings"]
     depends_on:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      # Start only after api has run `alembic upgrade head` and is serving, so a run_job
+      # never hits app tables before they exist.
+      api:
         condition: service_healthy
     environment:
       FORGE_ENVIRONMENT: production
@@ -78,8 +84,14 @@ services:
       FORGE_CHECKPOINT_BACKEND: postgres
       FORGE_REDIS_URL: redis://redis:6379/0
       FORGE_JWT_SECRET: ${FORGE_JWT_SECRET:?set a strong random secret}
+      # Not used by the worker (only the api seeds the admin), but the shared production guard
+      # (validate_production) checks it, so provide the same value the api uses.
+      FORGE_BOOTSTRAP_ADMIN_PASSWORD: ${FORGE_BOOTSTRAP_ADMIN_PASSWORD:?set a real admin password}
       # The worker does not run the scheduler (the api leader does).
       FORGE_ENABLE_SCHEDULER: "false"
+      # Pin leader off too so the single-scheduler-leader invariant is expressed in config: a
+      # future change that runs the scheduler/reaper on workers can't double-fire across replicas.
+      FORGE_SCHEDULER_LEADER: "false"
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
 
@@ -87,11 +99,16 @@ services:
     build:
       context: .
       dockerfile: apps/web/Dockerfile
+      args:
+        # Baked into the standalone rewrite at BUILD time (a standalone build freezes the rewrite
+        # destination; runtime env can't change it). The browser stays same-origin, so this
+        # container-internal host never reaches the client (see apps/web/next.config.mjs).
+        FORGE_API_URL: http://api:8000
     depends_on:
-      - api
-    environment:
-      # The web server proxies /api/forge/* to this URL (server-side rewrite).
-      FORGE_API_URL: http://api:8000
+      # Gate on api readiness (its /readyz HEALTHCHECK) so the first browser requests aren't
+      # proxied before api has migrated and bound :8000.
+      api:
+        condition: service_healthy
     ports:
       - "3000:3000"
 

@@ -31,6 +31,16 @@ async def _startup(ctx) -> None:
     from forge.main import _make_checkpointer
     from forge.services.runs import RunService
 
+    # Fail-closed under the SAME hardening guard the API enforces in its lifespan. arq never
+    # runs the FastAPI lifespan, so without this the worker would happily start under an unsafe
+    # config (default secret / sqlite / non-durable checkpointer) the API refuses to serve.
+    settings.ensure_dirs()
+    problems = settings.validate_production()
+    if problems:
+        raise RuntimeError("Unsafe production configuration:\n  - " + "\n  - ".join(problems))
+    for warn in settings.startup_warnings():
+        log.warning("INSECURE CONFIG: %s", warn)
+
     stack = AsyncExitStack()
     ctx["_stack"] = stack
     checkpointer = await _make_checkpointer(stack)
@@ -39,7 +49,11 @@ async def _startup(ctx) -> None:
 
 
 async def _shutdown(ctx) -> None:
-    await ctx["_stack"].aclose()
+    # _startup may have failed before setting _stack (e.g. the config guard raised); guard the
+    # lookup so on_shutdown never masks the real startup error with a KeyError.
+    stack = ctx.get("_stack")
+    if stack is not None:
+        await stack.aclose()
 
 
 class WorkerSettings:
