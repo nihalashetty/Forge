@@ -35,8 +35,13 @@ COPY apps/api/migrations ./migrations
 # /app/packages/schemas so config.py's schemas_dir default (/app/packages/schemas) resolves.
 COPY packages/schemas ./packages/schemas
 
-# Run as a non-root user.
-RUN useradd --create-home --uid 10001 forge && chown -R forge:forge /app
+# Run as a non-root user. Pre-create /app/.data (holds the Fernet master.key + Chroma store)
+# owned by forge: an empty named volume mounted there copies the image mountpoint's ownership on
+# first use, so this keeps the volume forge-writable. Without it the volume would mount root-owned
+# and the non-root process could not write the master key (PermissionError at startup).
+RUN useradd --create-home --uid 10001 forge \
+    && mkdir -p /app/.data \
+    && chown -R forge:forge /app
 USER forge
 
 EXPOSE 8000

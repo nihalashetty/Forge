@@ -60,6 +60,12 @@ services:
       # Provider keys (set the ones you use):
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes:
+      # Persist the Fernet master.key + Chroma vectors across image rebuilds, and SHARE them with
+      # the worker. This is container-filesystem state (/app/.data), NOT in the pgdata volume, so
+      # without this it is wiped on every `up --build` - regenerating master.key would leave every
+      # secret already stored in Postgres undecryptable.
+      - forge-data:/app/.data
     ports:
       - "8000:8000"
 
@@ -94,6 +100,11 @@ services:
       FORGE_SCHEDULER_LEADER: "false"
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes:
+      # Same shared volume as api: the worker decrypts run secrets with the SAME master.key and
+      # reads the SAME Chroma store the api ingested into. A separate key here would fail to
+      # decrypt anything the api encrypted.
+      - forge-data:/app/.data
 
   web:
     build:
@@ -114,3 +125,6 @@ services:
 
 volumes:
   pgdata:
+  # Fernet master.key + Chroma vectors, shared by api and worker and persisted across rebuilds
+  # (container-filesystem state under /app/.data, not part of the Postgres pgdata volume).
+  forge-data:
