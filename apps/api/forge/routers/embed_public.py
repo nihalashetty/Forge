@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
 from forge.config import settings
-from forge.deps import client_ip, get_run_service, get_session
+from forge.deps import client_ip, get_run_service, get_session, run_context
 from forge.models import Project, Workflow
 from forge.security import TokenError, decode_token
 from forge.services.components import ComponentService
@@ -120,7 +120,7 @@ async def embed_create_run(key: str, body: EmbedRunIn, request: Request, session
 
 
 @router.get("/runs/{run_id}/stream")
-async def embed_stream(key: str, run_id: str, request: Request, session: AsyncSession = Depends(get_session), run_service: RunService = Depends(get_run_service)):
+async def embed_stream(key: str, run_id: str, request: Request, session: AsyncSession = Depends(get_session), run_service: RunService = Depends(get_run_service), rc: dict | None = Depends(run_context)):
     proj = await _project(session, key)
     _embed_rate_limit(
         key, client_ip(request),
@@ -132,7 +132,7 @@ async def embed_stream(key: str, run_id: str, request: Request, session: AsyncSe
         # Scope by BOTH tenant and project (audit S1) so a publishable key can't stream
         # another project's runs; public=True hides internal error detail / operator data.
         async for frame in run_service.stream(
-            run_id=run_id, tenant_id=proj.tenant_id, project_id=proj.id, public=True,
+            run_id=run_id, tenant_id=proj.tenant_id, project_id=proj.id, public=True, run_context=rc,
         ):
             yield {"event": frame["event"], "data": json.dumps(frame["data"], default=str)}
 
@@ -144,7 +144,7 @@ class EmbedResumeIn(BaseModel):
 
 
 @router.post("/runs/{run_id}/resume")
-async def embed_resume(key: str, run_id: str, body: EmbedResumeIn, request: Request, session: AsyncSession = Depends(get_session), run_service: RunService = Depends(get_run_service)):
+async def embed_resume(key: str, run_id: str, body: EmbedResumeIn, request: Request, session: AsyncSession = Depends(get_session), run_service: RunService = Depends(get_run_service), rc: dict | None = Depends(run_context)):
     """Resume an interrupted (human-in-the-loop) run from the widget - mirrors the authed
     resume endpoint but resolves the tenant+project from the publishable key. resume() is
     scoped to this project (audit S1); the end-user identity is already bound to the thread
@@ -156,4 +156,4 @@ async def embed_resume(key: str, run_id: str, body: EmbedResumeIn, request: Requ
         per_min=settings.embed_rate_limit_per_minute,
         ip_per_min=settings.embed_rate_limit_per_ip_per_minute,
     )
-    return await run_service.resume(run_id=run_id, tenant_id=proj.tenant_id, value=body.value, project_id=proj.id)
+    return await run_service.resume(run_id=run_id, tenant_id=proj.tenant_id, value=body.value, project_id=proj.id, run_context=rc)

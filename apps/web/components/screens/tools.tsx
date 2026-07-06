@@ -242,8 +242,8 @@ export function ToolBuilderScreen({ project, toolId, onBack }: { project: any; t
                         <input className="input mono" value={draft.url} onChange={(e) => set({ url: e.target.value })} style={{ flex: 1 }} />
                       </div>
                     </Field>
-                    {isRest && <Field label="Headers"><KVEditor rows={draft.headers} onChange={(rows) => set({ headers: rows })} /></Field>}
-                    {isRest && <Field label="Body template" help="Mustache over validated tool input + run state."><textarea className="textarea mono" rows={4} value={draft.body} onChange={(e) => set({ body: e.target.value })} placeholder={'{\n  "amount": {{ input.amount }}\n}'} /></Field>}
+                    {isRest && <Field label="Headers" help="Values interpolate {{ctx.*}} (run context — e.g. a per-request session/CSRF injected by the caller) and {{input.*}}. Example: X-CSRF-Token = {{ctx.csrf}}."><KVEditor rows={draft.headers} onChange={(rows) => set({ headers: rows })} /></Field>}
+                    {isRest && <Field label="Body template" help="Interpolates {{input.*}} (validated tool args) and {{ctx.*}} (run context). Parsed as JSON when possible, else sent as raw content."><textarea className="textarea mono" rows={4} value={draft.body} onChange={(e) => set({ body: e.target.value })} placeholder={'{\n  "amount": {{ input.amount }},\n  "CSRFToken": "{{ ctx.csrf }}"\n}'} /></Field>}
                     {isGraphql && <Field label="Query"><textarea className="textarea mono" rows={6} value={draft.query} onChange={(e) => set({ query: e.target.value })} /></Field>}
                     <Field label="Follow redirects" help="Follow 3xx redirects to the target URL. Each hop is re-checked by the SSRF guard. When off, the redirect's target URL is still reported to the model so it can act on it.">
                       <Toggle on={!!draft.follow_redirects} onChange={(v) => set({ follow_redirects: v })} />
@@ -284,7 +284,7 @@ export function ToolBuilderScreen({ project, toolId, onBack }: { project: any; t
             )}
             {tab === "schema" && (
               <div className="fade-in">
-                <div className="fg-1" style={{ marginBottom: 12 }}>What the model is allowed to pass. Becomes the JSON Schema in the tool spec.</div>
+                <div className="fg-1" style={{ marginBottom: 12 }}>Request parameters. <b>Model-visible</b> fields become the tool&apos;s JSON Schema (the agent fills them). Turn <b>model-visible</b> off and give a <span className="mono">{"{{ctx.*}}"}</span> default to inject a per-run value (e.g. session / CSRF) the model never sees.</div>
                 <FieldsEditor fields={draft.fields} onChange={(fields) => set({ fields })} />
               </div>
             )}
@@ -414,14 +414,25 @@ function FieldsEditor({ fields, onChange }: { fields: any[]; onChange: (f: any[]
   return (
     <div className="col gap2">
       {fields.map((f, i) => (
-        <div key={i} className="row gap2" style={{ padding: "10px 12px", border: "1px solid var(--line)", borderRadius: 9 }}>
-          <input className="input mono" value={f.path || ""} onChange={(e) => upd(i, { path: e.target.value })} placeholder="field" style={{ flex: 1 }} />
-          <div style={{ width: 96, position: "relative" }}>
-            <select className="select" value={f.type || "string"} onChange={(e) => upd(i, { type: e.target.value })}>{["string", "integer", "number", "boolean"].map((t) => <option key={t}>{t}</option>)}</select>
+        <div key={i} className="col gap2" style={{ padding: "10px 12px", border: "1px solid var(--line)", borderRadius: 9 }}>
+          <div className="row gap2">
+            <input className="input mono" value={f.path || ""} onChange={(e) => upd(i, { path: e.target.value })} placeholder="field" style={{ flex: 1 }} />
+            <div style={{ width: 92 }}>
+              <select className="select" value={f.type || "string"} onChange={(e) => upd(i, { type: e.target.value })}>{["string", "integer", "number", "boolean"].map((t) => <option key={t}>{t}</option>)}</select>
+            </div>
+            <div style={{ width: 92 }}>
+              <select className="select" value={f.in || "query"} onChange={(e) => upd(i, { in: e.target.value })} title="Where this value is placed in the outbound request">{["query", "header", "path", "body", "cookie"].map((t) => <option key={t}>{t}</option>)}</select>
+            </div>
+            <button className="chip" title="required" onClick={() => upd(i, { required: !f.required })} style={{ cursor: "pointer", color: f.required ? "var(--err)" : "var(--fg-2)" }}>{f.required ? "required" : "optional"}</button>
+            <button className="iconbtn" title="remove" onClick={() => onChange(fields.filter((_, j) => j !== i))}><Icon name="x" size={14} /></button>
           </div>
-          <button className="chip" title="required" onClick={() => upd(i, { required: !f.required })} style={{ cursor: "pointer", color: f.required ? "var(--err)" : "var(--fg-2)" }}>{f.required ? "required" : "optional"}</button>
-          <Toggle on={f.llm_visible !== false} onChange={() => upd(i, { llm_visible: f.llm_visible === false })} />
-          <button className="iconbtn" onClick={() => onChange(fields.filter((_, j) => j !== i))}><Icon name="x" size={14} /></button>
+          <div className="row gap2" style={{ alignItems: "center" }}>
+            <input className="input mono" value={f.default ?? ""} onChange={(e) => upd(i, { default: e.target.value || undefined })} placeholder="default — supports {{ctx.*}} (run context) / {{input.*}}" style={{ flex: 1 }} />
+            <label className="row gap1" title="On: the model decides this value (appears in the tool's args schema). Off: the server injects it (e.g. default {{ctx.csrf}}) and it is hidden from the model." style={{ whiteSpace: "nowrap", cursor: "pointer" }}>
+              <Toggle on={f.llm_visible !== false} onChange={() => upd(i, { llm_visible: f.llm_visible === false })} />
+              <span className="t-caption fg-2">model-visible</span>
+            </label>
+          </div>
         </div>
       ))}
       <button className="btn btn-ghost btn-sm" style={{ alignSelf: "flex-start" }} onClick={() => onChange([...fields, { path: "new_field", type: "string", in: "query", required: false, llm_visible: true }])}><Icon name="plus" size={13} />Add field</button>

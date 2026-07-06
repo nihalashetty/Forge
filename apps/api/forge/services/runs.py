@@ -161,6 +161,7 @@ class RunService:
 
     async def stream(
         self, *, run_id: str, tenant_id: str, project_id: str | None = None, public: bool = False,
+        run_context: dict | None = None,
     ) -> AsyncIterator[dict]:
         async with SessionLocal() as session:
             where = [Run.tenant_id == tenant_id, Run.id == run_id]
@@ -198,6 +199,7 @@ class RunService:
                         session, tenant_id=tenant_id, project_id=run.project_id,
                         checkpointer=self.checkpointer, store=self.store,
                         end_user=(thread.meta or {}).get("end_user"),
+                        run_context=run_context,
                     )
                     try:
                         graph = compile_workflow(wf.executable, ctx)
@@ -289,7 +291,7 @@ class RunService:
                 if not finalized:
                     await self._mark_unfinished(run_id, tenant_id, status="canceled")
 
-    async def run_to_completion(self, *, run_id: str, tenant_id: str, project_id: str | None = None) -> dict:
+    async def run_to_completion(self, *, run_id: str, tenant_id: str, project_id: str | None = None, run_context: dict | None = None) -> dict:
         """Compile + run a created run to completion without SSE (used by the trigger
         dispatcher: webhook / schedule / email / chat). Returns the final answer."""
         async with SessionLocal() as session:
@@ -321,6 +323,7 @@ class RunService:
                         session, tenant_id=tenant_id, project_id=run.project_id,
                         checkpointer=checkpointer, store=self.store,
                         end_user=(thread.meta or {}).get("end_user"),
+                        run_context=run_context,
                     )
                     graph = compile_workflow(wf.executable, ctx)
                     # Drive with the custom stream (not ainvoke) so `component` frames emitted by
@@ -379,7 +382,7 @@ class RunService:
                     "escalate": bool(on_err.get("escalate")),
                 }
 
-    async def resume(self, *, run_id: str, tenant_id: str, value, project_id: str | None = None) -> dict:
+    async def resume(self, *, run_id: str, tenant_id: str, value, project_id: str | None = None, run_context: dict | None = None) -> dict:
         """Resume an interrupted run (HITL) with `Command(resume=value)` on its thread."""
         from langgraph.types import Command
 
@@ -408,6 +411,7 @@ class RunService:
                         session, tenant_id=tenant_id, project_id=run.project_id,
                         checkpointer=self.checkpointer, store=self.store,
                         end_user=(thread.meta or {}).get("end_user"),
+                        run_context=run_context,
                     )
                     graph = compile_workflow(wf.executable, ctx)
                     out = await graph.ainvoke(Command(resume=value), config)

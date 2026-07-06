@@ -57,6 +57,14 @@ services:
       FORGE_PUBLIC_BASE_URL: ${FORGE_PUBLIC_BASE_URL:-http://localhost:8000}
       FORGE_PUBLIC_CONSOLE_URL: ${FORGE_PUBLIC_CONSOLE_URL:-http://localhost:3000}
       FORGE_CORS_ORIGINS: '["http://localhost:3000"]'
+      # Static bearer that authenticates a trusted server-to-server caller (e.g. an app backend
+      # driving runs on behalf of its users) as a least-privilege service identity. Empty =
+      # disabled. Generate a long random secret and set FORGE_SERVICE_API_TOKEN in .env.
+      FORGE_SERVICE_API_TOKEN: ${FORGE_SERVICE_API_TOKEN:-}
+      # Hosts allowed to resolve to a private/loopback address even with the SSRF guard on
+      # (default-deny, explicit-allow). JSON array. From inside the container "localhost" is the
+      # container itself - use ["host.docker.internal"] to reach a service on the Docker host.
+      FORGE_EGRESS_ALLOW_PRIVATE_HOSTS: '${FORGE_EGRESS_ALLOW_PRIVATE_HOSTS:-[]}'
       # Provider keys (set the ones you use):
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
@@ -104,6 +112,9 @@ services:
       # Pin leader off too so the single-scheduler-leader invariant is expressed in config: a
       # future change that runs the scheduler/reaper on workers can't double-fire across replicas.
       FORGE_SCHEDULER_LEADER: "false"
+      # Same egress allowances as the api, so worker-executed tool runs (webhook/schedule
+      # triggers) can reach the same internal targets (default-deny, explicit-allow).
+      FORGE_EGRESS_ALLOW_PRIVATE_HOSTS: '${FORGE_EGRESS_ALLOW_PRIVATE_HOSTS:-[]}'
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     volumes:
