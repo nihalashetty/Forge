@@ -9,9 +9,10 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Annotated
 
-from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 # Repo layout: apps/api/forge/config.py -> parents[3] == repo root. In the container the
 # tree is flattened to /app/forge, so parents[3] doesn't exist; fall back to API_ROOT (=/app).
@@ -26,6 +27,31 @@ _DEFAULT_SCHEMAS_DIR = REPO_ROOT / "packages" / "schemas"
 _DEFAULT_DATA_DIR = API_ROOT / ".data"
 
 
+def _as_str_list(v: object) -> list[str]:
+    """Parse a list-of-strings setting from env leniently: a JSON array (["a","b"]), a
+    comma-separated string (a,b), or blank ("" -> []). Env/compose quoting makes strict-JSON
+    list fields brittle - a stray bracket or space (e.g. from a ${VAR:-[]} interpolation)
+    otherwise crashes startup - so we normalize here instead of requiring valid JSON."""
+    if v is None:
+        return []
+    if isinstance(v, (list, tuple)):
+        return [str(x) for x in v]
+    s = str(v).strip()
+    if not s:
+        return []
+    if s.startswith("["):
+        import json as _json
+
+        try:
+            parsed = _json.loads(s)
+            if isinstance(parsed, list):
+                return [str(x).strip() for x in parsed]
+        except ValueError:
+            pass  # not valid JSON (e.g. unquoted, or a mangled "[") -> strip brackets + split
+        s = s.strip("[]")
+    return [p.strip().strip('"').strip("'") for p in s.split(",") if p.strip().strip('"').strip("'")]
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="FORGE_",
@@ -38,6 +64,17 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    # List-of-strings settings are marked NoDecode (skip pydantic-settings' strict JSON decode)
+    # and parsed here so env/compose values may be JSON, comma-separated, or blank - see
+    # _as_str_list. Keeps a stray bracket/space from an interpolated default from crashing boot.
+    @field_validator(
+        "jwt_secret_previous", "cors_origins", "egress_allow_hosts", "egress_deny_hosts",
+        "egress_allow_private_hosts", "trusted_proxies", "trusted_hosts", mode="before",
+    )
+    @classmethod
+    def _parse_str_lists(cls, v: object) -> list[str]:
+        return _as_str_list(v)
 
     # --- App ---
     app_name: str = "Forge"
@@ -68,7 +105,7 @@ class Settings(BaseSettings):
     # Previously-active signing secrets, still ACCEPTED for verification (not for minting),
     # so you can rotate `jwt_secret` without invalidating every live token: set the new key
     # here-as-previous during the overlap window, then drop it. Tokens carry a `kid` header.
-    jwt_secret_previous: list[str] = []
+    jwt_secret_previous: Annotated[list[str], NoDecode] = []
     jwt_key_id: str = "k1"
     jwt_algorithm: str = "HS256"
     # Shorter access-token lifetime bounds the blast radius of a leaked token (audit S11);
@@ -163,7 +200,7 @@ class Settings(BaseSettings):
     seed_demo: bool = False
 
     # --- CORS ---
-    cors_origins: list[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
+    cors_origins: Annotated[list[str], NoDecode] = ["http://localhost:3000", "http://127.0.0.1:3000"]
 
     # --- Egress / SSRF guard (applies to REST/GraphQL tools, webhooks, web_fetch,
     # URL ingestion, and auth/OAuth token fetches). block_private rejects URLs that
@@ -171,14 +208,14 @@ class Settings(BaseSettings):
     # lists match a host or any parent domain (e.g. "example.com" covers
     # "api.example.com"). Per-project overrides live in project.config.egress. ---
     egress_block_private: bool = True
-    egress_allow_hosts: list[str] = []
-    egress_deny_hosts: list[str] = []
+    egress_allow_hosts: Annotated[list[str], NoDecode] = []
+    egress_deny_hosts: Annotated[list[str], NoDecode] = []
     # Hosts permitted to resolve to a PRIVATE / loopback / link-local address even while
     # block_private is on (default-deny, explicit-allow). Use for trusted internal targets -
     # localhost during dev, an internal service, an on-prem host - WITHOUT disabling the SSRF
     # guard globally (so the app still boots in production). Matches a host or any parent
     # domain. Per-project override: project.config.egress.allow_private_hosts.
-    egress_allow_private_hosts: list[str] = []
+    egress_allow_private_hosts: Annotated[list[str], NoDecode] = []
 
     # --- Rate limits / quotas (per tenant). 0 = unlimited. Per-tenant overrides may
     # live in tenant.settings (max_runs_per_minute / max_runs_per_day). ---
@@ -201,10 +238,10 @@ class Settings(BaseSettings):
     # trust none (use the socket peer). Set to your LB/ingress IPs in production so clients
     # can't spoof their IP for per-IP rate limits / audit. "*" trusts any (only behind a
     # trusted ingress that always overwrites XFF).
-    trusted_proxies: list[str] = []
+    trusted_proxies: Annotated[list[str], NoDecode] = []
 
     # Host allow-list for the API (TrustedHostMiddleware). Empty => allow any (dev).
-    trusted_hosts: list[str] = []
+    trusted_hosts: Annotated[list[str], NoDecode] = []
 
     # --- LangGraph checkpointer backend: "sqlite" (default, dev), "memory" (ephemeral),
     # or "postgres" (durable, shared across workers - required for prod/HITL). When
