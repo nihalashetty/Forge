@@ -29,7 +29,12 @@ _DEFAULT_DATA_DIR = API_ROOT / ".data"
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="FORGE_",
-        env_file=(API_ROOT / ".env"),
+        # ONE .env, at the repo root - the same file docker-compose reads for ${...}
+        # substitution - so both run modes (.venv api and the Docker stack) are configured in a
+        # single place. In the flattened container image REPO_ROOT == /app (no .env is copied
+        # there); env then comes from the compose `environment:` block and pydantic simply skips
+        # the missing file. Real env vars still take precedence over the file either way.
+        env_file=(REPO_ROOT / ".env"),
         env_file_encoding="utf-8",
         extra="ignore",
     )
