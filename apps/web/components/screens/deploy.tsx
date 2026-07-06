@@ -11,20 +11,24 @@ export function ConnectScreen({ project }: { project: any }) {
   const [tools, setTools] = useState<any[]>([]);
   const [apiKey, setApiKey] = useState("");
   const [save, setSave] = useState<"idle" | "saving" | "saved">("idle");
-  // Run-API panel: pick a workflow + the backend-facing base URL, then show ready-to-copy endpoints.
+  // Run-API panel: pick the workflow this project's API runs (a saved setting) + the
+  // backend-facing base URL, then show the one ready-to-copy endpoint.
   const [workflows, setWorkflows] = useState<any[]>([]);
   const [wfId, setWfId] = useState("");
+  const [apiSave, setApiSave] = useState<"idle" | "saving" | "saved">("idle");
   const [apiBase, setApiBase] = useState(
     (process.env.NEXT_PUBLIC_FORGE_API_URL || "http://localhost:8000").replace(/\/$/, ""),
   );
   useEffect(() => { if (project?.id) api.listTools(project.id).then(setTools).catch(() => {}); }, [project?.id]);
-  useEffect(() => { if (project?.id) api.getProject(project.id).then((p) => setApiKey((p.config as any)?.mcp_api_key || "")).catch(() => {}); }, [project?.id]);
   useEffect(() => {
     if (!project?.id) return;
-    api.listWorkflows(project.id).then((ws) => {
+    Promise.all([api.getProject(project.id), api.listWorkflows(project.id)]).then(([p, ws]) => {
+      setApiKey((p.config as any)?.mcp_api_key || "");
       setWorkflows(ws);
-      const active = ws.find((w: any) => w.status === "active") || ws[0];
-      setWfId(active ? active.id : "");
+      // Default the picker to the saved API workflow; else the active one, else the first.
+      const saved = (p.config as any)?.api_workflow_id;
+      const chosen = ws.find((w: any) => w.id === saved) || ws.find((w: any) => w.status === "active") || ws[0];
+      setWfId(chosen ? chosen.id : "");
     }).catch(() => {});
   }, [project?.id]);
 
@@ -32,28 +36,36 @@ export function ConnectScreen({ project }: { project: any }) {
   const url = `${origin}/api/forge/v1/mcp/${project?.id || "<project>"}`;
   const claudeConfig = JSON.stringify({ mcpServers: { [project?.slug || "forge"]: { url, headers: { Authorization: `Bearer ${apiKey || "<set-an-api-key>"}` } } } }, null, 2);
 
-  // Run-API endpoints (server-to-server): a backend hits the Forge API DIRECTLY, not the web proxy.
+  // Run API (server-to-server): a backend hits the Forge API DIRECTLY, not the web proxy.
+  // ONE endpoint per project - it runs the workflow chosen above; `stream` is the only
+  // per-request knob, and HITL flows through the same call (workflow-driven).
   const base = (apiBase || "http://localhost:8000").replace(/\/$/, "");
   const pid = project?.id || "<projectId>";
-  const wid = wfId || "<workflowId>";
-  const runsBase = `${base}/v1/projects/${pid}/workflows/${wid}/runs`;
-  const createUrl = runsBase;
-  const streamUrl = `${runsBase}/{run_id}/stream`;
-  const resumeUrl = `${runsBase}/{run_id}/resume`;
+  const runUrl = `${base}/v1/projects/${pid}/run`;
   const curl = [
-    "# 1) create a run (identity only - never secrets in the body)",
-    `curl -s -X POST "${createUrl}" \\`,
+    "# ONE endpoint. Auth with the service token; pass the caller's per-user secrets in",
+    "# X-Forge-Context (used by tools as {{ctx.*}}) - never put secrets in the body.",
+    `curl -sN "${runUrl}" \\`,
     `  -H "Authorization: Bearer $FORGE_SERVICE_API_TOKEN" \\`,
     `  -H "Content-Type: application/json" \\`,
-    `  -d '{"input":{"messages":[{"role":"user","content":"hello"}]},"end_user":{"id":"user-123"}}'`,
-    '# -> {"id":"<run_id>","thread_id":"..."}',
-    "",
-    "# 2) stream it - pass the caller's per-user session/CSRF for on-behalf-of tool calls",
-    `curl -sN "${runsBase}/<run_id>/stream" \\`,
-    `  -H "Authorization: Bearer $FORGE_SERVICE_API_TOKEN" \\`,
     `  -H 'X-Forge-Context: {"jsessionid":"<user session>","csrf":"<user csrf>"}' \\`,
-    '  -H "Accept: text/event-stream"',
+    `  -H "Accept: text/event-stream" \\`,
+    `  -d '{"input":{"messages":[{"role":"user","content":"hello"}]},"end_user":{"id":"user-123"},"stream":true}'`,
+    '# -> SSE frames; the "ready" frame gives you a thread_id to continue the conversation.',
+    "",
+    "# stream:false returns a single JSON reply instead of SSE.",
+    "# answer a human-in-the-loop step the workflow raised (reuse the thread_id):",
+    `#   -d '{"thread_id":"<thread>","resume":{"value":"approve"}}'`,
   ].join("\n");
+
+  async function saveApiWorkflow(next: string) {
+    setWfId(next);
+    setApiSave("saving");
+    const p = await api.getProject(project.id);
+    await api.updateProject(project.id, { config: { ...(p.config || {}), api_workflow_id: next || undefined } });
+    setApiSave("saved");
+    setTimeout(() => setApiSave("idle"), 1200);
+  }
 
   async function saveKey(next: string) {
     setApiKey(next); setSave("saving");
@@ -69,8 +81,8 @@ export function ConnectScreen({ project }: { project: any }) {
         <div className="t-display" style={{ marginBottom: 4 }}>Connect</div>
         <div className="fg-1" style={{ marginBottom: 18 }}>Integrate this project: call its workflows from your backend over the run API, or expose its tools over MCP.</div>
 
-        {/* ---- Run API: call a workflow from your backend (server-to-server) ---- */}
-        <div className="t-h2" style={{ margin: "4px 0 10px" }}>Run a workflow from your backend</div>
+        {/* ---- Run API: ONE endpoint per project (server-to-server) ---- */}
+        <div className="t-h2" style={{ margin: "4px 0 10px" }}>Run this project from your backend</div>
         <div className="card" style={{ padding: 16, marginBottom: 14 }}>
           <div className="row gap3" style={{ flexWrap: "wrap" }}>
             <div style={{ flex: 1, minWidth: 240 }}>
@@ -79,25 +91,24 @@ export function ConnectScreen({ project }: { project: any }) {
               </Field>
             </div>
             <div style={{ flex: 1, minWidth: 240 }}>
-              <Field label="Workflow" help="The workflow your chatbot runs.">
-                <select className="select" value={wfId} onChange={(e) => setWfId(e.target.value)}>
-                  {workflows.length === 0 && <option value="">No workflows yet</option>}
-                  {workflows.map((w) => <option key={w.id} value={w.id}>{w.name}{w.status !== "active" ? ` (${w.status})` : ""}</option>)}
-                </select>
+              <Field label="Workflow this API runs" help="Saved on the project. The /run endpoint always executes this workflow — callers never pick one.">
+                <div className="row gap2" style={{ alignItems: "center" }}>
+                  <select className="select" style={{ flex: 1 }} value={wfId} onChange={(e) => saveApiWorkflow(e.target.value)}>
+                    {workflows.length === 0 && <option value="">No workflows yet</option>}
+                    {workflows.map((w) => <option key={w.id} value={w.id}>{w.name}{w.status !== "active" ? ` (${w.status})` : ""}</option>)}
+                  </select>
+                  <span className="t-caption fg-2" style={{ minWidth: 52 }}>{apiSave === "saving" ? "Saving…" : apiSave === "saved" ? "Saved ✓" : ""}</span>
+                </div>
               </Field>
             </div>
           </div>
-          <div className="row gap3" style={{ flexWrap: "wrap" }}>
-            <div style={{ flex: 1, minWidth: 240 }}><Field label="Project ID"><CodeBlock code={pid} /></Field></div>
-            <div style={{ flex: 1, minWidth: 240 }}><Field label="Workflow ID"><CodeBlock code={wid} /></Field></div>
-          </div>
         </div>
         <div className="card" style={{ padding: 16, marginBottom: 14 }}>
-          <div className="t-h3" style={{ marginBottom: 8 }}>Endpoints</div>
-          <Field label="Create run · POST"><CodeBlock code={createUrl} /></Field>
-          <Field label="Stream run · GET (SSE)"><CodeBlock code={streamUrl} /></Field>
-          <Field label="Resume run · POST (human-in-the-loop)"><CodeBlock code={resumeUrl} /></Field>
-          <div className="field-help">Authenticate every call with <span className="mono-sm">Authorization: Bearer &lt;FORGE_SERVICE_API_TOKEN&gt;</span> (the value set in Forge&apos;s .env). Pass the caller&apos;s per-user session/CSRF as an <span className="mono-sm">X-Forge-Context</span> header on the stream/resume calls so tools act on their behalf - never put secrets in the run body.</div>
+          <div className="t-h3" style={{ marginBottom: 8 }}>Endpoint · POST</div>
+          <CodeBlock code={runUrl} />
+          <div className="field-help" style={{ marginTop: 8 }}>
+            One call does everything. Send <span className="mono-sm">{"{ input, stream }"}</span> for a new turn (reuse the returned <span className="mono-sm">thread_id</span> to continue a conversation), or <span className="mono-sm">{"{ thread_id, resume }"}</span> to answer a human-in-the-loop step the workflow raised. <span className="mono-sm">stream: true</span> streams SSE (tokens, steps, tools); <span className="mono-sm">false</span> returns one JSON reply. Authenticate with <span className="mono-sm">Authorization: Bearer &lt;FORGE_SERVICE_API_TOKEN&gt;</span>; pass the caller&apos;s per-user session/CSRF as <span className="mono-sm">X-Forge-Context</span> so tools act on their behalf — never put secrets in the body.
+          </div>
         </div>
         <div className="card" style={{ padding: 16, marginBottom: 24 }}>
           <div className="t-h3" style={{ marginBottom: 8 }}>Example (curl)</div>

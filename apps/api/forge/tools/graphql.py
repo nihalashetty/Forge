@@ -10,8 +10,8 @@ from langchain.tools import ToolRuntime
 
 from forge.tools.projection import project_response
 from forge.tools.rest import _build_structured_tool, _redirect_info, _tool_return, build_args_schema
-from forge.util.http import shared_async_client
-from forge.util.ssrf import guarded_request, validate_url
+from forge.util.http import select_client
+from forge.util.ssrf import EgressPolicy, guarded_request, validate_url
 
 
 async def execute_graphql(
@@ -32,8 +32,12 @@ async def execute_graphql(
         cookies.update(auth.cookies)
 
     follow = bool(cfg.get("follow_redirects", False))
-    await validate_url(cfg["endpoint"], egress_policy)
-    client = client or shared_async_client()
+    policy = egress_policy or EgressPolicy.from_settings()
+    await validate_url(cfg["endpoint"], policy)
+    # `tls_skip_verify` disables cert verification only for a host on the egress allow_private_hosts
+    # list (select_client enforces the gate); guarded_request re-applies it per redirect hop. An
+    # explicit `client` (tests) always wins.
+    skip_verify = bool(cfg.get("tls_skip_verify"))
     kw = dict(
         headers=headers or None, params=params or None, cookies=cookies or None,
         json={"query": cfg["query"], "variables": variables}, timeout=cfg.get("timeout_seconds", 30),
@@ -41,10 +45,14 @@ async def execute_graphql(
     t0 = time.monotonic()
     try:
         if follow:
-            # Chase redirects SSRF-safely (each hop re-validated) rather than via httpx.
-            r = await guarded_request(client, "POST", cfg["endpoint"], policy=egress_policy, follow_redirects=True, **kw)
+            # Chase redirects SSRF-safely (each hop re-validated AND its client re-selected) rather than via httpx.
+            r = await guarded_request(
+                client, "POST", cfg["endpoint"], policy=policy, skip_verify=skip_verify, follow_redirects=True, **kw
+            )
         else:
-            r = await client.post(cfg["endpoint"], **kw)
+            r = await select_client(cfg["endpoint"], skip_verify=skip_verify, policy=policy, override=client).post(
+                cfg["endpoint"], **kw
+            )
         status = r.status_code
         if 300 <= status < 400 and not follow:
             # Redirect we didn't follow: body is typically empty; the target is in `redirect`.

@@ -34,3 +34,17 @@ async def _ensure_tables():
     # create_all is idempotent; cheap to run per-test for an isolated DB state.
     await init_db()
     yield
+
+
+@pytest.fixture(autouse=True)
+def _reset_sse_appstatus():
+    # sse_starlette caches a module-level `should_exit_event` bound to the FIRST event loop it
+    # runs in. pytest-asyncio gives each test a fresh loop, so a *second* streaming test in the
+    # process would await that stale event -> "bound to a different event loop". Reset it per
+    # test so each SSE response recreates the event in its own loop.
+    try:
+        from sse_starlette.sse import AppStatus
+    except ImportError:
+        return
+    AppStatus.should_exit = False
+    AppStatus.should_exit_event = None

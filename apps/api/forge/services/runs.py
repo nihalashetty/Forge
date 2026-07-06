@@ -14,7 +14,7 @@ from collections.abc import AsyncIterator
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from forge.config import settings
 from forge.db.base import SessionLocal
@@ -108,11 +108,17 @@ class RunService:
         # whole transcript each turn.
         thread = None
         if thread_id:
+            # Accept either handle we have ever handed a caller: the DB Thread.id (returned by
+            # create + the `ready` SSE frame) OR the composite LangGraph id `{tenant}:{uuid}`
+            # (once echoed in the `run` SSE frame). A bare uuid and a tenant-prefixed id never
+            # collide, so matching both lets a caller continue a conversation whichever one it
+            # kept. Without this a mismatched handle silently starts a FRESH thread every turn,
+            # so the checkpointer holds no prior turns => the agent "forgets" the conversation.
             thread = (
                 await session.execute(
                     select(Thread).where(
-                        Thread.tenant_id == tenant_id, Thread.id == thread_id,
-                        Thread.workflow_id == wf.id,
+                        Thread.tenant_id == tenant_id, Thread.workflow_id == wf.id,
+                        or_(Thread.id == thread_id, Thread.lg_thread_id == thread_id),
                     )
                 )
             ).scalar_one_or_none()
@@ -161,7 +167,7 @@ class RunService:
 
     async def stream(
         self, *, run_id: str, tenant_id: str, project_id: str | None = None, public: bool = False,
-        run_context: dict | None = None,
+        run_context: dict | None = None, resume: bool = False, resume_value: Any = None,
     ) -> AsyncIterator[dict]:
         async with SessionLocal() as session:
             where = [Run.tenant_id == tenant_id, Run.id == run_id]
@@ -172,6 +178,11 @@ class RunService:
             run = (await session.execute(select(Run).where(*where))).scalar_one_or_none()
             if run is None:
                 yield {"event": "error", "data": {"message": "run not found"}}
+                return
+            # HITL resume: only an interrupted run can continue. Resuming a done/running run
+            # would re-invoke a finished thread (undefined) or race a live one (mirrors resume()).
+            if resume and run.status != "interrupted":
+                yield {"event": "error", "data": {"message": f"run is not awaiting input (status={run.status})", "status": run.status}}
                 return
             wf = (await session.execute(select(Workflow).where(Workflow.id == run.workflow_id))).scalar_one()
             thread = (await session.execute(select(Thread).where(Thread.id == run.thread_id))).scalar_one()
@@ -192,7 +203,9 @@ class RunService:
             try:
                 async with tenant_concurrency.slot(tenant_id, settings.max_concurrent_runs_per_tenant), tlock:
                     run.status = "running"
-                    run.started_at = datetime.utcnow()
+                    # A resumed run keeps its original start time; a fresh run stamps now.
+                    if not resume:
+                        run.started_at = datetime.utcnow()
                     await session.commit()
 
                     ctx = await build_compile_context(
@@ -210,7 +223,12 @@ class RunService:
                         yield {"event": "error", "data": {"message": _client_error(public, run.id, f"compile error: {e}")}}
                         return
 
-                    yield {"event": "run", "data": {"run_id": run.id, "thread_id": thread.lg_thread_id}}
+                    # Expose the caller-facing DB thread id here (same handle as the create
+                    # response + `ready` frame) - NOT thread.lg_thread_id. The LangGraph id is
+                    # an internal checkpointer key (and embeds the tenant id); a caller that
+                    # echoed it back could never match Thread.id, so its conversation reset
+                    # every turn. Keeping every thread_id in the stream identical avoids that.
+                    yield {"event": "run", "data": {"run_id": run.id, "thread_id": run.thread_id}}
 
                     # subgraphs=True is required for token-by-token streaming: agent nodes
                     # compile to nested subgraphs, and without it the inner LLM tokens never
@@ -218,8 +236,12 @@ class RunService:
                     # each item is (namespace, mode, chunk); namespace () == the top-level graph.
                     # `tasks` (not `debug`) supplies node start/error events: start chunks
                     # carry `triggers`, finish chunks carry `error`/`result`.
+                    # Resume a HITL interrupt with Command(resume=...); a fresh run feeds its input.
+                    from langgraph.types import Command
+
+                    driver = Command(resume=resume_value) if resume else run.input
                     async for ns, mode, chunk in graph.astream(
-                        run.input, config,
+                        driver, config,
                         stream_mode=["tasks", "updates", "messages", "custom"],
                         subgraphs=True,
                         durability=settings.run_durability,

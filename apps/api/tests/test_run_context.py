@@ -239,15 +239,15 @@ async def test_run_context_and_end_user_are_distinct_lanes():
 
     tool = build_rest_tool(cfg, ctx)
     async with _capturing_client(sink) as client:
-        # The tool coroutine calls execute_rest with the shared client; point it at ours.
+        # execute_rest picks its client via select_client; point that at ours.
         import forge.tools.rest as rest_mod
 
-        orig = rest_mod.shared_async_client
-        rest_mod.shared_async_client = lambda: client  # type: ignore[assignment]
+        orig = rest_mod.select_client
+        rest_mod.select_client = lambda *a, **k: client  # type: ignore[assignment]
         try:
             await tool.coroutine(runtime=_RT())
         finally:
-            rest_mod.shared_async_client = orig  # type: ignore[assignment]
+            rest_mod.select_client = orig  # type: ignore[assignment]
 
     req = sink["request"]
     assert req.headers["x-csrf-token"] == "C1"

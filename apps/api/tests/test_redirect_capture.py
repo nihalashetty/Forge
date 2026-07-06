@@ -56,14 +56,14 @@ async def test_unfollowed_3xx_captures_location():
 async def test_unfollowed_redirect_is_wrapped_for_the_agent():
     """The StructuredTool the agent calls must surface the redirect, not an empty body."""
     client = _redirecting_client("https://api.acme.dev/v2/final")
-    rest_mod_shared = rest_mod.shared_async_client
-    rest_mod.shared_async_client = lambda: client  # type: ignore[assignment]
+    rest_mod_select = rest_mod.select_client
+    rest_mod.select_client = lambda *a, **k: client  # type: ignore[assignment]
     try:
         ctx = types.SimpleNamespace(tenant_id="t", project_id="p", auth_resolver=None, egress_policy=None)
         tool = build_rest_tool(_cfg(), ctx)
         out = await tool.ainvoke({})
     finally:
-        rest_mod.shared_async_client = rest_mod_shared  # type: ignore[assignment]
+        rest_mod.select_client = rest_mod_select  # type: ignore[assignment]
         await client.aclose()
 
     assert isinstance(out, dict) and "redirect" in out
