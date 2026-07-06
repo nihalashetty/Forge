@@ -64,7 +64,7 @@ services:
       # Hosts allowed to resolve to a private/loopback address even with the SSRF guard on
       # (default-deny, explicit-allow). JSON array. From inside the container "localhost" is the
       # container itself - use ["host.docker.internal"] to reach a service on the Docker host.
-      FORGE_EGRESS_ALLOW_PRIVATE_HOSTS: '${FORGE_EGRESS_ALLOW_PRIVATE_HOSTS:-[]}'
+      FORGE_EGRESS_ALLOW_PRIVATE_HOSTS: ${FORGE_EGRESS_ALLOW_PRIVATE_HOSTS:-}
       # Provider keys (set the ones you use):
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
@@ -114,7 +114,7 @@ services:
       FORGE_SCHEDULER_LEADER: "false"
       # Same egress allowances as the api, so worker-executed tool runs (webhook/schedule
       # triggers) can reach the same internal targets (default-deny, explicit-allow).
-      FORGE_EGRESS_ALLOW_PRIVATE_HOSTS: '${FORGE_EGRESS_ALLOW_PRIVATE_HOSTS:-[]}'
+      FORGE_EGRESS_ALLOW_PRIVATE_HOSTS: ${FORGE_EGRESS_ALLOW_PRIVATE_HOSTS:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     volumes:
