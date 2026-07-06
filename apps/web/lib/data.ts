@@ -360,7 +360,7 @@ export const PROJECT_NAV: NavEntry[] = [
   { section: "Deploy", items: [
     { id: "channels", label: "Channels", icon: "msg", help: "Deploy a workflow to a surface: email or Microsoft Teams." },
     { id: "triggers", label: "Triggers", icon: "bolt", help: "Event-driven entry points - webhook URLs, schedules, and pollers that start runs." },
-    { id: "connect", label: "Connect (MCP)", icon: "connect", help: "Expose this project's tools as an MCP server, and register external MCP servers to consume." },
+    { id: "connect", label: "Connect", icon: "connect", help: "Expose this project's tools as an MCP server, and register external MCP servers to consume." },
     { id: "embed", label: "Embed", icon: "grid", help: "Embed this project's chatbot as a widget on any website (publishable key + allowed origins)." },
   ] },
   { section: "Observe", items: [
