@@ -128,15 +128,41 @@ def _render_url(template: str, values: dict) -> str:
 
 
 def _collect(fields: list[dict], values: dict, where: str) -> dict:
+    # `values` is already seeded with every field's (ctx-rendered) default by execute_rest, so
+    # we read only from it. We deliberately do NOT fall back to the raw `f["default"]`: a default
+    # that referenced a missing {{ctx.*}} key resolved to None and was dropped, and resurrecting
+    # the raw value here would send the literal template string (e.g. "{{ctx.csrf}}").
     out: dict[str, Any] = {}
     for f in fields:
         if f.get("in") == where:
             name = f["path"]
             if values.get(name) is not None:
                 out[name] = values[name]
-            elif f.get("default") is not None:
-                out[name] = f["default"]
     return out
+
+
+def _build_body(req: dict, fields: list[dict], values: dict, context: dict | None):
+    """Request body. A free-form `body_template` takes precedence and is interpolated with two
+    namespaces - `{{input.*}}` (the validated tool args + defaults) and `{{ctx.*}}` (run
+    context: per-run injected values + end_user) - so an arbitrary JSON shape can carry both
+    model-decided inputs and server-injected credentials. It is parsed as JSON when possible,
+    else sent as raw content (form-encoded / plain text). With no body_template, the body is
+    assembled from `in: body` fields. Returns a dict/list, a str, or None."""
+    tmpl = req.get("body_template")
+    if tmpl:
+        rendered = render_template(tmpl, {"input": values, "ctx": context or {}})
+        if isinstance(rendered, (dict, list)):
+            return rendered
+        if isinstance(rendered, str):
+            s = rendered.strip()
+            if not s:
+                return None
+            try:
+                return _json.loads(s)
+            except ValueError:
+                return s  # non-JSON body (e.g. application/x-www-form-urlencoded) -> raw content
+        return rendered
+    return _collect(fields, values, "body") or None
 
 
 def _redirect_info(r: httpx.Response, followed: bool) -> dict | None:
@@ -206,16 +232,39 @@ async def execute_rest(
     """Execute the request and return {raw, projected, status, latency_ms}."""
     req = cfg["request"]
     fields = req.get("fields", []) or []
-    values = {f["path"]: f["default"] for f in fields if f.get("default") is not None}
+    ctx_vars = {"ctx": context or {}}
+    # Seed request values from field defaults. A string default may reference per-run context
+    # via {{ctx.*}} (e.g. a non-llm-visible `CSRFToken` field with default "{{ctx.csrf}}") - it
+    # is rendered here so a server-injected value lands in the query/body/header per the field's
+    # `in`. A default that references a MISSING ctx key renders to None and is DROPPED (never
+    # sent as a literal template). LLM-supplied args (kwargs) are a SEPARATE lane, applied next;
+    # they are NEVER templated, so the model can neither inject nor exfiltrate ctx values.
+    values: dict[str, Any] = {}
+    for f in fields:
+        d = f.get("default")
+        if d is None:
+            continue
+        rendered = render_template(d, ctx_vars) if isinstance(d, str) else d
+        if rendered is not None:
+            values[f["path"]] = rendered
     values.update({k: v for k, v in kwargs.items() if v is not None})
 
-    url = _render_url(req["url_template"], values)
+    # {{ctx.*}} is honored in the URL itself too (e.g. a base host, or a ?token= carried in run
+    # context); {name} path params are then substituted from `values` as before.
+    url_t = render_template(req["url_template"], ctx_vars)
+    url = _render_url(url_t if isinstance(url_t, str) else str(url_t), values)
     params = _collect(fields, values, "query")
-    body = _collect(fields, values, "body") or None
-    headers = {h["name"]: render_template(h.get("value", ""), {"ctx": context or {}}) for h in req.get("headers", []) or []}
-    headers.update(_collect(fields, values, "header"))
+    body = _build_body(req, fields, values, context)
+    # Header lanes in low->high precedence: (1) `in: header` fields (may be LLM-supplied), then
+    # (2) config-declared headers templated from ctx. The templated headers are SERVER-
+    # authoritative per-run injection (e.g. Cookie / CSRF from {{ctx.*}}) and must not be
+    # overridable by an LLM-supplied header of the same name, so they are applied last.
+    headers = _collect(fields, values, "header")
+    headers.update({h["name"]: render_template(h.get("value", ""), ctx_vars) for h in req.get("headers", []) or []})
 
-    cookies: dict[str, str] = {}
+    # Cookies from `in: cookie` fields (ctx-templated defaults), plus the auth provider later.
+    # Lets a session cookie be injected as {{ctx.jsessionid}} without a hand-written Cookie header.
+    cookies: dict[str, str] = _collect(fields, values, "cookie")
     provider_id = cfg.get("auth_provider_id")
 
     async def apply_auth(force: bool = False) -> None:
@@ -263,7 +312,13 @@ async def execute_rest(
     retry_types = _retry_types(retry_cfg.get("retry_on") or [])
 
     async def _send() -> httpx.Response:
-        kw = dict(headers=headers, params=params or None, json=body, cookies=cookies or None, timeout=timeout)
+        kw: dict[str, Any] = dict(headers=headers, params=params or None, cookies=cookies or None, timeout=timeout)
+        # dict/list -> JSON body; a rendered raw string (e.g. form-encoded body_template) -> sent
+        # as-is via content; None -> no body.
+        if isinstance(body, (dict, list)):
+            kw["json"] = body
+        elif isinstance(body, str):
+            kw["content"] = body
         if follow_redirects:
             # Chase redirects SSRF-safely - each hop is re-validated. Never enable httpx's
             # own redirect-following, which would connect to a hop without the egress guard.
@@ -334,9 +389,18 @@ def build_rest_tool(cfg: dict, ctx):
         required = cfg.get("required_entitlements") or []
         if required and getattr(ctx, "has_entitlements", None) and not ctx.has_entitlements(required):
             return f"Not permitted: this action requires {required}, which the current user is not entitled to."
-        # Per-user context for header/body templating ({{ctx.end_user…}}) and on-behalf-of
-        # calls: the run's identity (ctx.end_user) is merged under any runtime-provided context.
-        context = {"end_user": getattr(ctx, "end_user", None), **(getattr(runtime, "context", None) or {})}
+        # Templating context for the outbound call ({{ctx.*}} in url/headers/query/body).
+        # Three lanes, kept distinct on purpose:
+        #   - ctx.run_context: ephemeral per-run values a server-side caller injected on the
+        #     EXECUTION request (e.g. a per-user session cookie / CSRF token). Never persisted,
+        #     never in the prompt, never an LLM arg.
+        #   - runtime.context: LangGraph runtime context, if any.
+        #   - end_user: the run's identity - authoritative, so it can't be shadowed by the above.
+        context = {
+            **(getattr(ctx, "run_context", None) or {}),
+            **(getattr(runtime, "context", None) or {}),
+            "end_user": getattr(ctx, "end_user", None),
+        }
         sw = getattr(runtime, "stream_writer", None)
         res = await execute_rest(
             cfg, kwargs, tenant_id=ctx.tenant_id, project_id=ctx.project_id,

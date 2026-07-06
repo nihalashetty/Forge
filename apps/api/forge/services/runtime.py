@@ -43,7 +43,7 @@ def _tool_cfg(t: Tool) -> dict:
 
 async def build_compile_context(
     session, *, tenant_id: str, project_id: str, checkpointer=None, store=None,
-    end_user: dict | None = None,
+    end_user: dict | None = None, run_context: dict | None = None,
 ) -> CompileContext:
     project = (
         await session.execute(select(Project).where(Project.id == project_id))
@@ -82,6 +82,9 @@ async def build_compile_context(
     ctx.provider_credentials = resolved_keys
     ctx.egress_policy = EgressPolicy.from_settings(pconfig.get("egress"))
     ctx.end_user = end_user or None
+    # Ephemeral per-run injected context (never persisted, never prompted); consumed by tools
+    # for {{ctx.<key>}} templating and by the auth resolver. See CompileContext.run_context.
+    ctx.run_context = run_context or {}
 
     rows = (
         await session.execute(

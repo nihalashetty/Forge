@@ -15,6 +15,7 @@ from forge.deps import (
     get_current_user,
     get_run_service,
     get_session,
+    run_context,
 )
 from forge.schemas.dto import ResumeIn, RunCreate, RunOut
 from forge.services.auth import role_at_least
@@ -103,9 +104,10 @@ async def stream_run(
     run_id: str,
     tenant_id: str = Depends(current_tenant_id),
     run_service: RunService = Depends(get_run_service),
+    rc: dict | None = Depends(run_context),
 ):
     async def event_gen():
-        async for frame in run_service.stream(run_id=run_id, tenant_id=tenant_id, project_id=project_id):
+        async for frame in run_service.stream(run_id=run_id, tenant_id=tenant_id, project_id=project_id, run_context=rc):
             yield {"event": frame["event"], "data": json.dumps(frame["data"], default=str)}
 
     return EventSourceResponse(event_gen(), headers=SSE_HEADERS)
@@ -142,5 +144,6 @@ async def resume_run(
     body: ResumeIn,
     tenant_id: str = Depends(current_tenant_id),
     run_service: RunService = Depends(get_run_service),
+    rc: dict | None = Depends(run_context),
 ):
-    return await run_service.resume(run_id=run_id, tenant_id=tenant_id, value=body.value, project_id=project_id)
+    return await run_service.resume(run_id=run_id, tenant_id=tenant_id, value=body.value, project_id=project_id, run_context=rc)

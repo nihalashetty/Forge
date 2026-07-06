@@ -42,18 +42,26 @@ class EgressPolicy:
     block_private: bool = True
     allow_hosts: tuple[str, ...] = field(default_factory=tuple)
     deny_hosts: tuple[str, ...] = field(default_factory=tuple)
+    # Hosts allowed to resolve to a private/loopback address even when block_private is True
+    # (trusted internal targets, explicitly opted in). Does NOT turn on allow-list-only mode.
+    allow_private_hosts: tuple[str, ...] = field(default_factory=tuple)
 
     @classmethod
     def from_settings(cls, project_egress: dict | None = None) -> EgressPolicy:
         block = settings.egress_block_private
         allow = list(settings.egress_allow_hosts or [])
         deny = list(settings.egress_deny_hosts or [])
+        allow_private = list(settings.egress_allow_private_hosts or [])
         if project_egress:
             if project_egress.get("block_private") is not None:
                 block = bool(project_egress["block_private"])
             allow += list(project_egress.get("allow_hosts") or [])
             deny += list(project_egress.get("deny_hosts") or [])
-        return cls(block_private=block, allow_hosts=tuple(allow), deny_hosts=tuple(deny))
+            allow_private += list(project_egress.get("allow_private_hosts") or [])
+        return cls(
+            block_private=block, allow_hosts=tuple(allow), deny_hosts=tuple(deny),
+            allow_private_hosts=tuple(allow_private),
+        )
 
 
 def _host_matches(host: str, patterns: tuple[str, ...]) -> bool:
@@ -112,7 +120,9 @@ async def validate_url(url: str, policy: EgressPolicy | None = None) -> str:
     if policy.allow_hosts and not _host_matches(host, policy.allow_hosts):
         raise EgressBlocked(f"host {host!r} is not on the egress allow list")
 
-    if policy.block_private:
+    # A host explicitly on allow_private_hosts is a trusted internal target: it bypasses the
+    # private/loopback block on purpose (e.g. localhost in dev, an on-prem service).
+    if policy.block_private and not _host_matches(host, policy.allow_private_hosts):
         port = parsed.port or (443 if scheme == "https" else 80)
         for ip in await _resolve_ips(host, port):
             if _ip_is_blocked(ip):
@@ -132,7 +142,7 @@ async def validate_host_port(host: str | None, port: int, policy: EgressPolicy |
         raise EgressBlocked(f"host {host!r} is on the egress deny list")
     if policy.allow_hosts and not _host_matches(host, policy.allow_hosts):
         raise EgressBlocked(f"host {host!r} is not on the egress allow list")
-    if policy.block_private:
+    if policy.block_private and not _host_matches(host, policy.allow_private_hosts):
         for ip in await _resolve_ips(host, port or 0):
             if _ip_is_blocked(ip):
                 raise EgressBlocked(f"host {host!r} resolves to blocked address {ip}")

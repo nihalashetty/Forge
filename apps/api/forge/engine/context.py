@@ -54,6 +54,16 @@ class CompileContext:
     # and tool templating ({{ctx.end_user…}} / on-behalf-of calls). None = anonymous.
     end_user: dict | None = None
 
+    # Ephemeral per-run request context (Feature: per-run context injection). Values a
+    # server-side caller passes on the run's EXECUTION request (stream/resume, via the
+    # `X-Forge-Context` header) for tools to inject into outbound calls as {{ctx.<key>}} -
+    # e.g. a per-user session cookie / CSRF token when acting on the caller's behalf. UNLIKE
+    # end_user this is NEVER persisted (not on the thread/run/checkpointer/trace) and NEVER
+    # placed in the LLM prompt or an LLM-visible tool arg; it reaches only the tool's outbound
+    # HTTP request and the auth resolver. Put per-request secrets HERE, not in end_user (which
+    # is embedded in the prompt and stored on the thread).
+    run_context: dict = field(default_factory=dict)
+
     # Project-level default middleware, prepended to every agent stack (Doc 2 §8).
     project_default_mw: list[dict] = field(default_factory=list)
 

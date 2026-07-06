@@ -70,6 +70,13 @@ class Settings(BaseSettings):
     # the 30-day refresh token (rotated on use) keeps sessions alive without re-login.
     access_token_ttl_minutes: int = 60 * 8
     refresh_token_ttl_days: int = 30
+    # Static service token for trusted server-to-server integrations (e.g. an app backend that
+    # drives runs on behalf of its users). Sent as `Authorization: Bearer <token>`; when it
+    # matches, the request authenticates as a least-privilege (editor) service identity in the
+    # seeded workspace - no expiry, revoke by rotating this value. Empty = disabled. This is the
+    # outer "is this call from our backend?" barrier; per-user / per-API auth is handled
+    # separately (e.g. session+CSRF injected per-run into tools). Keep it long, random, secret.
+    service_api_token: str = ""
     # Auth is ON by default - the app behaves like production (real login required), so the
     # flow is actually exercised in dev. The seeded owner (bootstrap_admin_email/password
     # below) lets you log in immediately; self-service signup creates additional workspaces.
@@ -161,6 +168,12 @@ class Settings(BaseSettings):
     egress_block_private: bool = True
     egress_allow_hosts: list[str] = []
     egress_deny_hosts: list[str] = []
+    # Hosts permitted to resolve to a PRIVATE / loopback / link-local address even while
+    # block_private is on (default-deny, explicit-allow). Use for trusted internal targets -
+    # localhost during dev, an internal service, an on-prem host - WITHOUT disabling the SSRF
+    # guard globally (so the app still boots in production). Matches a host or any parent
+    # domain. Per-project override: project.config.egress.allow_private_hosts.
+    egress_allow_private_hosts: list[str] = []
 
     # --- Rate limits / quotas (per tenant). 0 = unlimited. Per-tenant overrides may
     # live in tenant.settings (max_runs_per_minute / max_runs_per_day). ---

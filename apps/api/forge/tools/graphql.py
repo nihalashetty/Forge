@@ -68,7 +68,14 @@ def build_graphql_tool(cfg: dict, ctx):
 
     # Bare ToolRuntime annotation + None default - see rest.py for why (zero-arg tools).
     async def _call(runtime: ToolRuntime = None, **kwargs):  # type: ignore[assignment]
-        context = getattr(runtime, "context", None) or {}
+        # Same three-lane context as the REST tool (kept in sync): per-run injected context,
+        # LangGraph runtime context, then the authoritative end_user identity. Reaches the auth
+        # resolver (per_user_context_keys / csrf_session) for on-behalf-of GraphQL calls.
+        context = {
+            **(getattr(ctx, "run_context", None) or {}),
+            **(getattr(runtime, "context", None) or {}),
+            "end_user": getattr(ctx, "end_user", None),
+        }
         res = await execute_graphql(
             cfg, kwargs, tenant_id=ctx.tenant_id, project_id=ctx.project_id,
             context=context, auth_resolver=ctx.auth_resolver,
