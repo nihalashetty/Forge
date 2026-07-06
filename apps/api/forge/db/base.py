@@ -13,6 +13,7 @@ from datetime import datetime
 from sqlalchemy import String
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.pool import NullPool
 
 from forge.config import settings
 
@@ -34,8 +35,18 @@ class PkTimestamp:
 
 
 # SQLite needs check_same_thread off for the async driver's connection sharing.
-_connect_args = {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
-engine = create_async_engine(settings.database_url, echo=False, future=True, connect_args=_connect_args)
+_is_sqlite = settings.database_url.startswith("sqlite")
+_connect_args = {"check_same_thread": False} if _is_sqlite else {}
+# SQLite (dev/test, via aiosqlite): pooling connections across asyncio event loops - e.g. the
+# per-test loops pytest-asyncio spins up - leaves a connection to be torn down in a loop other
+# than the one that opened it, causing intermittent "Task was destroyed but it is pending" /
+# "object NoneType can't be used in 'await'" teardown errors. NullPool opens a fresh connection
+# per checkout (cheap for a local sqlite file) and closes it immediately, so nothing lingers
+# across loops. Postgres (prod) keeps the default pooled behaviour - no perf change there.
+_engine_kwargs = {"poolclass": NullPool} if _is_sqlite else {}
+engine = create_async_engine(
+    settings.database_url, echo=False, future=True, connect_args=_connect_args, **_engine_kwargs
+)
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
 
