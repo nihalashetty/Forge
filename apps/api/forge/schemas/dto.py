@@ -285,6 +285,25 @@ class ResumeIn(BaseModel):
     value: Any = True
 
 
+class ProjectRunIn(BaseModel):
+    """One turn against a project's configured API workflow - the single server-to-server
+    endpoint (POST /v1/projects/{id}/run). Framework-generic: any project, any auth scheme;
+    per-user secrets travel out-of-band in the X-Forge-Context header, never in this body.
+
+    - New turn: send `input` (+ `thread_id` to continue an existing conversation).
+    - HITL: send `resume` to answer an interrupt the WORKFLOW raised - pausing is decided by
+      the workflow, not the caller.
+    - `stream` is the ONLY per-request knob: True => SSE frames, False => one JSON reply.
+    """
+
+    input: dict[str, Any] | None = None
+    thread_id: str | None = None
+    end_user: EndUser | None = None
+    session_token: str | None = None
+    resume: ResumeIn | None = None
+    stream: bool = True
+
+
 # --- node catalog ---
 class PortOut(BaseModel):
     id: str

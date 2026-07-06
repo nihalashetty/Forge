@@ -9,12 +9,35 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import String, inspect as sa_inspect, select
 
 from forge.db.base import SessionLocal
 from forge.models import AuditLog
 
 log = logging.getLogger("forge.audit")
+
+
+def _truncate_string_columns(instance) -> None:
+    """Clamp every String(length) column on `instance` to its column length, in place.
+
+    Auditing must never fail on a length overflow. Postgres enforces VARCHAR(n) and
+    rejects an over-length value (StringDataRightTruncationError); SQLite does not, so
+    such overflows only surface in the Dockerized Postgres stack. This is the backstop for
+    any caller-supplied value that could exceed its column (e.g. a crafted login email or a
+    spoofed X-Forwarded-For IP). Uses mapper introspection so it stays correct as columns
+    are added/resized, and keys on the Python attribute name (attr.key) - so the
+    meta -> "metadata" column-name mismatch is irrelevant (meta is JSON, not String, and is
+    skipped by the type check anyway).
+    """
+    for attr in sa_inspect(instance).mapper.column_attrs:
+        col_type = getattr(attr.expression, "type", None)
+        length = getattr(col_type, "length", None)
+        if not isinstance(col_type, String) or not length:
+            continue
+        value = getattr(instance, attr.key, None)
+        if isinstance(value, str) and len(value) > length:
+            log.warning("audit: truncating %s from %d to %d chars", attr.key, len(value), length)
+            setattr(instance, attr.key, value[:length])
 
 
 class AuditService:
@@ -33,13 +56,15 @@ class AuditService:
         meta: dict[str, Any] | None = None,
     ) -> None:
         try:
+            row = AuditLog(
+                tenant_id=tenant_id, action=action, actor_id=actor_id,
+                actor_email=actor_email, resource_type=resource_type,
+                resource_id=resource_id, project_id=project_id, ip=ip,
+                status=status, meta=meta or {},
+            )
+            _truncate_string_columns(row)  # never let a length overflow drop the record
             async with SessionLocal() as s:
-                s.add(AuditLog(
-                    tenant_id=tenant_id, action=action, actor_id=actor_id,
-                    actor_email=actor_email, resource_type=resource_type,
-                    resource_id=resource_id, project_id=project_id, ip=ip,
-                    status=status, meta=meta or {},
-                ))
+                s.add(row)
                 await s.commit()
         except Exception:  # noqa: BLE001 - auditing must never break the request
             log.exception("audit write failed for action=%s", action)

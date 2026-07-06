@@ -27,9 +27,9 @@ from pydantic import Field, create_model
 from forge.auth_providers.templates import render_template
 from forge.config import settings
 from forge.tools.projection import cap_payload, project_response
-from forge.util.http import shared_async_client
+from forge.util.http import select_client
 from forge.util.ratelimit import rate_limiter
-from forge.util.ssrf import guarded_request, validate_url
+from forge.util.ssrf import EgressPolicy, guarded_request, validate_url
 
 _PY = {"string": str, "integer": int, "number": float, "boolean": bool, "object": dict, "array": list}
 
@@ -277,8 +277,10 @@ async def execute_rest(
         params.update(auth.params)
         cookies.update(auth.cookies)
 
-    # SSRF guard: refuse internal/metadata targets before connecting.
-    await validate_url(url, egress_policy)
+    # SSRF guard: refuse internal/metadata targets before connecting. Resolve the policy once so
+    # the same allow-list drives both the guard and the TLS-skip gate below.
+    policy = egress_policy or EgressPolicy.from_settings()
+    await validate_url(url, policy)
 
     name = cfg.get("name", "tool")
     method = req["method"]
@@ -304,8 +306,12 @@ async def execute_rest(
         except Exception:  # noqa: BLE001
             pass
 
-    # Shared client (client construction costs ~470ms on Windows); timeout per request.
-    client = client or shared_async_client()
+    # TLS policy: `tls_skip_verify` opts out of certificate verification, honored ONLY for a host on
+    # the egress allow_private_hosts list. select_client enforces the gate for the direct request,
+    # and guarded_request re-applies it PER redirect hop, so verify-off never carries onto a hop
+    # whose host isn't allow-private. An explicit `client` (tests) always wins. (Shared-client
+    # construction costs ~470ms on Windows; select_client returns the shared singleton.)
+    skip_verify = bool(req.get("tls_skip_verify"))
     timeout = cfg.get("timeout_seconds", 30)
     retry_cfg = cfg.get("retry") or {}
     max_retries = int(retry_cfg.get("max_retries", 0) or 0)
@@ -320,10 +326,15 @@ async def execute_rest(
         elif isinstance(body, str):
             kw["content"] = body
         if follow_redirects:
-            # Chase redirects SSRF-safely - each hop is re-validated. Never enable httpx's
-            # own redirect-following, which would connect to a hop without the egress guard.
-            return await guarded_request(client, method, url, policy=egress_policy, follow_redirects=True, **kw)
-        return await client.request(method, url, **kw)
+            # Chase redirects SSRF-safely - each hop is re-validated AND its client re-selected
+            # (verify-off only for an allow-private hop). Never enable httpx's own redirect-following,
+            # which would connect to a hop without the egress guard.
+            return await guarded_request(
+                client, method, url, policy=policy, skip_verify=skip_verify, follow_redirects=True, **kw
+            )
+        return await select_client(url, skip_verify=skip_verify, policy=policy, override=client).request(
+            method, url, **kw
+        )
 
     async def _once() -> httpx.Response:
         r = await _send()

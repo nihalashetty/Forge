@@ -248,6 +248,9 @@ export function ToolBuilderScreen({ project, toolId, onBack }: { project: any; t
                     <Field label="Follow redirects" help="Follow 3xx redirects to the target URL. Each hop is re-checked by the SSRF guard. When off, the redirect's target URL is still reported to the model so it can act on it.">
                       <Toggle on={!!draft.follow_redirects} onChange={(v) => set({ follow_redirects: v })} />
                     </Field>
+                    <Field label="Skip TLS verification" help="Disable TLS certificate checks for this call. Honored only when the target host is on the server's allow-listed internal hosts (FORGE_EGRESS_ALLOW_PRIVATE_HOSTS); ignored otherwise. Use for internal/dev services with self-signed certificates — never for public endpoints.">
+                      <Toggle on={!!draft.tls_skip_verify} onChange={(v) => set({ tls_skip_verify: v })} />
+                    </Field>
                   </>
                 ) : isCode ? (
                   <>
@@ -350,6 +353,7 @@ function buildDraft(t: Tool): any {
     headers: (req.headers || []).map((h: any) => [h.name, h.value]),
     body: req.body_template || "",
     follow_redirects: !!(req.follow_redirects ?? c.follow_redirects),
+    tls_skip_verify: !!(req.tls_skip_verify ?? c.tls_skip_verify),
     query: c.query || "",
     builtin: c.builtin || "current_time",
     fields: (req.fields || c.variables || []).map((f: any) => ({ ...f })),
@@ -376,11 +380,11 @@ function draftToConfig(t: Tool, d: any): any {
     base.request = {
       ...(base.request || {}), method: d.method, url_template: d.url,
       headers: (d.headers || []).filter((r: any) => r[0]).map((r: any) => ({ name: r[0], value: r[1] })),
-      fields: d.fields, follow_redirects: !!d.follow_redirects, ...(d.body ? { body_template: d.body } : {}),
+      fields: d.fields, follow_redirects: !!d.follow_redirects, tls_skip_verify: !!d.tls_skip_verify, ...(d.body ? { body_template: d.body } : {}),
     };
     base.response = { ...(base.response || {}), ...(d.projection ? { projection_jmespath: d.projection } : {}), on_error: d.on_error };
   } else if (t.kind === "graphql") {
-    base.endpoint = d.url; base.query = d.query; base.variables = d.fields; base.follow_redirects = !!d.follow_redirects;
+    base.endpoint = d.url; base.query = d.query; base.variables = d.fields; base.follow_redirects = !!d.follow_redirects; base.tls_skip_verify = !!d.tls_skip_verify;
     base.response = { ...(base.response || {}), ...(d.projection ? { projection_jmespath: d.projection } : {}), on_error: d.on_error };
   } else if (t.kind === "code") {
     base.language = "python"; base.source = d.source; base.args_schema = parseSchema(d.args_schema);

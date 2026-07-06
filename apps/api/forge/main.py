@@ -40,6 +40,7 @@ from forge.routers import (
     nodes,
     oauth,
     pricing,
+    project_run,
     projects,
     runs,
     secrets,
@@ -223,7 +224,7 @@ def create_app() -> FastAPI:
     app.add_middleware(AuditMiddleware)
     for r in (
         health.router, auth.router, auth.team_router, audit.router, oauth.router, hooks.router,
-        nodes.router, projects.router, workflows.router, runs.router,
+        nodes.router, projects.router, workflows.router, runs.router, project_run.router,
         tools.router, components.router, embed.router, embed_public.router, auth_providers.router, secrets.router, agents.router,
         knowledge.router, knowledge.qa_router, traces.router, assistant.router, stats.router,
         triggers_router.router, channels.router, channels.public, handoff.router, evals.router,

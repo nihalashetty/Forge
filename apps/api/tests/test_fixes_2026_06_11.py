@@ -217,6 +217,19 @@ async def test_create_run_reuses_thread():
     assert run2.thread_id == run1.thread_id
     assert run3.thread_id != run1.thread_id
 
+    # A caller may echo back the composite LangGraph id (`{tenant}:{uuid}`) instead of the DB
+    # Thread.id - create_run must resolve either to the SAME thread, else memory is not shared.
+    from sqlalchemy import select
+
+    from forge.models import Thread
+
+    async with SessionLocal() as s:
+        lg_id = (await s.execute(select(Thread.lg_thread_id).where(Thread.id == run1.thread_id))).scalar_one()
+        run4 = await svc.create_run(s, tenant_id="t_thr", project_id="p_thr", workflow_id=wf.id,
+                                    input={"messages": [{"role": "user", "content": "four"}]},
+                                    thread_id=lg_id)
+    assert run4.thread_id == run1.thread_id
+
 
 # ---------- embedder cache ----------
 

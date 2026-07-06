@@ -72,3 +72,28 @@ async def test_mutations_are_audited():
         assert any(a == "POST /v1/projects" for a in actions), actions
         # auth endpoints are NOT double-audited by the middleware
         assert "POST /v1/auth/register" not in actions
+
+
+async def test_audit_action_uses_route_template_and_keeps_concrete_path():
+    """A mutating request to a UUID path is audited as the route TEMPLATE, not the concrete
+    path. The template fits the action column (String(80)) and stays aggregatable; the concrete
+    path (with real ids) is preserved in meta for forensics. Regression for the varchar(80)
+    overflow that silently dropped every long-path audit row on Postgres."""
+    app = create_app()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as c:
+        reg = (await c.post("/v1/auth/register", json={"email": _email(), "password": "supersecret1"})).json()
+        h = {"Authorization": f"Bearer {reg['access_token']}"}
+
+        pid = (await c.post("/v1/projects", json={"name": "P"}, headers=h)).json()["id"]
+        r = await c.patch(f"/v1/projects/{pid}", json={"name": "Renamed"}, headers=h)
+        assert r.status_code == 200, r.text
+
+        audit = (await c.get("/v1/audit", headers=h)).json()
+        patch_rows = [a for a in audit if a["action"].startswith("PATCH ")]
+        assert patch_rows, [a["action"] for a in audit]
+        row = patch_rows[0]
+        # templated (no UUID) -> within String(80) and aggregatable across projects
+        assert row["action"] == "PATCH /v1/projects/{project_id}"
+        assert len(row["action"]) <= 80
+        # concrete path with the real id is retained in meta
+        assert row["meta"]["path"] == f"/v1/projects/{pid}"

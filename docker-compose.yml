@@ -43,6 +43,12 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    # Resolve host.docker.internal to the Docker host so tools/knowledge/webhooks can reach a
+    # service running on the host (its localhost != the container's). Docker Desktop (Windows/Mac)
+    # provides this automatically; native Linux needs the host-gateway mapping below. Pair with
+    # FORGE_EGRESS_ALLOW_PRIVATE_HOSTS=["host.docker.internal"] so the SSRF guard permits it.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       FORGE_ENVIRONMENT: production
       FORGE_DATABASE_URL: postgresql+asyncpg://forge:${POSTGRES_PASSWORD:-forge-dev-pw}@postgres:5432/forge
@@ -98,6 +104,10 @@ services:
       # never hits app tables before they exist.
       api:
         condition: service_healthy
+    # Same host-gateway mapping as api, so worker-executed tool runs (webhook/schedule triggers)
+    # can also reach a service on the Docker host via host.docker.internal.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       FORGE_ENVIRONMENT: production
       FORGE_DATABASE_URL: postgresql+asyncpg://forge:${POSTGRES_PASSWORD:-forge-dev-pw}@postgres:5432/forge

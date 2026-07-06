@@ -63,6 +63,12 @@ class EgressPolicy:
             allow_private_hosts=tuple(allow_private),
         )
 
+    def allows_private(self, host: str | None) -> bool:
+        """True if `host` is explicitly opted in as a trusted internal target (on
+        allow_private_hosts). This is the gate for TLS-verification skipping: certificate
+        checks may only be disabled for a host the operator has already declared internal."""
+        return _host_matches(host or "", self.allow_private_hosts)
+
 
 def _host_matches(host: str, patterns: tuple[str, ...]) -> bool:
     host = (host or "").lower().rstrip(".")
@@ -149,13 +155,14 @@ async def validate_host_port(host: str | None, port: int, policy: EgressPolicy |
 
 
 async def guarded_request(
-    client: httpx.AsyncClient,
+    client: httpx.AsyncClient | None,
     method: str,
     url: str,
     *,
     policy: EgressPolicy | None = None,
     follow_redirects: bool = False,
     max_redirects: int = 5,
+    skip_verify: bool = False,
     **kwargs,
 ) -> httpx.Response:
     """Validate `url` (and every redirect hop) before connecting, then request it.
@@ -171,10 +178,20 @@ async def guarded_request(
     Location), so 300/304/305/306 fall through as terminal responses. The redirect chain
     is attached to the final response's `.history`, so callers can read `str(resp.url)`
     (final URL) and `[str(h.url) for h in resp.history]` (the hops) uniformly.
+
+    The transport for EACH hop is chosen by `select_client` from that hop's own host: an explicit
+    `client` (a test/caller override) always wins, otherwise `skip_verify` disables TLS verification
+    ONLY for a hop whose host is on the egress allow_private_hosts list. So following a redirect off
+    an allow-private host to a public one re-enables certificate verification for that leg - verify-off
+    never leaks onto a host that isn't itself allow-listed.
     """
+    from forge.util.http import select_client  # local import: http imports nothing from ssrf
+
     policy = policy or EgressPolicy.from_settings()
     await validate_url(url, policy)
-    resp = await client.request(method, url, follow_redirects=False, **kwargs)
+    resp = await select_client(url, skip_verify=skip_verify, policy=policy, override=client).request(
+        method, url, follow_redirects=False, **kwargs
+    )
     if not follow_redirects:
         return resp
 
@@ -185,7 +202,9 @@ async def guarded_request(
             break
         await validate_url(str(nxt.url), policy)
         history.append(resp)
-        resp = await client.send(nxt, follow_redirects=False)
+        resp = await select_client(str(nxt.url), skip_verify=skip_verify, policy=policy, override=client).send(
+            nxt, follow_redirects=False
+        )
     if resp.next_request is not None:  # still redirecting after the cap
         raise EgressBlocked(f"too many redirects following {url!r}")
     if history:

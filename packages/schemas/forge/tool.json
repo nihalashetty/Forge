@@ -55,7 +55,8 @@
             "url_template": { "$ref": "forge/common#/$defs/TemplateString" },
             "fields": { "type": "array", "items": { "$ref": "#/$defs/FieldSpec" }, "x-ui": { "widget": "rows-table" } },
             "headers": { "type": "array", "items": { "type": "object", "properties": { "name": { "type": "string" }, "value": { "$ref": "forge/common#/$defs/TemplateString" } } }, "x-ui": { "widget": "rows-table" } },
-            "follow_redirects": { "type": "boolean", "default": false, "x-ui": { "help": "Follow 3xx redirects to the target URL. Each hop is re-checked by the SSRF guard. When off, the redirect's target URL is still reported to the model so it can act on it." } }
+            "follow_redirects": { "type": "boolean", "default": false, "x-ui": { "help": "Follow 3xx redirects to the target URL. Each hop is re-checked by the SSRF guard. When off, the redirect's target URL is still reported to the model so it can act on it." } },
+            "tls_skip_verify": { "type": "boolean", "default": false, "x-ui": { "help": "Skip TLS certificate verification. Honored ONLY when the target host is on the server's FORGE_EGRESS_ALLOW_PRIVATE_HOSTS allow-list (a trusted internal/dev target); ignored for any other host. Use for internal services with self-signed certs - never for public endpoints." } }
           }
         },
         "response": {
@@ -75,6 +76,7 @@
         "query": { "type": "string", "x-ui": { "widget": "code", "language": "graphql" } },
         "variables": { "type": "array", "items": { "$ref": "#/$defs/FieldSpec" }, "x-ui": { "widget": "rows-table" } },
         "follow_redirects": { "type": "boolean", "default": false, "x-ui": { "help": "Follow 3xx redirects to the target endpoint (each hop re-checked by the SSRF guard)." } },
+        "tls_skip_verify": { "type": "boolean", "default": false, "x-ui": { "help": "Skip TLS certificate verification. Honored ONLY when the endpoint host is on the server's FORGE_EGRESS_ALLOW_PRIVATE_HOSTS allow-list (a trusted internal/dev target); ignored otherwise. Use for internal services with self-signed certs - never for public endpoints." } },
         "response": { "$ref": "#/$defs/RestConfig/properties/response" }
       }
     },

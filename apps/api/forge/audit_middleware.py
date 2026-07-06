@@ -68,7 +68,15 @@ class AuditMiddleware:
             tenant_id = getattr(getattr(app, "state", None), "tenant_id", None)
         if not tenant_id:
             return
+        # Record the matched route TEMPLATE (e.g. "/v1/projects/{project_id}/tools/{tool_id}/test")
+        # rather than the concrete path. The concrete path carries UUIDs that overflow the action
+        # column (String(80)) and make actions un-aggregatable. FastAPI sets scope["route"] during
+        # routing, which ran inside self.app (already returned); fall back to the concrete path when
+        # nothing matched (404) or a non-APIRoute (bare Mount) handled it. The concrete path is kept
+        # in meta so the specific resource is still recoverable for forensics.
+        route_template = getattr(scope.get("route"), "path", None) or path
         await AuditService.log(
-            tenant_id=tenant_id, action=f"{scope['method']} {path}", actor_id=actor_id,
-            ip=_client_ip(scope, headers), status="ok", meta={"status_code": status_code["v"]},
+            tenant_id=tenant_id, action=f"{scope['method']} {route_template}", actor_id=actor_id,
+            ip=_client_ip(scope, headers), status="ok",
+            meta={"status_code": status_code["v"], "path": path},
         )
