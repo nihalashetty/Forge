@@ -28,6 +28,7 @@ from forge.routers import (
     auth_providers,
     channels,
     components,
+    conversations,
     embed,
     embed_public,
     evals,
@@ -226,7 +227,7 @@ def create_app() -> FastAPI:
         health.router, auth.router, auth.team_router, audit.router, oauth.router, hooks.router,
         nodes.router, projects.router, workflows.router, runs.router, project_run.router,
         tools.router, components.router, embed.router, embed_public.router, auth_providers.router, secrets.router, agents.router,
-        knowledge.router, knowledge.qa_router, traces.router, assistant.router, stats.router,
+        knowledge.router, knowledge.qa_router, traces.router, conversations.router, assistant.router, stats.router,
         triggers_router.router, channels.router, channels.public, handoff.router, evals.router,
         pricing.router, mcp_server.router, mcp_clients.router,
     ):

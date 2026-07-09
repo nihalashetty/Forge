@@ -164,6 +164,18 @@ class KbSource(PkTimestamp, Base):
         """Chunking strategy used at ingest (recursive|section|sentence); lives in meta."""
         return (self.meta or {}).get("chunk_strategy")
 
+    @property
+    def chunk_size(self) -> int | None:
+        """Target chunk size (chars) used at ingest; lives in meta, None until first ingest."""
+        v = (self.meta or {}).get("chunk_size")
+        return int(v) if v is not None else None
+
+    @property
+    def chunk_overlap(self) -> int | None:
+        """Chunk overlap (chars) used at ingest; lives in meta, None until first ingest."""
+        v = (self.meta or {}).get("chunk_overlap")
+        return int(v) if v is not None else None
+
 
 class QaPair(PkTimestamp, Base):
     __tablename__ = "qa_pairs"
@@ -209,6 +221,10 @@ class Run(PkTimestamp, Base):
     project_id: Mapped[str] = mapped_column(String(36), index=True)
     workflow_id: Mapped[str] = mapped_column(String(36), index=True)
     thread_id: Mapped[str] = mapped_column(String(36), index=True)
+    # Where this run originated, for the Traces conversation view. Set at create_run by each
+    # caller: playground|api|embed|channel_email|channel_teams|webhook|schedule (assistant runs
+    # have no Run row). Copied onto the Trace at finalize.
+    source: Mapped[str] = mapped_column(String(40), default="playground")
     status: Mapped[str] = mapped_column(String(20), default="queued")  # queued|running|interrupted|done|error
     input: Mapped[dict] = mapped_column(JSON, default=dict)
     output: Mapped[dict | None] = mapped_column(JSON, nullable=True)
@@ -233,6 +249,18 @@ class Trace(PkTimestamp, Base):
     latency_ms: Mapped[int] = mapped_column(Integer, default=0)
     total_tokens: Mapped[int] = mapped_column(Integer, default=0)
     total_cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    # --- Conversation view (Traces): one Trace = one turn; group by thread_id for a session. ---
+    # Origin of the turn (copied from Run.source; assistant turns = "assistant").
+    # Indexed: the Traces filter facets run a DISTINCT over this column.
+    source: Mapped[str] = mapped_column(String(40), default="playground", index=True)
+    # Display + filter label: "System" for playground/test/assistant, else the end user's name,
+    # else "Unknown user". Denormalized so the conversation list is a single Trace query.
+    actor: Mapped[str] = mapped_column(String(300), default="System", index=True)
+    # Stable end-user id (disambiguates same-named users); None for anonymous / system.
+    end_user_id: Mapped[str | None] = mapped_column(String(200), nullable=True, index=True)
+    # This turn's user message and the AI's response, captured from live state at finalize.
+    user_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ai_response: Mapped[str | None] = mapped_column(Text, nullable=True)
     meta: Mapped[dict] = mapped_column("metadata", JSON, default=dict)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 

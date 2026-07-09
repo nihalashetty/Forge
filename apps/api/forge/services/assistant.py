@@ -758,9 +758,13 @@ class AssistantService:
         return create_deep_agent(**kwargs)
 
     @staticmethod
-    async def _persist_trace(*, tenant_id: str, project_id: str, thread_id: str | None, tracer) -> None:
+    async def _persist_trace(
+        *, tenant_id: str, project_id: str, thread_id: str | None, tracer,
+        user_message: str = "", ai_response: str = "",
+    ) -> None:
         """Persist one assistant turn as a Trace (name='assistant') + spans, so SPEND and
-        the per-project reports include assistant usage like any workflow run."""
+        the per-project reports include assistant usage like any workflow run. The turn is
+        shown as a 'System' conversation in the Traces view (the Forge Assistant is internal)."""
         import uuid as _uuid
         from datetime import datetime
 
@@ -780,6 +784,8 @@ class AssistantService:
                     name="assistant", status="done",
                     started_at=datetime.utcnow(), ended_at=datetime.utcnow(),
                     latency_ms=latency_ms, total_tokens=tokens, total_cost_usd=cost,
+                    source="assistant", actor="System",
+                    user_message=(user_message or None), ai_response=(ai_response or None),
                 )
                 s.add(trace)
                 await s.flush()
@@ -787,7 +793,7 @@ class AssistantService:
                     s.add(Span(
                         id=sr.id, tenant_id=tenant_id, trace_id=trace.id,
                         parent_span_id=sr.parent_id, name=sr.name, kind=sr.kind,
-                        latency_ms=sr.latency_ms, model=sr.model,
+                        latency_ms=sr.latency_ms, input=sr.input, output=sr.output, model=sr.model,
                         input_tokens=sr.input_tokens, output_tokens=sr.output_tokens,
                         cost_usd=sr.cost_usd, error=sr.error, attributes=sr.attributes,
                     ))
@@ -846,6 +852,9 @@ class AssistantService:
             return
 
         lc_messages = [{"role": m.get("role", "user"), "content": m.get("content", "")} for m in messages if m.get("content")]
+        # This turn's user text (for the Traces transcript).
+        user_msg = next((m["content"] for m in reversed(lc_messages) if m.get("role", "user") in ("user", "human") and m.get("content")), "")
+        final_text = ""
         from forge.tracing.tracer import ForgeTracer
 
         tracer = ForgeTracer()
@@ -858,10 +867,20 @@ class AssistantService:
         try:
             async for frame in AssistantService._run(agent, {"messages": lc_messages}, config, mutated):
                 yield frame
+            try:
+                from forge.services.runs import _last_ai_text
+
+                snap = await agent.aget_state(config)
+                final_text = _last_ai_text(getattr(snap, "values", {}) or {})
+            except Exception:  # noqa: BLE001 - transcript capture must never break the turn
+                pass
         except Exception as e:  # noqa: BLE001
             yield {"event": "error", "data": {"message": str(e)}}
         finally:
-            await AssistantService._persist_trace(tenant_id=tenant_id, project_id=project_id, thread_id=thread_id, tracer=tracer)
+            await AssistantService._persist_trace(
+                tenant_id=tenant_id, project_id=project_id, thread_id=thread_id, tracer=tracer,
+                user_message=user_msg, ai_response=final_text,
+            )
 
     @staticmethod
     async def resume(

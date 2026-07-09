@@ -74,8 +74,9 @@ observability = [
   "opentelemetry-sdk>=1.20",
   "opentelemetry-exporter-otlp-proto-http>=1.20",
 ]
-# Knowledge ingestion loaders/splitters + lexical (BM25) ranking for hybrid search.
-knowledge = ["langchain-text-splitters>=1,<2", "pypdf>=5", "beautifulsoup4>=4.12", "rank-bm25>=0.2,<1"]
+# Knowledge ingestion loaders/splitters + lexical (BM25) ranking for hybrid search +
+# fastembed (local open-source ONNX embedder, no API cost / no PyTorch).
+knowledge = ["langchain-text-splitters>=1,<2", "pypdf>=5", "beautifulsoup4>=4.12", "rank-bm25>=0.2,<1", "fastembed>=0.3,<1"]
 # One-shot convenience for a fully-functional local app: vector store + model providers
 # + knowledge loaders + MCP. Excludes prod-only infra (workers, observability), which
 # the local stack fakes in-process. Install with: pip install -e ".[dev,all]"

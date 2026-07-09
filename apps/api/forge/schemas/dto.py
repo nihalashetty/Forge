@@ -55,6 +55,8 @@ class SpanOut(ORMModel):
     name: str
     kind: str
     latency_ms: int
+    input: Any = None
+    output: Any = None
     model: str | None = None
     input_tokens: int
     output_tokens: int
@@ -65,6 +67,46 @@ class SpanOut(ORMModel):
 class TraceDetailOut(BaseModel):
     trace: TraceOut
     spans: list[SpanOut]
+
+
+# --- conversations (Traces view: sessions grouped by end user) ---
+class ConversationOut(ORMModel):
+    thread_id: str
+    actor: str
+    source: str
+    end_user_id: str | None = None
+    workflow_id: str | None = None
+    turns: int
+    total_tokens: int
+    total_cost_usd: float
+    started_at: datetime | None = None
+    last_activity: datetime | None = None
+    status: str
+    preview: str = ""
+
+
+class TurnOut(BaseModel):
+    trace_id: str
+    run_id: str
+    source: str
+    user_message: str | None = None
+    ai_response: str | None = None
+    status: str
+    error: str | None = None
+    latency_ms: int
+    total_tokens: int
+    total_cost_usd: float
+    started_at: datetime | None = None
+
+
+class ConversationDetailOut(BaseModel):
+    conversation: ConversationOut
+    turns: list[TurnOut]
+
+
+class FacetsOut(BaseModel):
+    actors: list[str]
+    sources: list[str]
 
 
 # --- workflows ---
@@ -246,6 +288,23 @@ class KbSourceOut(ORMModel):
     chunks: int
     embedding_model: str | None = None
     chunking_strategy: str | None = None
+    chunk_size: int | None = None
+    chunk_overlap: int | None = None
+
+
+class RechunkIn(BaseModel):
+    """Optional per-source chunking overrides applied before a re-ingest. Any field left
+    None keeps the source's existing value (then the project's rag_defaults)."""
+
+    chunking_strategy: str | None = None
+    chunk_size: int | None = None
+    chunk_overlap: int | None = None
+
+
+class RechunkBulkIn(RechunkIn):
+    """Re-chunk a set of sources (multi-select) with one shared set of overrides."""
+
+    source_ids: list[str]
 
 
 class KbSourceCreate(BaseModel):
@@ -279,6 +338,10 @@ class KnowledgeSearchIn(BaseModel):
     query: str
     top_k: int = 5
     folders: list[str] | None = None
+    # Opt into hybrid retrieval (BM25 lexical + vector, fused via RRF). Default is
+    # vector-only. In hybrid mode the returned score is a normalized fusion rank,
+    # NOT cosine similarity.
+    hybrid: bool = False
 
 
 class ResumeIn(BaseModel):

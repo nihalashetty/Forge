@@ -26,6 +26,7 @@ from pydantic import Field, create_model
 
 from forge.auth_providers.templates import render_template
 from forge.config import settings
+from forge.tracing import tool_io
 from forge.tools.projection import cap_payload, project_response
 from forge.util.http import select_client
 from forge.util.ratelimit import rate_limiter
@@ -165,6 +166,29 @@ def _build_body(req: dict, fields: list[dict], values: dict, context: dict | Non
     return _collect(fields, values, "body") or None
 
 
+def _resolve_body_encoding(req: dict, headers: dict, body: Any) -> str:
+    """Decide how the request body is serialized: 'json' | 'form' | 'raw'.
+
+    Explicit `request.body_encoding` wins. Otherwise it is inferred from a declared
+    Content-Type header (`application/x-www-form-urlencoded` -> form for a structured body,
+    `application/json` -> json), falling back to the legacy default: a dict/list is sent as
+    JSON, a string as raw content.
+
+    'form' is the classic HTML form post: it routes a structured body through httpx's `data=`,
+    which URL-encodes EVERY value (spaces, `=`, `&`, newlines, unicode) and sends list values as
+    repeated keys, and sets the Content-Type for you - so callers no longer hand-encode a
+    body_template. This is generic to any x-www-form-urlencoded endpoint, not a specific API."""
+    enc = str(req.get("body_encoding") or "").strip().lower()
+    if enc in ("json", "form", "raw"):
+        return enc
+    ct = next((str(v) for k, v in (headers or {}).items() if k.lower() == "content-type"), "").lower()
+    if "application/x-www-form-urlencoded" in ct and isinstance(body, dict):
+        return "form"
+    if "application/json" in ct:
+        return "json"
+    return "json" if isinstance(body, (dict, list)) else "raw"
+
+
 def _redirect_info(r: httpx.Response, followed: bool) -> dict | None:
     """Summarize redirect activity on a response for the model, or None if there was none.
 
@@ -202,19 +226,73 @@ def _redirect_info(r: httpx.Response, followed: bool) -> dict | None:
     }
 
 
+def project_observation(res: dict, cfg: dict) -> tuple[Any, Any]:
+    """Return (observation, projected) - the object the model sees, before and after projection.
+
+    When the API redirected, the observation wraps the raw body as {"body": ..., "redirect": {...}}
+    so the target URL survives even an empty 3xx body; a normal response's observation IS the raw
+    body. The configured projection (JMESPath / field list) is applied to that WHOLE observation,
+    which is what lets a `redirect.location` expression select just the target URL, `body.items[0]`
+    reach a redirect's payload, and a plain `items[0]` still project a normal body unchanged. With
+    no projection configured, projected == observation."""
+    redirect = res.get("redirect")
+    observation = {"body": res.get("raw"), "redirect": redirect} if redirect else res.get("raw")
+    return observation, project_response(observation, cfg.get("response"))
+
+
 def _tool_return(res: dict, cfg: dict) -> Any:
     """Shape an execute_rest/execute_graphql result into the tool observation the model sees.
 
-    Normally just the projected body (an un-projected payload is char-capped so a huge
-    response can't blow the model's context). When the API redirected, wrap it as
-    {"body": ..., "redirect": {...}} so the model can see and act on the redirect target -
-    otherwise a non-followed 3xx would reach the model as an empty body."""
+    Projection is applied to the model observation (see `project_observation`): with no projection
+    the model gets the raw body, or - on a redirect - the {"body", "redirect"} envelope carrying the
+    target URL; a `redirect.location` projection collapses that envelope to just the URL. A
+    non-JMESPath result is char-capped so a huge un-projected payload can't blow the model's
+    context (JMESPath output is trusted to be already small)."""
     has_jmespath = bool((cfg.get("response") or {}).get("projection_jmespath"))
-    body = res["projected"] if has_jmespath else cap_payload(res["projected"], settings.max_tool_response_chars)
-    redirect = res.get("redirect")
-    if redirect:
-        return {"body": body, "redirect": redirect}
-    return body
+    _observation, projected = project_observation(res, cfg)
+    return projected if has_jmespath else cap_payload(projected, settings.max_tool_response_chars)
+
+
+def _capture_tool_io(
+    cfg: dict, kwargs: dict, *, method, url, params, headers, cookies, body, req,
+    response: httpx.Response | None, raw, status, latency_ms: int, error: Exception | None,
+) -> None:
+    """Stash this call's framed request + response into the tool-I/O context var so the
+    ForgeTracer can attach it to the tool span. Best-effort: tracing must never break a call."""
+    if not settings.trace_tool_io:
+        return
+    try:
+        resp = response
+        if resp is None and isinstance(error, httpx.HTTPStatusError):
+            resp = error.response  # a 4xx/5xx raised by raise_for_status still carries the response
+        body_out = raw
+        if body_out is None and resp is not None:
+            try:
+                body_out = resp.json()
+            except Exception:  # noqa: BLE001
+                body_out = resp.text
+        request = {
+            # `args` = exactly what the LLM/agent supplied. Server-injected {{ctx.*}} secrets
+            # are a separate lane and never land here, so this is safe to store in full.
+            "args": tool_io.clip(kwargs),
+            "method": method,
+            "url": url,
+            "query": tool_io.redact_headers(params),
+            "headers": tool_io.redact_headers(headers),
+            "cookies": tool_io.redact_headers(cookies, mask_all=True),
+            "body": tool_io.clip(body),
+            "body_encoding": (_resolve_body_encoding(req, headers, body) if body is not None else None),
+        }
+        out = {
+            "status": (resp.status_code if resp is not None else status),
+            "latency_ms": latency_ms,
+            "final_url": (str(resp.url) if resp is not None else url),
+            "response": tool_io.clip(body_out),
+            "error": (str(error) if error is not None else None),
+        }
+        tool_io.set_tool_io(cfg.get("name", "tool"), request=request, response=out)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 async def execute_rest(
@@ -260,7 +338,14 @@ async def execute_rest(
     # authoritative per-run injection (e.g. Cookie / CSRF from {{ctx.*}}) and must not be
     # overridable by an LLM-supplied header of the same name, so they are applied last.
     headers = _collect(fields, values, "header")
-    headers.update({h["name"]: render_template(h.get("value", ""), ctx_vars) for h in req.get("headers", []) or []})
+    # A declared header whose value templates to None (a missing {{ctx.*}} key) is DROPPED, same
+    # as a field default that renders to None - otherwise httpx rejects the None value with an
+    # opaque TypeError, so a header like `X-CSRF-Token: {{ctx.csrf}}` would crash the whole call
+    # (not just omit the header) whenever the run didn't inject `csrf`.
+    for h in req.get("headers", []) or []:
+        hv = render_template(h.get("value", ""), ctx_vars)
+        if hv is not None:
+            headers[h["name"]] = hv
 
     # Cookies from `in: cookie` fields (ctx-templated defaults), plus the auth provider later.
     # Lets a session cookie be injected as {{ctx.jsessionid}} without a hand-written Cookie header.
@@ -283,6 +368,10 @@ async def execute_rest(
     await validate_url(url, policy)
 
     name = cfg.get("name", "tool")
+    # `tool` in stream frames stays the model-facing identifier; `display_name` is the human
+    # label (config.display_name, else the identifier). Computed once - used by both the live
+    # "calling" frame and the terminal done/error frame so a client can pair and clear a spinner.
+    display_label = (cfg.get("display_name") or "").strip() or name
     method = req["method"]
     follow_redirects = bool(req.get("follow_redirects", False))
 
@@ -302,7 +391,15 @@ async def execute_rest(
     await apply_auth()
     if stream_writer:
         try:
-            stream_writer({"tool": cfg.get("name"), "status": "calling", "url": url})
+            # The LIVE "calling" signal - emitted before the request runs - so a client can label
+            # a spinner without waiting for the tool_calls in the node-completion `updates` frame.
+            # Paired with a terminal done/error frame in the `finally` below (same tool + url).
+            stream_writer({
+                "tool": name,
+                "display_name": display_label,
+                "status": "calling",
+                "url": url,
+            })
         except Exception:  # noqa: BLE001
             pass
 
@@ -312,25 +409,37 @@ async def execute_rest(
     # whose host isn't allow-private. An explicit `client` (tests) always wins. (Shared-client
     # construction costs ~470ms on Windows; select_client returns the shared singleton.)
     skip_verify = bool(req.get("tls_skip_verify"))
-    timeout = cfg.get("timeout_seconds", 30)
+    timeout = cfg.get("timeout_seconds", settings.tool_request_timeout_seconds)
     retry_cfg = cfg.get("retry") or {}
     max_retries = int(retry_cfg.get("max_retries", 0) or 0)
     retry_types = _retry_types(retry_cfg.get("retry_on") or [])
 
     async def _send() -> httpx.Response:
         kw: dict[str, Any] = dict(headers=headers, params=params or None, cookies=cookies or None, timeout=timeout)
-        # dict/list -> JSON body; a rendered raw string (e.g. form-encoded body_template) -> sent
-        # as-is via content; None -> no body.
-        if isinstance(body, (dict, list)):
-            kw["json"] = body
-        elif isinstance(body, str):
-            kw["content"] = body
+        # Body serialization lane (see _resolve_body_encoding): form -> httpx `data=`
+        # (URL-encodes every value + sets the Content-Type), json -> `json=`, raw -> `content=`.
+        # None -> no body.
+        if body is not None:
+            enc = _resolve_body_encoding(req, headers, body)
+            if enc == "form":
+                if isinstance(body, str):
+                    # A pre-encoded form string (e.g. from a body_template): send verbatim, but
+                    # make sure the Content-Type is declared so the server parses it as a form.
+                    kw["content"] = body
+                    headers.setdefault("Content-Type", "application/x-www-form-urlencoded")
+                else:
+                    kw["data"] = body  # dict / list-of-pairs -> httpx urlencodes + sets Content-Type
+            elif enc == "raw":
+                kw["content"] = body if isinstance(body, str) else _json.dumps(body)
+            else:
+                kw["json"] = body
         if follow_redirects:
             # Chase redirects SSRF-safely - each hop is re-validated AND its client re-selected
             # (verify-off only for an allow-private hop). Never enable httpx's own redirect-following,
             # which would connect to a hop without the egress guard.
             return await guarded_request(
-                client, method, url, policy=policy, skip_verify=skip_verify, follow_redirects=True, **kw
+                client, method, url, policy=policy, skip_verify=skip_verify, follow_redirects=True,
+                max_redirects=settings.tool_max_redirects, **kw
             )
         return await select_client(url, skip_verify=skip_verify, policy=policy, override=client).request(
             method, url, **kw
@@ -350,13 +459,17 @@ async def execute_rest(
 
     t0 = time.monotonic()
     attempt = 0
+    r: httpx.Response | None = None
+    raw: Any = None
+    status = None
+    err: Exception | None = None
     try:
         while True:
             try:
                 r = await _once()
                 status = r.status_code
                 try:
-                    raw: Any = r.json()
+                    raw = r.json()
                 except Exception:  # noqa: BLE001 - non-JSON response
                     raw = r.text
                 break
@@ -371,8 +484,38 @@ async def execute_rest(
                     delay *= 0.5 + random.random()
                 await asyncio.sleep(delay)
                 attempt += 1
+    except Exception as e:  # noqa: BLE001 - capture the failed call for the trace, then propagate
+        err = e
+        raise
     finally:
         latency = int((time.monotonic() - t0) * 1000)
+        # Record the FRAMED request + response for the trace (see forge.tracing.tool_io).
+        # Runs on success AND failure so a silent run-time 401/403 (e.g. a {{ctx.*}} cookie
+        # that never arrived) is visible - the httpx error still carries the response.
+        _capture_tool_io(
+            cfg, kwargs, method=method, url=url, params=params, headers=headers, cookies=cookies,
+            body=body, req=req, response=r, raw=raw, status=status, latency_ms=latency, error=err,
+        )
+        # Terminal signal paired with the "calling" frame above: tells the client the tool
+        # ENDED so it can clear the spinner. `status` is "done" on success, "error" on failure
+        # (treat both as "ended"). Only emitted if a "calling" frame was (we're past that point).
+        if stream_writer:
+            try:
+                # On failure the exception fired before `status` was set - read the HTTP status
+                # back off the error's response like _capture_tool_io (None on a transport error).
+                code = status
+                if code is None and err is not None:
+                    code = getattr(getattr(err, "response", None), "status_code", None)
+                stream_writer({
+                    "tool": name,
+                    "display_name": display_label,
+                    "status": "error" if err is not None else "done",
+                    "url": url,
+                    "status_code": code,   # HTTP status; None on a transport-level failure
+                    "latency_ms": latency,
+                })
+            except Exception:  # noqa: BLE001
+                pass
 
     out = {
         "raw": raw,

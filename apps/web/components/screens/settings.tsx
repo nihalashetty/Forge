@@ -8,6 +8,10 @@ import { MODELS } from "@/lib/data";
 
 const ROLES = ["owner", "admin", "editor", "viewer"];
 
+// Project default embedder when rag_defaults.embedding_model is unset. Matches the backend
+// default (embeddings._DEFAULT_FASTEMBED) and the project.json schema default.
+const DEFAULT_EMBEDDING_MODEL = "fastembed:BAAI/bge-small-en-v1.5";
+
 function TeamCard() {
   const [me, setMe] = useState<MeResult | null>(null);
   const [members, setMembers] = useState<TeamMember[]>([]);
@@ -126,6 +130,9 @@ export function SettingsScreen({ project }: { project: any }) {
   const setCfg = (patch: Record<string, any>) => setConfig((c) => ({ ...c, ...patch }));
   const features = config.features || {};
   const budgets = config.budgets || {};
+  const rag = config.rag_defaults || {};
+  const embeddingModel = rag.embedding_model || DEFAULT_EMBEDDING_MODEL;
+  const setRag = (patch: Record<string, any>) => setCfg({ rag_defaults: { ...rag, ...patch } });
 
   async function persist() {
     setSave("saving");
@@ -187,6 +194,28 @@ export function SettingsScreen({ project }: { project: any }) {
             <Field label="Max $/run"><input className="input mono" type="number" value={budgets.max_usd_per_run ?? ""} onChange={(e) => setCfg({ budgets: { ...budgets, max_usd_per_run: parseFloat(e.target.value) || undefined } })} /></Field>
             <Field label="Monthly $ cap"><input className="input mono" type="number" value={budgets.monthly_usd_cap ?? ""} onChange={(e) => setCfg({ budgets: { ...budgets, monthly_usd_cap: parseFloat(e.target.value) || undefined } })} /></Field>
           </div>
+        </Card>
+
+        <Card title="Knowledge & embeddings">
+          <Field label="Embedding model" help="Used to embed knowledge sources and search queries. Applies to the whole project - you can't mix embedders across files. Changing it changes the vector dimension, so re-embed existing sources afterward (the Knowledge tab flags mismatches).">
+            <select className="select" value={embeddingModel} onChange={(e) => setRag({ embedding_model: e.target.value })}>
+              <optgroup label="Local · open-source · free (offline)">
+                <option value={DEFAULT_EMBEDDING_MODEL}>bge-small · local, free (384-dim)</option>
+                <option value="fastembed:BAAI/bge-base-en-v1.5">bge-base · local, free (768-dim)</option>
+              </optgroup>
+              <optgroup label="OpenAI · billed per token (ingest + every query)">
+                <option value="openai:text-embedding-3-small">OpenAI 3-small · billed (1536-dim)</option>
+                <option value="openai:text-embedding-3-large">OpenAI 3-large · billed (3072-dim)</option>
+              </optgroup>
+            </select>
+          </Field>
+          {embeddingModel.startsWith("openai:") && (
+            <div className="field-help" style={{ marginTop: 0 }}>
+              {pcreds.openai
+                ? "OpenAI key configured below. Embeddings are billed per token at ingest and on every search."
+                : "⚠ No OpenAI key set — add one under Model providers below, or embeddings fall back to the local model."}
+            </div>
+          )}
         </Card>
 
         <Card title="Model providers" action={<button className="btn btn-primary btn-sm" onClick={saveKeys} disabled={keySave === "saving"}><Icon name={keySave === "saved" ? "check" : "save"} size={14} />{keySave === "saving" ? "Saving…" : keySave === "saved" ? "Saved" : "Save keys"}</button>}>

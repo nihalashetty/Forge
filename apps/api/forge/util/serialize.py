@@ -2,9 +2,25 @@
 
 from __future__ import annotations
 
+from contextvars import ContextVar, Token
 from typing import Any
 
 from langchain_core.messages import BaseMessage
+
+# LLM tool name -> human-readable label for the run currently being streamed. Set by the
+# run stream from CompileContext.tool_display_names so `jsonable` can relabel tool_calls
+# for end-user surfaces (the model still calls the tool by its underscore identifier).
+# Empty by default => every tool_call's display_name falls back to its own name.
+_TOOL_DISPLAY_NAMES: ContextVar[dict[str, str]] = ContextVar("forge_tool_display_names", default={})
+
+
+def set_tool_display_names(mapping: dict[str, str] | None) -> Token:
+    """Bind the current run's name->label map; returns a token to reset() when the run ends."""
+    return _TOOL_DISPLAY_NAMES.set(mapping or {})
+
+
+def reset_tool_display_names(token: Token) -> None:
+    _TOOL_DISPLAY_NAMES.reset(token)
 
 
 def content_to_text(content: Any) -> str:
@@ -39,12 +55,20 @@ def _interrupt_to_json(obj: Any) -> dict[str, Any] | None:
 def jsonable(obj: Any) -> Any:
     if isinstance(obj, BaseMessage):
         tool_calls = getattr(obj, "tool_calls", None) or None
+        names = _TOOL_DISPLAY_NAMES.get()
         return {
             "type": obj.type,
             "content": content_to_text(obj.content),
             "name": getattr(obj, "name", None),
             "tool_calls": [
-                {"name": tc.get("name"), "args": tc.get("args")} for tc in tool_calls
+                # `name` stays the model-facing identifier; `display_name` is the human label
+                # (relabeled per the run's map, else the identifier itself).
+                {
+                    "name": tc.get("name"),
+                    "display_name": names.get(tc.get("name"), tc.get("name")),
+                    "args": tc.get("args"),
+                }
+                for tc in tool_calls
             ]
             if tool_calls
             else None,

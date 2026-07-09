@@ -88,6 +88,7 @@ async def create_run(
                 input=body.input or {},
                 thread_id=body.thread_id,
                 end_user=end_user,
+                source="playground",
             )
     except QuotaExceeded as e:
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, e.message) from e
@@ -132,6 +133,7 @@ async def rerun(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "run not found")
     run = await run_service.create_run(
         session, tenant_id=tenant_id, project_id=project_id, workflow_id=workflow_id, input=orig.input or {},
+        source=getattr(orig, "source", None) or "playground",
     )
     return RunOut(id=run.id, status=run.status, thread_id=run.thread_id)
 

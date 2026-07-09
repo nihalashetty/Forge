@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from forge.knowledge.embeddings import resolve_embedder
+from forge.knowledge.embeddings import KNOWN_EMBEDDING_DIMS, resolve_embedder
 from forge.knowledge.splitter import chunk_text
 from forge.knowledge.store import ChromaStore, Hit
 from forge.models import KbSource, Project, QaPair
@@ -16,6 +17,21 @@ from forge.secrets.store import SecretStore
 from forge.util.http import shared_async_client
 
 log = logging.getLogger("forge.knowledge")
+
+# Fallback chunking when neither the source's own meta nor the project's rag_defaults set
+# one. Overridable per project (config.rag_defaults) or per source (re-chunk). The web UI
+# mirrors these defaults in knowledge.tsx; the server stays authoritative for what's used.
+_DEFAULT_CHUNK_STRATEGY = "recursive"
+_DEFAULT_CHUNK_SIZE = 1000
+_DEFAULT_CHUNK_OVERLAP = 200
+
+
+def _dim_collections(prefix: str) -> list[str]:
+    """Every Chroma collection name a source/QA vector may live in: the bare (legacy,
+    dimensionless) prefix plus one per known embedding dim. delete/reingest sweep all of
+    them so an embedder/dim switch never orphans vectors (derived from the single source of
+    truth KNOWN_EMBEDDING_DIMS, so this list can't drift from the model table again)."""
+    return [prefix, *(f"{prefix}_{d}" for d in sorted(KNOWN_EMBEDDING_DIMS))]
 
 
 def _strip_html(html: str) -> str:
@@ -33,7 +49,9 @@ class KnowledgeService:
     async def embedder_for_project(session, tenant_id: str, project_id: str):
         proj = (await session.execute(select(Project).where(Project.id == project_id))).scalar_one_or_none()
         cfg = (proj.config or {}) if proj else {}
-        model = (cfg.get("rag_defaults") or {}).get("embedding_model", "openai:text-embedding-3-small")
+        # None => resolve_embedder picks the local fastembed default (single source of truth
+        # for the default lives in embeddings._DEFAULT_FASTEMBED, not duplicated here).
+        model = (cfg.get("rag_defaults") or {}).get("embedding_model")
         api_key = None
         ref = (cfg.get("provider_credentials") or {}).get("openai")
         if ref:
@@ -42,7 +60,11 @@ class KnowledgeService:
                 api_key = val if isinstance(val, str) else (val.get("key") or val.get("value")) if isinstance(val, dict) else None
             except Exception:  # noqa: BLE001 - missing key -> offline embedder
                 pass
-        return resolve_embedder(model, api_key)
+        # resolve_embedder constructs the embedder (fastembed's first-use path loads the ONNX
+        # model, and downloads it when no baked cache exists) - CPU/IO-bound work that would
+        # otherwise block the event loop (and every concurrent request) on a cold start. The
+        # instance is cached inside resolve_embedder, so this only pays off-loop once per model.
+        return await asyncio.to_thread(resolve_embedder, model, api_key)
 
     @staticmethod
     async def _rag_defaults(session, project_id: str) -> dict:
@@ -68,6 +90,9 @@ class KnowledgeService:
         def dim_of(model_name: str | None) -> int | None:
             if not model_name:
                 return None
+            # Legacy: sources embedded by the removed hashed FakeEmbedder (dim 256). Kept
+            # only so those pre-existing sources are flagged as needing a re-embed onto the
+            # current model - the FakeEmbedder itself is gone.
             if model_name.startswith("fake"):
                 return 256
             return _MODEL_DIMS.get(model_name)
@@ -141,6 +166,29 @@ class KnowledgeService:
         return src
 
     @staticmethod
+    def _apply_chunk_overrides(src: KbSource, *, chunking_strategy=None, chunk_size=None, chunk_overlap=None) -> None:
+        """Stash per-source chunking overrides into meta so the next ingest picks them up.
+        None fields are left untouched (keep the source's current value)."""
+        meta = dict(src.meta or {})
+        if chunking_strategy:
+            meta["chunk_strategy"] = chunking_strategy
+        if chunk_size is not None:
+            meta["chunk_size"] = int(chunk_size)
+        if chunk_overlap is not None:
+            meta["chunk_overlap"] = int(chunk_overlap)
+        src.meta = meta
+
+    @staticmethod
+    async def rechunk(session, src: KbSource, *, chunking_strategy=None, chunk_size=None, chunk_overlap=None) -> KbSource:
+        """Apply chunking overrides then re-ingest (re-split + re-embed). Text/file sources
+        reuse their stored text; url/crawl are re-fetched."""
+        KnowledgeService._apply_chunk_overrides(
+            src, chunking_strategy=chunking_strategy, chunk_size=chunk_size, chunk_overlap=chunk_overlap
+        )
+        await session.commit()
+        return await KnowledgeService.reingest(session, src)
+
+    @staticmethod
     async def list_folders(session, tenant_id, project_id) -> list[str]:
         """Distinct non-empty folder names in this project's sources."""
         rows = await session.execute(
@@ -179,9 +227,16 @@ class KnowledgeService:
                 raise ValueError(f"Unsupported source kind for ingest: {src.kind}")
 
             rag = await KnowledgeService._rag_defaults(session, src.project_id)
-            strategy = (src.meta or {}).get("chunk_strategy") or rag.get("chunking_strategy") or "recursive"
-            chunk_size = int(rag.get("chunk_size") or 1000)
-            overlap = int(rag.get("chunk_overlap") or 200)
+            meta = src.meta or {}
+            # Per-source overrides (set by re-chunk) win over the project rag_defaults.
+            strategy = meta.get("chunk_strategy") or rag.get("chunking_strategy") or _DEFAULT_CHUNK_STRATEGY
+            chunk_size = int(meta.get("chunk_size") or rag.get("chunk_size") or _DEFAULT_CHUNK_SIZE)
+            # Overlap must honor an explicit 0 (no overlap), so check for None rather than
+            # falsiness before falling back to the project default.
+            _overlap = meta.get("chunk_overlap")
+            if _overlap is None:
+                _overlap = rag.get("chunk_overlap")
+            overlap = int(_overlap) if _overlap is not None else _DEFAULT_CHUNK_OVERLAP
             chunks = chunk_text(content, strategy=strategy, chunk_size=chunk_size, overlap=overlap)
             embedder = await KnowledgeService.embedder_for_project(session, src.tenant_id, src.project_id)
             store = KnowledgeService._store(embedder)
@@ -195,9 +250,9 @@ class KnowledgeService:
                 )
             src.chunks = len(chunks)
             src.embedding_model = embedder.name
-            # Record the strategy actually used (covers the project-default fallback) so
-            # the UI can show it and reingest reuses it.
-            src.meta = {**(src.meta or {}), "chunk_strategy": strategy}
+            # Record the chunking actually used (covers the project-default fallback) so
+            # the UI can show it and reingest / re-chunk reuses it.
+            src.meta = {**(src.meta or {}), "chunk_strategy": strategy, "chunk_size": chunk_size, "chunk_overlap": overlap}
             src.status = "ready"
         except Exception as e:  # noqa: BLE001
             src.status = "error"
@@ -205,6 +260,15 @@ class KnowledgeService:
         await session.commit()
         await session.refresh(src)
         return src
+
+    @staticmethod
+    async def mark_error(session, src: KbSource, message: str) -> None:
+        """Fail a source loudly (status=error + message in meta) instead of leaving it stuck
+        in 'queued'/'processing' - e.g. when the background ingest task can't be scheduled."""
+        src.status = "error"
+        src.meta = {**(src.meta or {}), "error": message}
+        await session.commit()
+        await session.refresh(src)
 
     @staticmethod
     async def reingest(session, src: KbSource) -> KbSource:
@@ -215,12 +279,32 @@ class KnowledgeService:
             KnowledgeService._store(embedder).delete_by_source(src.id, tenant_id=src.tenant_id, project_id=src.project_id)
         except Exception:  # noqa: BLE001
             pass
-        for collection in ("forge_kb", "forge_kb_256", "forge_kb_1536", "forge_kb_3072"):
+        for collection in _dim_collections("forge_kb"):
             try:
                 ChromaStore(collection=collection).delete_by_source(src.id, tenant_id=src.tenant_id, project_id=src.project_id)
             except Exception:  # noqa: BLE001
                 pass
         return await KnowledgeService.ingest(session, src)
+
+    @staticmethod
+    async def run_ingest_bg(tenant_id: str, source_id: str, *, reingest: bool = False) -> None:
+        """Ingest (or re-ingest) a source in its OWN DB session - the entrypoint for the
+        fire-and-forget background task. Embedding a real model takes seconds to tens of
+        seconds for a large doc, which would otherwise time out the upload HTTP request;
+        the endpoint returns immediately and the UI polls the source's status.
+        """
+        from forge.db.base import SessionLocal
+
+        async with SessionLocal() as s:
+            src = (await s.execute(
+                select(KbSource).where(KbSource.tenant_id == tenant_id, KbSource.id == source_id)
+            )).scalar_one_or_none()
+            if src is None:
+                return
+            if reingest:
+                await KnowledgeService.reingest(s, src)
+            else:
+                await KnowledgeService.ingest(s, src)
 
     @staticmethod
     async def delete_source(session, src: KbSource) -> None:
@@ -235,7 +319,7 @@ class KnowledgeService:
             KnowledgeService._store(embedder).delete_by_source(src.id, tenant_id=src.tenant_id, project_id=src.project_id)
         except Exception:  # noqa: BLE001
             pass
-        for collection in ("forge_kb", "forge_kb_256", "forge_kb_1536", "forge_kb_3072"):
+        for collection in _dim_collections("forge_kb"):
             try:
                 ChromaStore(collection=collection).delete_by_source(src.id, tenant_id=src.tenant_id, project_id=src.project_id)
             except Exception:  # noqa: BLE001
@@ -310,9 +394,13 @@ class KnowledgeService:
 
     @staticmethod
     async def delete_qa(session, qa: QaPair) -> None:
-        for dim in (256, 1536, 3072):
+        # Sweep EVERY dim-keyed Q&A collection (not a hardcoded subset) - the default embedder
+        # is 384-dim, so a subset that omitted 384 left the vector behind and the deleted FAQ
+        # kept deflecting. _dim_collections is derived from KNOWN_EMBEDDING_DIMS so it can't
+        # drift from the model table.
+        for collection in _dim_collections("forge_qa"):
             try:
-                ChromaStore(collection=f"forge_qa_{dim}").delete_ids([qa.id])
+                ChromaStore(collection=collection).delete_ids([qa.id])
             except Exception:  # noqa: BLE001
                 pass
         await session.delete(qa)

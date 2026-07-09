@@ -5,6 +5,7 @@
   "required": ["name", "description", "kind"],
   "properties": {
     "name": { "$ref": "forge/common#/$defs/Identifier", "x-ui": { "section": "Identity", "modelView": false } },
+    "display_name": { "type": "string", "x-ui": { "section": "Identity", "modelView": false, "help": "Human-readable name shown in chat/streaming activity (e.g. \"Quote pricing grid\"). The model still calls the tool by its identifier above; leave blank to show the identifier." } },
     "description": { "type": "string", "x-ui": { "section": "Identity", "widget": "textarea", "modelView": true, "help": "This is what the model reads to decide when to use the tool." } },
     "kind": { "type": "string", "enum": ["rest_api", "graphql", "code", "sql", "builtin"], "x-ui": { "section": "Identity", "widget": "segmented" } },
     "auth_provider_id": { "type": "string", "x-ui": { "section": "Auth", "widget": "reference", "refType": "auth_provider" } },
@@ -27,7 +28,7 @@
       "properties": {
         "path": { "type": "string", "x-ui": { "widget": "mono" } },
         "type": { "type": "string", "enum": ["string", "integer", "number", "boolean", "object", "array"] },
-        "in": { "type": "string", "enum": ["path", "query", "header", "body"] },
+        "in": { "type": "string", "enum": ["path", "query", "header", "body", "cookie"] },
         "required": { "type": "boolean", "default": false },
         "llm_visible": { "type": "boolean", "default": true, "x-ui": { "effect": "Model can set this argument" } },
         "description": { "type": "string", "x-ui": { "modelView": true } },
@@ -53,6 +54,8 @@
           "properties": {
             "method": { "type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"] },
             "url_template": { "$ref": "forge/common#/$defs/TemplateString" },
+            "body_encoding": { "type": "string", "enum": ["json", "form", "raw"], "x-ui": { "section": "Request", "help": "How the request body is encoded. Unset (auto): a structured body is JSON, a body template is sent as-is. json: application/json. form: application/x-www-form-urlencoded — in:body fields (and JSON body templates) are URL-encoded and the Content-Type is set for you; use this for classic HTML form posts, including multi-line values and repeated keys. raw: send the body template string verbatim." } },
+            "body_template": { "$ref": "forge/common#/$defs/TemplateString", "x-ui": { "section": "Request", "widget": "textarea", "help": "Free-form body interpolating {{input.*}} (validated tool args) and {{ctx.*}} (run context). Parsed as JSON when possible, else sent as raw content. For form posts prefer in:body fields with body_encoding=form (auto URL-encoded)." } },
             "fields": { "type": "array", "items": { "$ref": "#/$defs/FieldSpec" }, "x-ui": { "widget": "rows-table" } },
             "headers": { "type": "array", "items": { "type": "object", "properties": { "name": { "type": "string" }, "value": { "$ref": "forge/common#/$defs/TemplateString" } } }, "x-ui": { "widget": "rows-table" } },
             "follow_redirects": { "type": "boolean", "default": false, "x-ui": { "help": "Follow 3xx redirects to the target URL. Each hop is re-checked by the SSRF guard. When off, the redirect's target URL is still reported to the model so it can act on it." } },

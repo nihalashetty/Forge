@@ -124,6 +124,7 @@ function ToolCard({ t, onOpen, onDelete }: { t: Tool; onOpen: () => void; onDele
 function NewToolModal({ project, open, onClose, onOpenTool, onReload }: { project: any; open: boolean; onClose: () => void; onOpenTool: (t: Tool) => void; onReload: () => void }) {
   const [kind, setKind] = useState("rest_api");
   const [name, setName] = useState("");
+  const [displayName, setDisplayName] = useState("");
   const [description, setDescription] = useState("");
   const [builtin, setBuiltin] = useState("current_time");
   const [busy, setBusy] = useState(false);
@@ -131,19 +132,21 @@ function NewToolModal({ project, open, onClose, onOpenTool, onReload }: { projec
 
   useEffect(() => {
     if (!open) return;
-    setKind("rest_api"); setName(""); setDescription(""); setBuiltin("current_time"); setErr(null);
+    setKind("rest_api"); setName(""); setDisplayName(""); setDescription(""); setBuiltin("current_time"); setErr(null);
   }, [open]);
 
   async function create() {
     setBusy(true); setErr(null);
     try {
       const nm = (name || "untitled_tool").trim().replace(/\s+/g, "_");
+      const dn = displayName.trim();
       const config: Record<string, unknown> =
         kind === "rest_api" ? { description, request: { method: "GET", url_template: "https://api.example.com/resource", fields: [], headers: [{ name: "Accept", value: "application/json" }] }, response: {} }
         : kind === "graphql" ? { description, endpoint: "https://api.example.com/graphql", query: "query { __typename }", variables: [] }
         : kind === "code" ? { description, language: "python", source: "def main(text):\n    return text.upper()\n", args_schema: { properties: { text: { type: "string", description: "input text" } }, required: ["text"] }, timeout_seconds: 5 }
         : kind === "sql" ? { description, connection_ref: "secret://proj/db_url", query: "SELECT id, name FROM customers WHERE id = :id", args_schema: { properties: { id: { type: "integer" } }, required: ["id"] }, read_only: true, max_rows: 100 }
         : { description, builtin };
+      if (dn) config.display_name = dn;
       const tool = await api.createTool(project.id, { name: nm, kind, config });
       onClose(); onReload(); onOpenTool(tool);
     } catch (e: any) { setErr(String(e?.message || e)); } finally { setBusy(false); }
@@ -153,7 +156,8 @@ function NewToolModal({ project, open, onClose, onOpenTool, onReload }: { projec
     <Modal open={open} onClose={onClose} title="New tool" width={520}
       footer={<><button className="btn btn-ghost" onClick={onClose}>Cancel</button><button className="btn btn-primary" onClick={create} disabled={busy}>{busy ? "Creating…" : "Create tool"}</button></>}>
       <Field label="Kind"><Segmented options={[{ value: "rest_api", label: "REST" }, { value: "graphql", label: "GraphQL" }, { value: "code", label: "Code" }, { value: "sql", label: "SQL" }, { value: "builtin", label: "Builtin" }]} value={kind} onChange={(v) => { setKind(v); setErr(null); }} /></Field>
-      <Field label="Name"><input className="input mono" value={name} onChange={(e) => setName(e.target.value)} placeholder="get_order" /></Field>
+      <Field label="Name" help="The identifier the model calls (letters, numbers, underscores)."><input className="input mono" value={name} onChange={(e) => setName(e.target.value)} placeholder="get_order" /></Field>
+      <Field label="Display name" help="Optional. Human-readable name shown in chat/streaming activity; leave blank to show the identifier."><input className="input" value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="Get order" /></Field>
       <Field label="Description" help="What the model reads to decide when to call this tool."><textarea className="textarea" rows={2} value={description} onChange={(e) => setDescription(e.target.value)} /></Field>
       {kind === "builtin" && <Field label="Builtin" help={builtin === "knowledge_search" ? "Lets an agent search this project's knowledge base (docs + Q&A) itself - one call per sub-question, optional folder filter." : undefined}><Segmented options={[{ value: "current_time", label: "Time" }, { value: "calculator", label: "Calc" }, { value: "web_fetch", label: "Fetch" }, { value: "web_search", label: "Search" }, { value: "knowledge_search", label: "Knowledge" }, { value: "remember", label: "Remember" }, { value: "recall", label: "Recall" }]} value={builtin} onChange={setBuiltin} /></Field>}
       {err && <div className="card" style={{ padding: 12, color: "var(--err)", marginTop: 4 }}>{err}</div>}
@@ -228,6 +232,7 @@ export function ToolBuilderScreen({ project, toolId, onBack }: { project: any; t
           <div className="scroll-y" style={{ flex: 1, padding: 18 }}>
             {tab === "request" && (
               <div className="fade-in">
+                <Field label="Display name" help={`Human-readable name shown in chat/streaming activity. The model still calls this tool by its identifier (${tool.name}); leave blank to show the identifier.`}><input className="input" value={draft.display_name} onChange={(e) => set({ display_name: e.target.value })} placeholder={tool.name} /></Field>
                 <Field label="Description" help="What the model reads to decide when to call this tool."><textarea className="textarea" rows={2} value={draft.description} onChange={(e) => set({ description: e.target.value })} /></Field>
                 {(isRest || isGraphql) ? (
                   <>
@@ -243,7 +248,17 @@ export function ToolBuilderScreen({ project, toolId, onBack }: { project: any; t
                       </div>
                     </Field>
                     {isRest && <Field label="Headers" help="Values interpolate {{ctx.*}} (run context — e.g. a per-request session/CSRF injected by the caller) and {{input.*}}. Example: X-CSRF-Token = {{ctx.csrf}}."><KVEditor rows={draft.headers} onChange={(rows) => set({ headers: rows })} /></Field>}
-                    {isRest && <Field label="Body template" help="Interpolates {{input.*}} (validated tool args) and {{ctx.*}} (run context). Parsed as JSON when possible, else sent as raw content."><textarea className="textarea mono" rows={4} value={draft.body} onChange={(e) => set({ body: e.target.value })} placeholder={'{\n  "amount": {{ input.amount }},\n  "CSRFToken": "{{ ctx.csrf }}"\n}'} /></Field>}
+                    {isRest && (
+                      <Field label="Body encoding" help="How the request body is sent. Auto: a structured body is JSON, a body template is sent as-is. Form (urlencoded): in:body fields are URL-encoded and the Content-Type is set automatically — use for classic HTML form posts, including multi-line values and repeated keys. Raw: send the Body template string verbatim.">
+                        <div style={{ position: "relative" }}>
+                          <select className="select" value={draft.body_encoding} onChange={(e) => set({ body_encoding: e.target.value })}>
+                            {[["", "Auto"], ["json", "JSON"], ["form", "Form (urlencoded)"], ["raw", "Raw"]].map((o) => <option key={o[0]} value={o[0]}>{o[1]}</option>)}
+                          </select>
+                          <Icon name="chevdown" size={13} style={{ position: "absolute", right: 9, top: 9, pointerEvents: "none", color: "var(--fg-2)" }} />
+                        </div>
+                      </Field>
+                    )}
+                    {isRest && <Field label="Body template" help="Interpolates {{input.*}} (validated tool args) and {{ctx.*}} (run context). Parsed as JSON when possible, else sent as raw content. For form posts, prefer in:body fields with Body encoding = Form (auto URL-encoded) over hand-encoding here."><textarea className="textarea mono" rows={4} value={draft.body} onChange={(e) => set({ body: e.target.value })} placeholder={'{\n  "amount": {{ input.amount }},\n  "CSRFToken": "{{ ctx.csrf }}"\n}'} /></Field>}
                     {isGraphql && <Field label="Query"><textarea className="textarea mono" rows={6} value={draft.query} onChange={(e) => set({ query: e.target.value })} /></Field>}
                     <Field label="Follow redirects" help="Follow 3xx redirects to the target URL. Each hop is re-checked by the SSRF guard. When off, the redirect's target URL is still reported to the model so it can act on it.">
                       <Toggle on={!!draft.follow_redirects} onChange={(v) => set({ follow_redirects: v })} />
@@ -296,7 +311,7 @@ export function ToolBuilderScreen({ project, toolId, onBack }: { project: any; t
                 <div className="card" style={{ padding: 12, marginBottom: 14, background: "var(--signal-glow)", borderColor: "transparent" }}>
                   <div className="row gap2"><Icon name="bolt" size={16} style={{ color: "var(--signal)" }} /><span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--signal)" }}>Projection trims the raw response before it reaches the model context.</span></div>
                 </div>
-                <Field label="Projection expression" help="JMESPath. Only projected keys count toward context tokens."><textarea className="textarea mono" rows={3} value={draft.projection} onChange={(e) => set({ projection: e.target.value })} /></Field>
+                <Field label="Projection expression" help="JMESPath over the response the model sees. Only projected keys count toward context tokens. On a redirect the response is {body, redirect} — use redirect.location to keep just the target URL."><textarea className="textarea mono" rows={3} value={draft.projection} onChange={(e) => set({ projection: e.target.value })} /></Field>
                 <Field label="On error">
                   <div style={{ position: "relative" }}>
                     <select className="select" value={draft.on_error} onChange={(e) => set({ on_error: e.target.value })}>
@@ -347,11 +362,13 @@ function buildDraft(t: Tool): any {
   const c: any = t.config || {};
   const req: any = c.request || {};
   return {
+    display_name: c.display_name || "",
     description: c.description || "",
     method: req.method || "GET",
     url: req.url_template || c.endpoint || "",
     headers: (req.headers || []).map((h: any) => [h.name, h.value]),
     body: req.body_template || "",
+    body_encoding: req.body_encoding || "",
     follow_redirects: !!(req.follow_redirects ?? c.follow_redirects),
     tls_skip_verify: !!(req.tls_skip_verify ?? c.tls_skip_verify),
     query: c.query || "",
@@ -375,12 +392,14 @@ function parseSchema(s: string): any {
 
 function draftToConfig(t: Tool, d: any): any {
   const base: any = { ...(t.config || {}), description: d.description };
+  // Blank display name => omit it, so streaming falls back to the underscore identifier.
+  if ((d.display_name || "").trim()) base.display_name = d.display_name.trim(); else delete base.display_name;
   delete base._last_test;
   if (t.kind === "rest_api") {
     base.request = {
       ...(base.request || {}), method: d.method, url_template: d.url,
       headers: (d.headers || []).filter((r: any) => r[0]).map((r: any) => ({ name: r[0], value: r[1] })),
-      fields: d.fields, follow_redirects: !!d.follow_redirects, tls_skip_verify: !!d.tls_skip_verify, ...(d.body ? { body_template: d.body } : {}),
+      fields: d.fields, follow_redirects: !!d.follow_redirects, tls_skip_verify: !!d.tls_skip_verify, ...(d.body_encoding ? { body_encoding: d.body_encoding } : {}), ...(d.body ? { body_template: d.body } : {}),
     };
     base.response = { ...(base.response || {}), ...(d.projection ? { projection_jmespath: d.projection } : {}), on_error: d.on_error };
   } else if (t.kind === "graphql") {
@@ -414,6 +433,9 @@ function KVEditor({ rows, onChange }: { rows: [string, string][]; onChange: (r: 
 }
 
 function FieldsEditor({ fields, onChange }: { fields: any[]; onChange: (f: any[]) => void }) {
+  // Per-field description is optional and collapsed by default (the row is already dense);
+  // a field that already has one starts expanded so its content is visible.
+  const [descOpen, setDescOpen] = useState<Record<number, boolean>>({});
   function upd(i: number, patch: any) { const c = fields.map((f, j) => (j === i ? { ...f, ...patch } : f)); onChange(c); }
   return (
     <div className="col gap2">
@@ -437,6 +459,17 @@ function FieldsEditor({ fields, onChange }: { fields: any[]; onChange: (f: any[]
               <span className="t-caption fg-2">model-visible</span>
             </label>
           </div>
+          {/* Per-arg description (fed to the args schema for model-visible fields only),
+              collapsed by default to keep the row uncluttered; expand to add allowed values
+              / format guidance, e.g. the vendor keys. */}
+          {f.llm_visible !== false && ((descOpen[i] ?? !!f.description) ? (
+            <div className="col gap1">
+              <textarea className="textarea mono" rows={2} value={f.description ?? ""} onChange={(e) => upd(i, { description: e.target.value || undefined })} placeholder="description the model reads for this arg — e.g. allowed values" style={{ width: "100%" }} />
+              <button className="btn btn-ghost btn-sm" style={{ alignSelf: "flex-start" }} onClick={() => setDescOpen((s) => ({ ...s, [i]: false }))}><Icon name="minus" size={13} />Hide description</button>
+            </div>
+          ) : (
+            <button className="btn btn-ghost btn-sm" style={{ alignSelf: "flex-start" }} onClick={() => setDescOpen((s) => ({ ...s, [i]: true }))}><Icon name="plus" size={13} />Description</button>
+          ))}
         </div>
       ))}
       <button className="btn btn-ghost btn-sm" style={{ alignSelf: "flex-start" }} onClick={() => onChange([...fields, { path: "new_field", type: "string", in: "query", required: false, llm_visible: true }])}><Icon name="plus" size={13} />Add field</button>
@@ -493,7 +526,13 @@ function LiveResponse({ project, tool, draft, llmFields, result, setResult }: { 
         <div className="card" style={{ padding: 14, marginBottom: 14 }}>
           <div className="t-micro" style={{ marginBottom: 10 }}>Test inputs</div>
           {llmFields.length > 0 ? llmFields.map((f) => (
-            <Field key={f.path} label={f.path}><input className="input mono" placeholder={f.type} value={args[f.path] || ""} onChange={(e) => setArgs((a) => ({ ...a, [f.path]: e.target.value }))} /></Field>
+            <Field key={f.path} label={f.path}>
+              {/* string/array fields get a textarea so multi-line values (e.g. one product per
+                  line for a form post) can be entered; scalars stay single-line. */}
+              {f.type === "string" || f.type === "array"
+                ? <textarea className="textarea mono" rows={2} placeholder={f.type} value={args[f.path] || ""} onChange={(e) => setArgs((a) => ({ ...a, [f.path]: e.target.value }))} />
+                : <input className="input mono" placeholder={f.type} value={args[f.path] || ""} onChange={(e) => setArgs((a) => ({ ...a, [f.path]: e.target.value }))} />}
+            </Field>
           )) : <Field label="Arguments (JSON)"><textarea className="textarea mono" rows={2} placeholder='{ }' onChange={(e) => { try { setArgs(JSON.parse(e.target.value || "{}")); } catch { /* */ } }} /></Field>}
           <Field label="Run context (CSRF/session for auth)"><textarea className="textarea mono" rows={2} placeholder='{ "csrf": "…" }' value={ctxText} onChange={(e) => setCtxText(e.target.value)} /></Field>
           <button className="btn btn-secondary" style={{ width: "100%" }} onClick={run} disabled={busy}><Icon name={busy ? "refresh" : "validate"} size={15} style={busy ? { animation: "spin 1s linear infinite" } : {}} />{busy ? "Testing…" : "Test"}</button>

@@ -14,7 +14,18 @@ from typing import Any
 
 from langchain_core.callbacks import BaseCallbackHandler
 
+from forge.config import settings
+from forge.tracing import tool_io
 from forge.tracing.pricing import price
+
+
+def _stringify(output: Any) -> Any:
+    """Reduce a non-REST tool's return value to something storable. A str/dict/list is kept
+    as-is (rendered structurally in the UI); anything else (e.g. a ToolMessage) becomes its
+    `.content` or `str()`."""
+    if isinstance(output, (str, int, float, bool, dict, list)) or output is None:
+        return output
+    return getattr(output, "content", None) or str(output)
 
 
 @dataclass
@@ -31,6 +42,10 @@ class SpanRecord:
     cost_usd: float = 0.0
     error: str | None = None
     attributes: dict = field(default_factory=dict)
+    # Tool spans only: what the agent sent the tool (LLM args / framed REST request) and what
+    # came back (response or error). Populated from the tool-I/O context var; see forge.tracing.tool_io.
+    input: Any = None
+    output: Any = None
 
     @property
     def latency_ms(self) -> int:
@@ -103,12 +118,39 @@ class ForgeTracer(BaseCallbackHandler):
     def on_tool_start(self, serialized, input_str, *, run_id, parent_run_id=None, **kw):
         name = (serialized or {}).get("name", "tool")
         self._open(run_id, parent_run_id, f"tool · {name}", "tool", tool=name)
+        # Provisional input = the raw LLM tool args (safe: never carries server-injected ctx
+        # secrets). A REST tool overrides this with the framed request in _tool_io below.
+        if settings.trace_tool_io:
+            self._set(run_id, input=tool_io.clip(input_str))
 
     def on_tool_end(self, output, *, run_id, **kw):
+        self._tool_io(run_id, fallback_output=output)
         self._close(run_id)
 
     def on_tool_error(self, error, *, run_id, **kw):
+        self._tool_io(run_id)
         self._close(run_id, error=str(error))
+
+    def _tool_io(self, run_id, *, fallback_output=None) -> None:
+        """Merge the tool's captured framed I/O (set by the tool via forge.tracing.tool_io)
+        onto its span. REST tools record a rich {request}/{response}; other tools fall back to
+        the raw return value. The name guard rejects a stale record left by an earlier tool."""
+        if not settings.trace_tool_io:
+            return
+        sp = self.spans.get(str(run_id))
+        rec = tool_io.take_tool_io()
+        tool_io.clear_tool_io()
+        if sp and rec and rec.get("name") == sp.attributes.get("tool"):
+            sp.input = rec.get("input")
+            sp.output = rec.get("output")
+        elif sp and fallback_output is not None:
+            sp.output = tool_io.clip(_stringify(fallback_output))
+
+    def _set(self, run_id, **fields) -> None:
+        sp = self.spans.get(str(run_id))
+        if sp:
+            for k, v in fields.items():
+                setattr(sp, k, v)
 
     # --- chains / graph nodes ---
     def on_chain_start(self, serialized, inputs, *, run_id, parent_run_id=None, **kw):

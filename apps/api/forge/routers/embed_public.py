@@ -112,7 +112,7 @@ async def embed_create_run(key: str, body: EmbedRunIn, request: Request, session
         async with run_admission(session, proj.tenant_id):
             run = await run_service.create_run(
                 session, tenant_id=proj.tenant_id, project_id=proj.id, workflow_id=wid,
-                input=body.input or {}, thread_id=body.thread_id, end_user=end_user,
+                input=body.input or {}, thread_id=body.thread_id, end_user=end_user, source="embed",
             )
     except QuotaExceeded as e:
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, e.message) from e

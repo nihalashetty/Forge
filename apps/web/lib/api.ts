@@ -115,11 +115,16 @@ export interface Agent {
   created_by_email?: string | null;
 }
 
-export interface KbSource { id: string; project_id: string; kind: string; name: string; folder?: string; uri?: string | null; status: string; chunks: number; embedding_model?: string | null; chunking_strategy?: string | null; }
+export interface KbSource { id: string; project_id: string; kind: string; name: string; folder?: string; uri?: string | null; status: string; chunks: number; embedding_model?: string | null; chunking_strategy?: string | null; chunk_size?: number | null; chunk_overlap?: number | null; }
+export interface RechunkSettings { chunking_strategy?: string; chunk_size?: number; chunk_overlap?: number; }
 export interface QaPair { id: string; question: string; answer: string; kind: string; tags: string[]; upvotes: number; }
 export interface SearchHit { text: string; score: number; source_id?: string; }
 export interface Trace { id: string; run_id: string; workflow_id?: string | null; name: string; status: string; started_at?: string | null; ended_at?: string | null; latency_ms: number; total_tokens: number; total_cost_usd: number; }
-export interface Span { id: string; parent_span_id?: string | null; name: string; kind: string; latency_ms: number; model?: string | null; input_tokens: number; output_tokens: number; cost_usd: number; error?: string | null; }
+export interface Span { id: string; parent_span_id?: string | null; name: string; kind: string; latency_ms: number; input?: any; output?: any; model?: string | null; input_tokens: number; output_tokens: number; cost_usd: number; error?: string | null; }
+export interface Conversation { thread_id: string; actor: string; source: string; end_user_id?: string | null; workflow_id?: string | null; turns: number; total_tokens: number; total_cost_usd: number; started_at?: string | null; last_activity?: string | null; status: string; preview: string; }
+export interface Turn { trace_id: string; run_id: string; source: string; user_message?: string | null; ai_response?: string | null; status: string; error?: string | null; latency_ms: number; total_tokens: number; total_cost_usd: number; started_at?: string | null; }
+export interface ConversationDetail { conversation: Conversation; turns: Turn[]; }
+export interface Facets { actors: string[]; sources: string[]; }
 export interface Secret { id: string; name: string; kind: string; version: number; }
 
 export interface StatRollup { runs: number; tokens: number; cost_usd: number; avg_latency_ms: number; }
@@ -311,21 +316,36 @@ export const api = {
   },
   moveSource: (pid: string, sid: string, folder: string) =>
     json<KbSource>(`/v1/projects/${pid}/knowledge/sources/${sid}`, { method: "PATCH", body: JSON.stringify({ folder }) }),
-  reingestSource: (pid: string, sid: string) =>
-    json<{ id: string; status: string; chunks: number }>(`/v1/projects/${pid}/knowledge/sources/${sid}/reingest`, { method: "POST" }),
+  reingestSource: (pid: string, sid: string, settings?: RechunkSettings) =>
+    notifyCounts(json<{ id: string; status: string; chunks: number }>(`/v1/projects/${pid}/knowledge/sources/${sid}/reingest`, { method: "POST", body: JSON.stringify(settings || {}) })),
+  rechunkSources: (pid: string, source_ids: string[], settings: RechunkSettings) =>
+    notifyCounts(json<{ id: string; status: string; chunks: number }[]>(`/v1/projects/${pid}/knowledge/sources/rechunk`, { method: "POST", body: JSON.stringify({ source_ids, ...settings }) })),
   embeddingHealth: (pid: string) =>
     json<{ current_model: string; current_dim: number; sources: number; needs_reembed: boolean; mismatched: { id: string; name: string; embedded_with: string; dim: number }[] }>(`/v1/projects/${pid}/knowledge/health`),
   deleteSource: (pid: string, sid: string) => notifyCounts(fetch(`${BASE}/v1/projects/${pid}/knowledge/sources/${sid}`, { method: "DELETE", headers: authHeader() })),
-  searchKnowledge: (pid: string, query: string, top_k = 5, folders?: string[]) =>
-    json<SearchHit[]>(`/v1/projects/${pid}/knowledge/search`, { method: "POST", body: JSON.stringify({ query, top_k, ...(folders?.length ? { folders } : {}) }) }),
+  searchKnowledge: (pid: string, query: string, top_k = 5, folders?: string[], hybrid = false) =>
+    json<SearchHit[]>(`/v1/projects/${pid}/knowledge/search`, { method: "POST", body: JSON.stringify({ query, top_k, hybrid, ...(folders?.length ? { folders } : {}) }) }),
   listQa: (pid: string) => json<QaPair[]>(`/v1/projects/${pid}/qa-pairs`),
   listQaKinds: (pid: string) => json<string[]>(`/v1/projects/${pid}/qa-pairs/kinds`),
   addQa: (pid: string, body: { question: string; answer: string; kind?: string; tags?: string[] }) =>
     json<QaPair>(`/v1/projects/${pid}/qa-pairs`, { method: "POST", body: JSON.stringify(body) }),
   deleteQa: (pid: string, qid: string) => fetch(`${BASE}/v1/projects/${pid}/qa-pairs/${qid}`, { method: "DELETE", headers: authHeader() }),
-  // traces
+  // traces + conversations (Traces view)
   listTraces: (pid: string) => json<Trace[]>(`/v1/projects/${pid}/traces`),
   getTrace: (pid: string, trid: string) => json<{ trace: Trace; spans: Span[] }>(`/v1/projects/${pid}/traces/${trid}`),
+  listConversations: (pid: string, opts?: { actor?: string; source?: string; status?: string }) => {
+    const q = new URLSearchParams();
+    if (opts?.actor) q.set("actor", opts.actor);
+    if (opts?.source) q.set("source", opts.source);
+    if (opts?.status) q.set("status", opts.status);
+    const qs = q.toString();
+    return json<Conversation[]>(`/v1/projects/${pid}/conversations${qs ? `?${qs}` : ""}`);
+  },
+  getConversation: (pid: string, threadId: string) =>
+    json<ConversationDetail>(`/v1/projects/${pid}/conversations/${encodeURIComponent(threadId)}`),
+  conversationFacets: (pid: string) => json<Facets>(`/v1/projects/${pid}/conversations/facets`),
+  purgeConversations: (pid: string, olderThanDays: number) =>
+    json<{ removed: number }>(`/v1/projects/${pid}/conversations/purge?older_than_days=${olderThanDays}`, { method: "POST" }),
   // secrets
   listSecrets: (pid: string) => json<Secret[]>(`/v1/projects/${pid}/secrets`),
   createSecret: (pid: string, body: { name: string; value: unknown; kind?: string }) =>

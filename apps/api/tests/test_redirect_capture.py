@@ -70,6 +70,86 @@ async def test_unfollowed_redirect_is_wrapped_for_the_agent():
     assert out["redirect"]["location"] == "https://api.acme.dev/v2/final"
 
 
+async def test_tool_test_preview_counts_the_redirect_not_an_empty_body():
+    """The /test preview (ToolService.test) must reflect what the agent actually gets:
+    the {body, redirect} envelope, not the empty 3xx body. Otherwise 'PROJECTED -> MODEL'
+    reads "" / 0 tok and looks like nothing reaches the model."""
+    from forge.services.tools import ToolService
+
+    client = _redirecting_client("/quote/quotingaddproduct/00015849")
+    rest_mod_select = rest_mod.select_client
+    rest_mod.select_client = lambda *a, **k: client  # type: ignore[assignment]
+    try:
+        r = await ToolService.test("t", "p", _cfg(), {})
+    finally:
+        rest_mod.select_client = rest_mod_select  # type: ignore[assignment]
+        await client.aclose()
+
+    assert r["ok"] and r["redirect"]["location"] == "/quote/quotingaddproduct/00015849"
+    # raw + projected now carry the observation shape, and the location survives into it.
+    assert isinstance(r["projected"], dict)
+    assert r["projected"]["redirect"]["location"] == "/quote/quotingaddproduct/00015849"
+    assert isinstance(r["raw"], dict) and "redirect" in r["raw"]
+    # ...so the meter shows a real cost instead of the old 0 tok.
+    assert r["projected_tokens"] > 0 and r["raw_tokens"] > 0
+
+
+async def test_tool_test_preview_leaves_non_redirect_body_bare():
+    """No redirect -> the preview stays the bare body (unchanged), not an envelope."""
+    from forge.services.tools import ToolService
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"v": 1})))
+    rest_mod_select = rest_mod.select_client
+    rest_mod.select_client = lambda *a, **k: client  # type: ignore[assignment]
+    try:
+        r = await ToolService.test("t", "p", _cfg(), {})
+    finally:
+        rest_mod.select_client = rest_mod_select  # type: ignore[assignment]
+        await client.aclose()
+
+    assert r["ok"] and r["redirect"] is None
+    assert r["projected"] == {"v": 1} and r["raw"] == {"v": 1}  # bare body, not wrapped
+
+
+# --- 3. projecting the redirect location (strip a captured 3xx to just the URL) ----
+
+async def test_projection_can_select_the_redirect_location():
+    """`redirect.location` must reach the redirect envelope and collapse the observation to just
+    the target URL - so a 3xx can be stripped to the one thing the model needs, cheaply."""
+    from forge.services.tools import ToolService
+
+    client = _redirecting_client("/quote/quotingaddproduct/00015854")
+    cfg = _cfg(response={"projection_jmespath": "redirect.location"})
+    rest_mod_select = rest_mod.select_client
+    rest_mod.select_client = lambda *a, **k: client  # type: ignore[assignment]
+    try:
+        r = await ToolService.test("t", "p", cfg, {})
+    finally:
+        rest_mod.select_client = rest_mod_select  # type: ignore[assignment]
+        await client.aclose()
+
+    assert r["ok"]
+    assert r["projected"] == "/quote/quotingaddproduct/00015854"  # just the URL, not the envelope
+    assert 0 < r["projected_tokens"] < r["raw_tokens"]  # stripped -> cheaper than the full envelope
+
+
+async def test_tool_returns_bare_redirect_location_to_the_agent_when_projected():
+    """The agent-facing observation (not just the preview) is the bare URL string."""
+    client = _redirecting_client("/quote/quotingaddproduct/00015854")
+    cfg = _cfg(response={"projection_jmespath": "redirect.location"})
+    rest_mod_select = rest_mod.select_client
+    rest_mod.select_client = lambda *a, **k: client  # type: ignore[assignment]
+    try:
+        ctx = types.SimpleNamespace(tenant_id="t", project_id="p", auth_resolver=None, egress_policy=None)
+        tool = build_rest_tool(cfg, ctx)
+        out = await tool.ainvoke({})
+    finally:
+        rest_mod.select_client = rest_mod_select  # type: ignore[assignment]
+        await client.aclose()
+
+    assert out == "/quote/quotingaddproduct/00015854"
+
+
 async def test_no_redirect_returns_bare_body_unchanged():
     """A normal 200 must behave exactly as before - no envelope, no redirect key."""
     client = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"v": 1})))

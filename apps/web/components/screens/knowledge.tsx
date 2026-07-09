@@ -56,6 +56,13 @@ export function KnowledgeScreen({ project }: { project: any }) {
 
 const UNFILED = "";
 
+// Fallback chunking shown/used when a source (or the project) hasn't set its own. Mirrors
+// the backend defaults in services/knowledge.py; the server stays authoritative for what's
+// actually applied at ingest.
+const DEFAULT_CHUNK_STRATEGY = "recursive";
+const DEFAULT_CHUNK_SIZE = 1000;
+const DEFAULT_CHUNK_OVERLAP = 200;
+
 function Files({ project }: { project: any }) {
   const [rows, setRows] = useState<KbSource[]>([]);
   const [folder, setFolder] = useState<string | null>(null); // null = All files
@@ -68,6 +75,15 @@ function Files({ project }: { project: any }) {
   const [targetFolder, setTargetFolder] = useState<string>("");
   const [form, setForm] = useState<{ kind: string; name: string; text: string; uri: string; file: globalThis.File | null; chunkStrategy: string }>({ kind: "text", name: "", text: "", uri: "", file: null, chunkStrategy: "recursive" });
 
+  // Multi-select + re-chunk: select sources (across any folder) and re-split/re-embed
+  // them with a shared strategy / size / overlap.
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [rechunkOpen, setRechunkOpen] = useState(false);
+  const [rechunkTargets, setRechunkTargets] = useState<string[]>([]);
+  const [rechunkBusy, setRechunkBusy] = useState(false);
+  const [rechunkErr, setRechunkErr] = useState<string | null>(null);
+  const [rechunkForm, setRechunkForm] = useState<{ strategy: string; size: number; overlap: number }>({ strategy: DEFAULT_CHUNK_STRATEGY, size: DEFAULT_CHUNK_SIZE, overlap: DEFAULT_CHUNK_OVERLAP });
+
   const [health, setHealth] = useState<{ needs_reembed: boolean; current_model: string; mismatched: { id: string; name: string }[] } | null>(null);
   const reload = useCallback(() => {
     if (!project?.id) return;
@@ -75,6 +91,23 @@ function Files({ project }: { project: any }) {
     api.embeddingHealth(project.id).then(setHealth).catch(() => setHealth(null));
   }, [project?.id]);
   useEffect(() => { reload(); }, [reload]);
+
+  // Ingestion (chunk + embed) runs in the background, so a new/re-chunked source starts as
+  // "queued"/"processing". Poll until every source settles (ready/error) so the table, chunk
+  // counts, and dim-mismatch banner update without a manual refresh.
+  useEffect(() => {
+    const pending = rows.some((s) => s.status === "queued" || s.status === "processing");
+    if (!pending || !project?.id) return;
+    const t = setTimeout(async () => {
+      const next = await api.listSources(project.id).catch(() => null);
+      if (!next) return;
+      setRows(next);
+      if (!next.some((s) => s.status === "queued" || s.status === "processing")) {
+        api.embeddingHealth(project.id).then(setHealth).catch(() => {});
+      }
+    }, 1500);
+    return () => clearTimeout(t);
+  }, [rows, project?.id]);
 
   async function reingest(id: string) { await api.reingestSource(project.id, id).catch(() => {}); reload(); }
 
@@ -90,6 +123,43 @@ function Files({ project }: { project: any }) {
   // the All-files and Unfiled views (where moving files between folders is useful).
   const showFolderCol = folder === null || folder === UNFILED;
   const inNamedFolder = folder !== null && folder !== UNFILED;
+
+  const allVisibleSelected = visible.length > 0 && visible.every((s) => selected.has(s.id));
+  function toggleSel(id: string) {
+    setSelected((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+  }
+  function toggleAllVisible() {
+    setSelected((prev) => {
+      const n = new Set(prev);
+      if (allVisibleSelected) visible.forEach((s) => n.delete(s.id));
+      else visible.forEach((s) => n.add(s.id));
+      return n;
+    });
+  }
+  function openRechunk(ids: string[]) {
+    if (!ids.length) return;
+    const first = rows.find((r) => r.id === ids[0]);
+    setRechunkForm({ strategy: first?.chunking_strategy || DEFAULT_CHUNK_STRATEGY, size: first?.chunk_size || DEFAULT_CHUNK_SIZE, overlap: first?.chunk_overlap ?? DEFAULT_CHUNK_OVERLAP });
+    setRechunkErr(null);
+    setRechunkTargets(ids);
+    setRechunkOpen(true);
+  }
+  async function doRechunk() {
+    setRechunkBusy(true);
+    setRechunkErr(null);
+    try {
+      await api.rechunkSources(project.id, rechunkTargets, {
+        chunking_strategy: rechunkForm.strategy,
+        chunk_size: Number(rechunkForm.size) || undefined,
+        chunk_overlap: Number.isFinite(rechunkForm.overlap) ? Number(rechunkForm.overlap) : undefined,
+      });
+      setRechunkOpen(false);
+      setSelected(new Set());
+      reload();
+    } catch (e: any) {
+      setRechunkErr(e?.message || "Re-chunk failed. Please try again.");
+    } finally { setRechunkBusy(false); }
+  }
 
   function openAdd(forFolder?: string) {
     setTargetFolder(forFolder ?? (inNamedFolder ? folder! : ""));
@@ -181,12 +251,24 @@ function Files({ project }: { project: any }) {
             <Icon name="plus" size={14} />Add source
           </button>
         </div>
+        {selected.size > 0 && (
+          <div className="card row spread" style={{ padding: "8px 12px", marginBottom: 10, alignItems: "center" }}>
+            <span className="t-body-sm"><b>{selected.size}</b> selected</span>
+            <div className="row gap2">
+              <button className="btn btn-secondary btn-sm" onClick={() => openRechunk([...selected])}><Icon name="refresh" size={13} />Re-chunk selected</button>
+              <button className="btn btn-ghost btn-sm" onClick={() => setSelected(new Set())}>Clear</button>
+            </div>
+          </div>
+        )}
         <div className="card" style={{ overflow: "hidden" }}>
           <table className="tbl">
-            <thead><tr><th>Name</th><th>Kind</th>{showFolderCol && <th>Folder</th>}<th>Status</th><th>Chunks</th><th>Chunking</th><th /></tr></thead>
+            <thead><tr>
+              <th style={{ width: 30 }}><input type="checkbox" aria-label="Select all" checked={allVisibleSelected} onChange={toggleAllVisible} /></th>
+              <th>Name</th><th>Kind</th>{showFolderCol && <th>Folder</th>}<th>Status</th><th>Chunks</th><th>Chunking</th><th /></tr></thead>
             <tbody>
               {visible.map((s) => (
-                <tr key={s.id}>
+                <tr key={s.id} style={selected.has(s.id) ? { background: "var(--bg-3)" } : undefined}>
+                  <td><input type="checkbox" aria-label={`Select ${s.name}`} checked={selected.has(s.id)} onChange={() => toggleSel(s.id)} /></td>
                   <td style={{ fontWeight: 600 }}>{s.name}</td>
                   <td><span className="typechip">{s.kind}</span></td>
                   {showFolderCol && (
@@ -204,16 +286,20 @@ function Files({ project }: { project: any }) {
                   )}
                   <td><StatusPill status={s.status} /></td>
                   <td className="mono-sm">{s.chunks}</td>
-                  <td><span className="typechip">{s.chunking_strategy || "recursive"}</span></td>
+                  <td>
+                    <span className="typechip">{s.chunking_strategy || DEFAULT_CHUNK_STRATEGY}</span>
+                    <div className="t-caption fg-2 mono" style={{ marginTop: 2 }}>{s.chunk_size || DEFAULT_CHUNK_SIZE}/{s.chunk_overlap ?? DEFAULT_CHUNK_OVERLAP}</div>
+                  </td>
                   <td style={{ textAlign: "right" }}>
                     <div className="row gap1" style={{ justifyContent: "flex-end" }}>
-                      {(s.kind === "url" || s.kind === "crawl" || s.kind === "text") && <button className="iconbtn" title="Re-fetch & re-embed" onClick={() => reingest(s.id)}><Icon name="refresh" size={14} /></button>}
+                      <button className="iconbtn" title="Re-chunk & re-embed" onClick={() => openRechunk([s.id])}><Icon name="layers" size={14} /></button>
+                      <button className="iconbtn" title="Re-embed (reuse current chunking)" onClick={() => reingest(s.id)}><Icon name="refresh" size={14} /></button>
                       <button className="iconbtn" title="Delete" onClick={async () => { await api.deleteSource(project.id, s.id); reload(); }}><Icon name="trash" size={15} /></button>
                     </div>
                   </td>
                 </tr>
               ))}
-              {visible.length === 0 && <tr><td colSpan={showFolderCol ? 7 : 6}><div className="fg-2" style={{ padding: 22, textAlign: "center" }}>{rows.length === 0 ? "No sources yet. Add text or a URL to feed your agents." : "No files in this folder yet."}</div></td></tr>}
+              {visible.length === 0 && <tr><td colSpan={showFolderCol ? 8 : 7}><div className="fg-2" style={{ padding: 22, textAlign: "center" }}>{rows.length === 0 ? "No sources yet. Add text or a URL to feed your agents." : "No files in this folder yet."}</div></td></tr>}
             </tbody>
           </table>
         </div>
@@ -249,6 +335,28 @@ function Files({ project }: { project: any }) {
           />
         </Field>
         {addErr && <div className="t-caption" style={{ color: "var(--danger, #c00)", marginTop: 4 }}>⚠ {addErr}</div>}
+      </Modal>
+
+      <Modal open={rechunkOpen} onClose={() => setRechunkOpen(false)} width={520}
+        title={`Re-chunk ${rechunkTargets.length} source${rechunkTargets.length === 1 ? "" : "s"}`}
+        footer={<><button className="btn btn-ghost" onClick={() => setRechunkOpen(false)}>Cancel</button><button className="btn btn-primary" onClick={doRechunk} disabled={rechunkBusy}>{rechunkBusy ? "Re-chunking…" : "Apply & re-embed"}</button></>}>
+        <div className="t-caption fg-2" style={{ marginBottom: 12 }}>Re-splits and re-embeds the selected source(s) with these settings. Existing chunks are replaced. Text &amp; file sources reuse their stored content; URLs &amp; crawls are re-fetched.</div>
+        <Field label="Chunking strategy" help="Recursive suits most documents; By section keeps each Markdown heading’s content together; By sentence groups whole sentences (good for FAQs and transcripts).">
+          <Segmented
+            options={[{ value: "recursive", label: "Recursive" }, { value: "section", label: "By section" }, { value: "sentence", label: "By sentence" }]}
+            value={rechunkForm.strategy}
+            onChange={(v) => setRechunkForm((f) => ({ ...f, strategy: v }))}
+          />
+        </Field>
+        <div className="row gap2">
+          <div style={{ flex: 1 }}>
+            <Field label="Chunk size (chars)" help="Target characters per chunk."><input className="input" type="number" min={100} step={100} value={rechunkForm.size} onChange={(e) => setRechunkForm((f) => ({ ...f, size: Number(e.target.value) }))} /></Field>
+          </div>
+          <div style={{ flex: 1 }}>
+            <Field label="Overlap (chars)" help="Characters shared between adjacent chunks."><input className="input" type="number" min={0} step={20} value={rechunkForm.overlap} onChange={(e) => setRechunkForm((f) => ({ ...f, overlap: Number(e.target.value) }))} /></Field>
+          </div>
+        </div>
+        {rechunkErr && <div className="t-caption" style={{ color: "var(--danger, #c00)", marginTop: 8 }}>⚠ {rechunkErr}</div>}
       </Modal>
     </div>
     </div>
@@ -389,14 +497,15 @@ function SearchDebugger({ project }: { project: any }) {
   const [searched, setSearched] = useState(false);
   const [folders, setFolders] = useState<string[]>([]);
   const [folder, setFolder] = useState("");
+  const [mode, setMode] = useState<"vector" | "hybrid">("vector");
   useEffect(() => { if (project?.id) api.listFolders(project.id).then(setFolders).catch(() => {}); }, [project?.id]);
   async function run() {
-    const h = await api.searchKnowledge(project.id, q, 8, folder ? [folder] : undefined);
+    const h = await api.searchKnowledge(project.id, q, 8, folder ? [folder] : undefined, mode === "hybrid");
     setHits(h); setSearched(true);
   }
   return (
     <>
-      <div className="row gap2" style={{ marginBottom: 14 }}>
+      <div className="row gap2" style={{ marginBottom: 8, alignItems: "center" }}>
         <input className="input" style={{ flex: 1 }} placeholder="Query the knowledge base…" value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && run()} />
         {folders.length > 0 && (
           <select className="select" style={{ width: 160 }} value={folder} onChange={(e) => setFolder(e.target.value)}>
@@ -406,6 +515,19 @@ function SearchDebugger({ project }: { project: any }) {
         )}
         <button className="btn btn-primary" onClick={run}><Icon name="search" size={14} />Search</button>
       </div>
+      <div className="row gap2" style={{ marginBottom: 6, alignItems: "center" }}>
+        <Segmented
+          options={[{ value: "vector", label: "Vector" }, { value: "hybrid", label: "Hybrid" }]}
+          value={mode}
+          onChange={(v) => setMode(v as "vector" | "hybrid")}
+        />
+        <span className="t-caption fg-2">
+          {mode === "hybrid"
+            ? "BM25 lexical + vector, fused via RRF. Score is a normalized fusion rank (0–1), not cosine."
+            : "Vector-only. Score is cosine similarity (0–1) between the query and each chunk."}
+        </span>
+      </div>
+      <div style={{ marginBottom: 14 }} />
       <div className="col gap2">
         {hits.map((h, i) => (
           <div key={i} className="card" style={{ padding: 12 }}>

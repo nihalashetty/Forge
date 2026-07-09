@@ -154,7 +154,7 @@ async def project_run(
         async with run_admission(session, tenant_id):
             run = await run_service.create_run(
                 session, tenant_id=tenant_id, project_id=project_id, workflow_id=wf.id,
-                input=body.input or {}, thread_id=body.thread_id, end_user=end_user,
+                input=body.input or {}, thread_id=body.thread_id, end_user=end_user, source="api",
             )
     except QuotaExceeded as e:
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, e.message) from e

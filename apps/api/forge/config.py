@@ -93,6 +93,11 @@ class Settings(BaseSettings):
 
     # --- Vectors (user-mandated: Chroma; embedded persistent client) ---
     chroma_path: str = Field(default_factory=lambda: (_DEFAULT_DATA_DIR / "chroma").as_posix())
+    # Cache dir for the local fastembed embedder's model files. Set to a baked path in the
+    # Docker image (see apps/api/Dockerfile) so the default model ships with the image - no
+    # first-run download / network dependency. None -> fastembed's own default (a temp dir),
+    # fine for local dev.
+    fastembed_cache_dir: str | None = None
 
     # --- Cache / queue (in-process locally; Redis in prod) ---
     redis_url: str | None = None  # None => in-process fakes
@@ -168,6 +173,12 @@ class Settings(BaseSettings):
     # Hard cap on a tool response handed to the model when no projection trims it
     # (token-cost guard). 0 = no cap.
     max_tool_response_chars: int = 20000
+    # Default per-request timeout (seconds) for REST/HTTP tools when the tool config doesn't
+    # set its own `timeout_seconds`.
+    tool_request_timeout_seconds: int = 30
+    # Max redirect hops a REST tool follows when follow_redirects is on. Each hop is
+    # re-validated against the SSRF egress guard, so this bounds a redirect loop / chain.
+    tool_max_redirects: int = 5
     # Auto-attach AnthropicPromptCachingMiddleware to Anthropic-model agents (caches the
     # static system-prompt/tools prefix; large multi-turn cost saving). Off => opt-in only.
     default_anthropic_prompt_caching: bool = True
@@ -186,6 +197,21 @@ class Settings(BaseSettings):
     otel_enabled: bool = False
     otel_exporter_otlp_endpoint: str | None = None
     otel_service_name: str = "forge"
+
+    # --- Tool I/O in traces (debug what an agent actually sent a tool) ---
+    # Master switch: capture per-tool-call input/output on trace spans (the LLM's tool args,
+    # and for REST tools the FRAMED request - method, resolved URL, query, headers, cookies,
+    # body - plus the response status/latency/body). Lets you see whether the agent attached
+    # proper input, and why a call that "works in test" 401s in a run (e.g. a {{ctx.*}} cookie
+    # that never arrived and was silently dropped). Admin-only dashboard surface.
+    trace_tool_io: bool = True
+    # A REST request/response captured for a trace can contain LIVE session cookies, CSRF
+    # tokens, and Authorization headers. Off (default) stores full values for debugging; set
+    # true on a shared/production install to MASK the values of sensitive headers/cookies
+    # (presence + length kept, e.g. "••• (32 chars)") so secrets aren't persisted in traces.
+    trace_tool_io_redact: bool = False
+    # Per-field clip so a large body/response can't bloat the spans table. 0 = no cap.
+    trace_tool_io_max_chars: int = 20000
 
     # In-process scheduler for `schedule` triggers (fires due schedules once a minute).
     # OFF by default: with more than one replica each would fire every schedule (duplicate
@@ -233,6 +259,11 @@ class Settings(BaseSettings):
     # Max concurrent in-flight runs per tenant (0 = unlimited). Backpressure / noisy-
     # neighbour guard for the inline execution path until the worker tier is enabled.
     max_concurrent_runs_per_tenant: int = 20
+
+    # How many recent turns (Trace rows) the Traces conversation list scans before grouping
+    # by thread in Python. Bounds the query regardless of retention; raise it for projects
+    # with very deep history at the cost of a wider scan.
+    conversation_scan_limit: int = 2000
 
     # Reverse-proxy IPs whose X-Forwarded-For we trust for client-IP derivation. Empty =>
     # trust none (use the socket peer). Set to your LB/ingress IPs in production so clients

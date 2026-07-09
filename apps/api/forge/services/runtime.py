@@ -95,8 +95,13 @@ async def build_compile_context(
     ).scalars()
     registry: dict[str, object] = {}
     specs: dict[str, dict] = {}
+    # LLM name -> human-readable label for streaming/chat activity (keeps the underscore
+    # identifier for the model; see CompileContext.tool_display_names). Blank falls back to
+    # the identifier so existing tools keep their current label.
+    display_names: dict[str, str] = {}
     for t in rows:
         cfg = _tool_cfg(t)
+        display_names[t.name] = (cfg.get("display_name") or "").strip() or t.name
         try:
             tool = materialize_tool(cfg, ctx)
             registry[t.id] = tool
@@ -129,6 +134,9 @@ async def build_compile_context(
         comp_rows = []
     comp_registry: dict[str, object] = {}
     for c in comp_rows:
+        # A component is exposed to the model as a widget-tool named after `c.name`; relabel it
+        # in the stream with its title (falling back to the name) like any other tool.
+        display_names[c.name] = (c.title or "").strip() or c.name
         try:
             comp_registry[c.id] = build_component_tool(
                 {
@@ -140,6 +148,7 @@ async def build_compile_context(
         except Exception as e:  # noqa: BLE001 - skip a broken component; don't break the run
             log.warning("Skipping component %s: %s", c.name, e)
     ctx.component_registry = comp_registry
+    ctx.tool_display_names = display_names
 
     # Pre-load enabled MCP servers' tools (one connect per server) so agent nodes can
     # attach them - the agent factory is sync, but MCP discovery is async.

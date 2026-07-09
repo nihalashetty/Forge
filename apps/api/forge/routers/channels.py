@@ -151,7 +151,8 @@ async def email_inbound(key: str, request: Request, run_service: RunService = De
     # Continue the same email thread across replies so the conversation keeps context (F6).
     conv_key = parsed.get("thread_ref") or (parsed.get("from_addr") or None)
     result = await dispatch_message(run_service, tenant_id=ch.tenant_id, project_id=ch.project_id,
-                                    workflow_id=workflow_id, text=text, conversation_key=conv_key)
+                                    workflow_id=workflow_id, text=text, conversation_key=conv_key,
+                                    source="channel_email")
     ack = await _maybe_open_handoff(ch, result, customer=parsed.get("from_addr"), customer_message=text, reply_context=parsed)
     reply_text = ack or result.get("answer")
     if (ch.config or {}).get("reply", True) and reply_text:
@@ -173,7 +174,8 @@ async def teams_messages(key: str, request: Request, run_service: RunService = D
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "rate limit exceeded")
     result = await dispatch_message(run_service, tenant_id=ch.tenant_id, project_id=ch.project_id,
                                     workflow_id=workflow_id, text=parsed["text"],
-                                    conversation_key=parsed.get("conversation_id"))
+                                    conversation_key=parsed.get("conversation_id"),
+                                    source="channel_teams")
     ack = await _maybe_open_handoff(ch, result, customer=parsed.get("from_name"), customer_message=parsed["text"], reply_context=parsed)
     reply_text = ack or result.get("answer")
     if reply_text:

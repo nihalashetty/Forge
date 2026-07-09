@@ -9,8 +9,8 @@ from forge.auth_providers.resolver import AuthResolver
 from forge.models import Tool
 from forge.secrets.store import SecretStore
 from forge.tools.graphql import execute_graphql
-from forge.tools.projection import estimate_tokens, project_response
-from forge.tools.rest import execute_rest
+from forge.tools.projection import estimate_tokens
+from forge.tools.rest import execute_rest, project_observation
 
 
 class ToolService:
@@ -123,16 +123,18 @@ class ToolService:
         except Exception as e:  # noqa: BLE001 - surface failures (network/auth/etc.) to the UI
             return {"ok": False, "error": str(e)}
 
-        raw, projected = res["raw"], res.get("projected", res["raw"])
-        if "projection" not in cfg.get("response", {}) and cfg.get("response"):
-            projected = project_response(raw, cfg["response"])
+        # Preview exactly what the agent receives (rest.project_observation): the projection is
+        # applied to the model observation, which on a redirect is the {"body", "redirect"} envelope
+        # carrying the target URL. So an un-projected 3xx no longer reads as "" / 0 tok, and a
+        # `redirect.location` projection previews as just the URL - with the meter counting both.
+        observation, projected = project_observation(res, cfg)
         return {
             "ok": True,
             "status": res.get("status"),
             "latency_ms": res.get("latency_ms"),
-            "raw": raw,
+            "raw": observation,
             "projected": projected,
-            "raw_tokens": estimate_tokens(raw),
+            "raw_tokens": estimate_tokens(observation),
             "projected_tokens": estimate_tokens(projected),
             "final_url": res.get("final_url"),
             "redirect": res.get("redirect"),

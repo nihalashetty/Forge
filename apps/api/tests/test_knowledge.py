@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import pytest
+
 from forge.db.base import SessionLocal
-from forge.knowledge.embeddings import FakeEmbedder, cosine
+from forge.knowledge.embeddings import cosine, resolve_embedder
 from forge.knowledge.splitter import split_text
 from forge.services.knowledge import KnowledgeService
 
@@ -16,7 +18,10 @@ def test_splitter_chunks_long_text():
 
 
 def test_embedder_similarity_reflects_overlap():
-    e = FakeEmbedder()
+    pytest.importorskip("fastembed")
+    e = resolve_embedder("fastembed:BAAI/bge-small-en-v1.5")
+    if getattr(e, "name", "") != "BAAI/bge-small-en-v1.5":
+        pytest.skip("fastembed model could not be loaded (offline)")
     a = e.embed_query("refunds are issued to the original payment method")
     b = e.embed_query("how long do refunds take to be issued")
     c = e.embed_query("the weather in tokyo is sunny today")

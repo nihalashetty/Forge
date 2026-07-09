@@ -23,7 +23,13 @@ from forge.models import Run, Thread, Trace, Workflow
 from forge.services.runtime import build_compile_context
 from forge.tracing.tracer import ForgeTracer
 from forge.util.locks import ConcurrencyLimitExceeded, tenant_concurrency, thread_locks
-from forge.util.serialize import content_to_text, jsonable, serialize_stream
+from forge.util.serialize import (
+    content_to_text,
+    jsonable,
+    reset_tool_display_names,
+    serialize_stream,
+    set_tool_display_names,
+)
 
 log = logging.getLogger("forge.runs")
 
@@ -40,15 +46,40 @@ def _client_error(public: bool, run_id: str, detail: str) -> str:
 
 def _last_ai_text(values: dict) -> str:
     """Final assistant text from run state - the last AI/assistant message's content."""
+    return _last_message_text(values, ("ai", "assistant"))
+
+
+def _last_user_text(values: dict) -> str:
+    """This turn's user message - the last human/user message. Reads `Run.input`, whose
+    messages are plain dicts keyed by `role` (from the request body); also tolerates the
+    jsonable `type` key used in persisted state."""
+    return _last_message_text(values, ("human", "user"))
+
+
+def _last_message_text(values: dict, kinds: tuple[str, ...]) -> str:
     msgs = (values or {}).get("messages") or []
     for m in reversed(msgs):
-        mtype = getattr(m, "type", None) or (m.get("role") if isinstance(m, dict) else None)
-        if mtype in ("ai", "assistant"):
+        # Live BaseMessage -> `.type`; a request-body / jsonable dict -> `role` or `type`.
+        mtype = getattr(m, "type", None) or (m.get("role") or m.get("type") if isinstance(m, dict) else None)
+        if mtype in kinds:
             content = getattr(m, "content", None) if not isinstance(m, dict) else m.get("content")
             text = content_to_text(content)
             if text.strip():
                 return text
     return ""
+
+
+# Sources that are Forge-internal (operator-driven), shown as "System" in the Traces view.
+_SYSTEM_SOURCES = ("playground", "test", "assistant")
+
+
+def _actor_label(source: str, end_user: dict | None) -> str:
+    """The user-facing name a conversation is grouped/filtered by: 'System' for internal runs,
+    else the end user's name (display_name -> email -> id), else 'Unknown user'."""
+    if source in _SYSTEM_SOURCES:
+        return "System"
+    eu = end_user or {}
+    return eu.get("display_name") or eu.get("email") or eu.get("id") or "Unknown user"
 
 
 def _debug_nodes(definition: dict, tracer: ForgeTracer) -> dict[str, dict]:
@@ -88,6 +119,26 @@ def _debug_nodes(definition: dict, tracer: ForgeTracer) -> dict[str, dict]:
     return out
 
 
+def _internal_message_nodes(nodes: list) -> set[str]:
+    """Ids of nodes whose streamed model tokens are INTERNAL, not the chat answer.
+
+    A classifier emits a routing label and a structured `llm` emits a structured_response -
+    neither enters the `messages` state, yet both still stream tokens over the messages
+    channel and would otherwise land in the answer bubble. Answer-producing nodes
+    (agent/deep_agent/retrieval/unstructured llm) are absent, so they stream normally.
+    Filtering by node id keeps this backend-owned - clients don't guess from node names.
+    """
+    out: set[str] = set()
+    for n in nodes or []:
+        if not isinstance(n, dict) or not n.get("id"):
+            continue  # a null id would match tokens with no `langgraph_node` and drop answers
+        ntype = n.get("type")
+        structured_llm = ntype == "llm" and ((n.get("config") or {}).get("response_format") or {}).get("mode") == "structured"
+        if ntype in ("classifier", "router", "start", "end") or structured_llm:
+            out.add(n["id"])
+    return out
+
+
 class RunService:
     def __init__(self, checkpointer: Any = None, store: Any = None) -> None:
         self.checkpointer = checkpointer
@@ -95,7 +146,7 @@ class RunService:
 
     async def create_run(
         self, session, *, tenant_id: str, project_id: str, workflow_id: str, input: dict,
-        thread_id: str | None = None, end_user: dict | None = None,
+        thread_id: str | None = None, end_user: dict | None = None, source: str = "playground",
     ) -> Run:
         wf = (
             await session.execute(
@@ -159,6 +210,7 @@ class RunService:
             thread_id=thread.id,
             status="queued",
             input=input or {},
+            source=source,
         )
         session.add(run)
         await session.commit()
@@ -187,7 +239,11 @@ class RunService:
             wf = (await session.execute(select(Workflow).where(Workflow.id == run.workflow_id))).scalar_one()
             thread = (await session.execute(select(Thread).where(Thread.id == run.thread_id))).scalar_one()
 
-            node_ids = {n.get("id") for n in (wf.executable or {}).get("nodes", []) if isinstance(n, dict)}
+            wf_nodes = (wf.executable or {}).get("nodes", [])
+            node_ids = {n.get("id") for n in wf_nodes if isinstance(n, dict)}
+            # Node ids whose streamed model tokens are internal (routing label / structured
+            # response) and must not reach the chat bubble - suppressed below in messages mode.
+            suppressed_message_nodes = _internal_message_nodes(wf_nodes)
             tracer = ForgeTracer()
             config: dict[str, Any] = {
                 "configurable": {"thread_id": thread.lg_thread_id},
@@ -197,6 +253,9 @@ class RunService:
             # so the `finally` must NOT also mark the run canceled. It stays False if the
             # client disconnects mid-stream (CancelledError/GeneratorExit propagate through).
             finalized = False
+            # Bind the tool name->label map for this stream so serialized tool_calls carry a
+            # human-readable display_name (reset in `finally`); set after ctx is built below.
+            display_token = None
             # Serialize runs sharing this LangGraph thread so concurrent turns can't interleave
             # checkpoint writes (audit F7); bound concurrent runs per tenant (backpressure).
             tlock = await thread_locks.acquire_cm(thread.lg_thread_id)
@@ -214,6 +273,7 @@ class RunService:
                         end_user=(thread.meta or {}).get("end_user"),
                         run_context=run_context,
                     )
+                    display_token = set_tool_display_names(ctx.tool_display_names)
                     try:
                         graph = compile_workflow(wf.executable, ctx)
                     except Exception as e:  # noqa: BLE001 - compile failure -> error frame
@@ -257,11 +317,15 @@ class RunService:
                         # subgraph-internal "model"/"tools" updates so the steps panel stays clean.
                         if mode == "updates" and ns:
                             continue
-                        # In messages mode, only stream the agent's own tokens - never tool-result
-                        # or human-message content (which would otherwise leak into the chat bubble).
+                        # In messages mode, only stream the agent's own answer tokens - never
+                        # tool-result / human-message content, nor a classifier/structured node's
+                        # internal tokens (both would otherwise leak into the chat bubble).
                         if mode == "messages":
                             msg = chunk[0] if isinstance(chunk, (list, tuple)) and chunk else chunk
                             if getattr(msg, "type", "") not in ("ai", "AIMessageChunk"):
+                                continue
+                            meta = chunk[1] if isinstance(chunk, (list, tuple)) and len(chunk) == 2 else {}
+                            if (meta or {}).get("langgraph_node") in suppressed_message_nodes:
                                 continue
                         yield {"event": mode, "data": serialize_stream(mode, chunk)}
 
@@ -307,6 +371,8 @@ class RunService:
                 finalized = True
                 yield {"event": "error", "data": {"message": _client_error(public, run.id, str(e))}}
             finally:
+                if display_token is not None:
+                    reset_tool_display_names(display_token)
                 # Client disconnect / cancellation propagates here without `finalized` set -
                 # mark the otherwise-stranded run canceled in a fresh, shielded session so it
                 # never sticks at status="running" forever (audit F1).
@@ -453,9 +519,10 @@ class RunService:
                 await self._finalize_error(session, run, tracer, str(e))
                 return {"error": str(e)}
 
-    async def _write_trace(self, session, run: Run, tracer: ForgeTracer, *, status: str):
+    async def _write_trace(self, session, run: Run, tracer: ForgeTracer, *, status: str, values: dict | None = None):
         """Persist a Trace + its Span rows from the tracer. Shared by the success,
         interrupt, AND error paths so a failed run is observable too (audit F5).
+        `values` is the final LangGraph state (for the AI-response transcript).
         Returns (tokens, cost, spans)."""
         tokens, cost = tracer.totals()
         spans = tracer.ordered()
@@ -465,6 +532,9 @@ class RunService:
         # Identity audit: record which end user the run acted for (read from the thread).
         eu_thread = (await session.execute(select(Thread).where(Thread.id == run.thread_id))).scalar_one_or_none()
         eu = (eu_thread.meta or {}).get("end_user") if eu_thread else None
+        # Conversation view: denormalize the turn's actor + transcript onto the Trace so the
+        # Traces screen is a single grouped Trace query (no Run join at read time).
+        source = getattr(run, "source", None) or "playground"
         trace = Trace(
             tenant_id=run.tenant_id,
             project_id=run.project_id,
@@ -478,6 +548,11 @@ class RunService:
             latency_ms=latency_ms,
             total_tokens=tokens,
             total_cost_usd=cost,
+            source=source,
+            actor=_actor_label(source, eu),
+            end_user_id=(eu or {}).get("id"),
+            user_message=_last_user_text(run.input) or None,
+            ai_response=_last_ai_text(values or {}) or None,
             meta=({"end_user": eu} if eu else {}),
         )
         session.add(trace)
@@ -495,6 +570,8 @@ class RunService:
                     name=sr.name,
                     kind=sr.kind,
                     latency_ms=sr.latency_ms,
+                    input=sr.input,
+                    output=sr.output,
                     model=sr.model,
                     input_tokens=sr.input_tokens,
                     output_tokens=sr.output_tokens,
@@ -506,8 +583,8 @@ class RunService:
         return tokens, cost, spans
 
     async def _finalize(self, session, run: Run, tracer: ForgeTracer, snapshot, *, status: str) -> None:
-        tokens, cost, spans = await self._write_trace(session, run, tracer, status=status)
         values = getattr(snapshot, "values", {}) or {}
+        tokens, cost, spans = await self._write_trace(session, run, tracer, status=status, values=values)
         try:
             run.output = jsonable(values)
         except Exception:  # noqa: BLE001 - never let a non-serializable state strand the run
@@ -530,7 +607,8 @@ class RunService:
         original error or strand the run)."""
         run.error = error
         try:
-            tokens, cost, spans = await self._write_trace(session, run, tracer, status="error")
+            values = getattr(snapshot, "values", {}) or {}
+            tokens, cost, spans = await self._write_trace(session, run, tracer, status="error", values=values)
             run.total_tokens = tokens
             run.total_cost_usd = cost
             values = getattr(snapshot, "values", {}) or {}

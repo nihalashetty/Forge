@@ -29,6 +29,11 @@ class CompileContext:
     tool_registry: dict[str, Any] = field(default_factory=dict)
     # tool_id -> {"kind", "config", "tool"} so the tool_call node can invoke directly.
     tool_specs: dict[str, dict] = field(default_factory=dict)
+    # LLM tool name (the underscore identifier the model calls) -> human-readable label
+    # shown in streaming/chat activity. Populated for user tools (config.display_name) and
+    # UI components (their title), each falling back to the identifier when unset. The model
+    # never sees this - it only relabels tool_calls in the stream for end-user surfaces.
+    tool_display_names: dict[str, str] = field(default_factory=dict)
     # MCP server id -> list of native LangChain tools (the server's enabled tools),
     # pre-loaded by the runtime assembler so the sync agent factory can attach them.
     mcp_tools_by_client: dict[str, list] = field(default_factory=dict)

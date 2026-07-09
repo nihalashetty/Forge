@@ -8,6 +8,7 @@ from sqlalchemy import delete as sa_delete
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from forge.knowledge.embeddings import KNOWN_EMBEDDING_DIMS
 from forge.knowledge.store import ChromaStore
 from forge.models import (
     Agent,
@@ -109,7 +110,9 @@ class ProjectService:
         # Clear vectors across all dim-keyed collections (docs, Q&A, memory, cache),
         # scoped to this tenant+project by metadata.
         where = {"$and": [{"tenant_id": {"$eq": project.tenant_id}}, {"project_id": {"$eq": project.id}}]}
-        for dim in (256, 1536, 3072):
+        # Sweep every known embedding dim (single source of truth) - a hardcoded subset that
+        # omitted the 384-dim default left a deleted project's vectors orphaned in Chroma.
+        for dim in sorted(KNOWN_EMBEDDING_DIMS):
             for prefix in ("forge_kb", "forge_qa", "forge_mem", "forge_cache"):
                 try:
                     ChromaStore(collection=f"{prefix}_{dim}")._col.delete(where=where)

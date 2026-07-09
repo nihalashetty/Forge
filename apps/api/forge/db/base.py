@@ -71,6 +71,15 @@ def _ensure_new_columns(conn) -> None:
         "agents": {"created_by": "VARCHAR(36)", "created_by_email": "VARCHAR(320)"},
         "mcp_clients": {"disabled_tools": "JSON DEFAULT '[]'"},
         "projects": {"embed_key": "VARCHAR(64)"},
+        "spans": {"input": "JSON", "output": "JSON"},
+        "runs": {"source": "VARCHAR(40) NOT NULL DEFAULT 'playground'"},
+        "traces": {
+            "source": "VARCHAR(40) NOT NULL DEFAULT 'playground'",
+            "actor": "VARCHAR(300) NOT NULL DEFAULT 'System'",
+            "end_user_id": "VARCHAR(200)",
+            "user_message": "TEXT",
+            "ai_response": "TEXT",
+        },
     }
     inspector = inspect(conn)
     for table, columns in wanted.items():

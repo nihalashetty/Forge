@@ -2,7 +2,12 @@
 FROM python:3.12-slim AS base
 
 ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    # The default local (fastembed) embedder's model is baked into the image at this path
+    # (see the pre-download step below); the app reads the same dir at runtime, so ingestion
+    # works fully offline with no first-run download. Outside the /app/.data volume, so it's
+    # part of the image, not the persisted volume.
+    FORGE_FASTEMBED_CACHE_DIR=/app/.fastembed-cache
 
 # Build deps for psycopg/cryptography wheels (kept minimal; most ship manylinux wheels).
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -34,6 +39,12 @@ COPY apps/api/migrations ./migrations
 # Shared JSON Schemas live at the repo root, outside the old ./apps/api context. Bake them at
 # /app/packages/schemas so config.py's schemas_dir default (/app/packages/schemas) resolves.
 COPY packages/schemas ./packages/schemas
+
+# Pre-download the default local embedder (fastembed) model into the image so the container
+# ships self-contained: no ~130MB HuggingFace fetch on the first ingest, and no runtime egress
+# to huggingface.co (which a locked-down deploy may block). Keep this model id in sync with
+# forge.knowledge.embeddings._DEFAULT_FASTEMBED. Runs before the chown so the forge user owns it.
+RUN python -c "import os; from fastembed import TextEmbedding; TextEmbedding(model_name='BAAI/bge-small-en-v1.5', cache_dir=os.environ['FORGE_FASTEMBED_CACHE_DIR'])"
 
 # Run as a non-root user. Pre-create /app/.data (holds the Fernet master.key + Chroma store)
 # owned by forge: an empty named volume mounted there copies the image mountpoint's ownership on

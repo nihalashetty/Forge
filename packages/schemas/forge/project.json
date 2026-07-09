@@ -24,7 +24,7 @@
     "rag_defaults": {
       "type": "object",
       "properties": {
-        "embedding_model": { "type": "string", "default": "openai:text-embedding-3-small" },
+        "embedding_model": { "type": "string", "default": "fastembed:BAAI/bge-small-en-v1.5", "x-ui": { "effect": "Embedder for RAG. Default 'fastembed:BAAI/bge-small-en-v1.5' is local, open-source, and free (runs offline). 'openai:text-embedding-3-small|large' is billed per token at ingest AND per query. Changing the model changes the vector dimension, so existing sources must be re-embedded." } },
         "chunk_size": { "type": "integer", "default": 1000 },
         "chunk_overlap": { "type": "integer", "default": 200 },
         "chunking_strategy": { "type": "string", "enum": ["recursive", "section", "sentence"], "default": "recursive", "x-ui": { "effect": "Default chunking when a source doesn't specify one: recursive (general), section (Markdown headings), sentence (sentence-aware)." } }

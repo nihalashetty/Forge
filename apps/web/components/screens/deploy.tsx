@@ -1,10 +1,44 @@
 "use client";
 /* Connect (MCP) screen - expose this project's tools as an MCP server for external clients.
    (Consuming external MCP servers lives in the BUILD → External MCP tab.) */
-import { useEffect, useState } from "react";
+import { ReactNode, useEffect, useState } from "react";
 import { Icon } from "../icons";
 import { CodeBlock, Field } from "../primitives";
 import { api } from "@/lib/api";
+
+/* Collapsible detail section - keeps the deep integration reference tucked away so the
+   Connect screen stays scannable; expand only what you need. */
+function Collapse({ title, sub, defaultOpen = false, children }: { title: string; sub?: string; defaultOpen?: boolean; children: ReactNode }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="card" style={{ padding: 0, marginBottom: 10, overflow: "hidden" }}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        className="row spread"
+        style={{ width: "100%", background: "none", border: "none", cursor: "pointer", padding: "12px 16px", textAlign: "left", fontFamily: "var(--font-ui)", color: "inherit" }}
+      >
+        <div>
+          <div className="t-h3">{title}</div>
+          {sub && <div className="t-caption fg-2" style={{ marginTop: 2 }}>{sub}</div>}
+        </div>
+        <Icon name={open ? "chevdown" : "chevright"} size={16} style={{ color: "var(--fg-2)", flex: "none", marginLeft: 12 }} />
+      </button>
+      {open && <div style={{ padding: "0 16px 16px" }}>{children}</div>}
+    </div>
+  );
+}
+
+/* One SSE frame documented in the streaming reference: event name + what its data carries. */
+function FrameRow({ event, children }: { event: string; children: ReactNode }) {
+  return (
+    <div className="row gap2" style={{ alignItems: "baseline", padding: "5px 0", borderTop: "1px solid var(--line)" }}>
+      <span className="mono-sm" style={{ minWidth: 92, flex: "none", color: "var(--io-tool)" }}>{event}</span>
+      <span className="t-caption fg-1">{children}</span>
+    </div>
+  );
+}
 
 /* ============ CONNECT (MCP) ============ */
 export function ConnectScreen({ project }: { project: any }) {
@@ -58,6 +92,35 @@ export function ConnectScreen({ project }: { project: any }) {
     `#   -d '{"thread_id":"<thread>","resume":{"value":"approve"}}'`,
   ].join("\n");
 
+  // --- Reference payloads for the "How the integration works" section ---
+  // A trimmed SSE transcript: one `ready` frame, a couple of token deltas, then `done`.
+  const sampleStream = [
+    "event: ready",
+    'data: {"run_id":"run_a1b2","thread_id":"thr_x9"}',
+    "",
+    "event: node_start",
+    'data: {"node":"assistant"}',
+    "",
+    "event: messages",
+    'data: {"content":"Hi","type":"AIMessageChunk","node":"assistant"}',
+    "",
+    "event: messages",
+    'data: {"content":" there!","type":"AIMessageChunk","node":"assistant"}',
+    "",
+    "event: done",
+    'data: {"status":"done","answer":"Hi there!","total_tokens":812,"total_cost_usd":0.0021}',
+  ].join("\n");
+  // The single object returned when stream:false (thread_id is added by the endpoint).
+  const sampleJson = JSON.stringify(
+    {
+      run_id: "run_a1b2", thread_id: "thr_x9", status: "done",
+      answer: "Hi there!", components: [], interrupted: false, interrupts: [],
+      total_tokens: 812, total_cost_usd: 0.0021,
+    },
+    null,
+    2,
+  );
+
   async function saveApiWorkflow(next: string) {
     setWfId(next);
     setApiSave("saving");
@@ -110,10 +173,56 @@ export function ConnectScreen({ project }: { project: any }) {
             One call does everything. Send <span className="mono-sm">{"{ input, stream }"}</span> for a new turn (reuse the returned <span className="mono-sm">thread_id</span> to continue a conversation), or <span className="mono-sm">{"{ thread_id, resume }"}</span> to answer a human-in-the-loop step the workflow raised. <span className="mono-sm">stream: true</span> streams SSE (tokens, steps, tools); <span className="mono-sm">false</span> returns one JSON reply. Authenticate with <span className="mono-sm">Authorization: Bearer &lt;FORGE_SERVICE_API_TOKEN&gt;</span>; pass the caller&apos;s per-user session/CSRF as <span className="mono-sm">X-Forge-Context</span> so tools act on their behalf — never put secrets in the body.
           </div>
         </div>
-        <div className="card" style={{ padding: 16, marginBottom: 24 }}>
+        <div className="card" style={{ padding: 16, marginBottom: 14 }}>
           <div className="t-h3" style={{ marginBottom: 8 }}>Example (curl)</div>
           <CodeBlock code={curl} />
         </div>
+
+        {/* ---- Integration reference: collapsed so the screen stays readable ---- */}
+        <div className="t-h3" style={{ margin: "18px 0 8px", color: "var(--fg-1)" }}>How the integration works</div>
+        <div className="fg-2 t-caption" style={{ marginBottom: 10 }}>The same endpoint responds two ways depending on the <span className="mono-sm">stream</span> flag. Expand a section for the wire format.</div>
+
+        <Collapse title="Streaming — stream: true" sub="Server-Sent Events (text/event-stream): tokens, steps and tool activity as they happen." defaultOpen>
+          <div className="field-help" style={{ margin: "10px 0" }}>
+            The response stays open and emits <span className="mono-sm">event:</span> / <span className="mono-sm">data:</span> frames (data is JSON). Read it with any SSE client and keep the connection until a <span className="mono-sm">done</span>, <span className="mono-sm">error</span> or <span className="mono-sm">interrupt</span> frame arrives. Build the reply by concatenating each <span className="mono-sm">messages</span> frame&apos;s <span className="mono-sm">content</span> in order; the final <span className="mono-sm">done</span> frame also carries the whole <span className="mono-sm">answer</span> (authoritative — it covers non-LLM steps that never stream tokens).
+          </div>
+          <div style={{ margin: "10px 0" }}>
+            <FrameRow event="ready">First frame. <span className="mono-sm">{"{ run_id, thread_id }"}</span> — save <span className="mono-sm">thread_id</span> to continue this conversation.</FrameRow>
+            <FrameRow event="node_start">A workflow step began. <span className="mono-sm">{"{ node }"}</span>.</FrameRow>
+            <FrameRow event="messages">Assistant answer token delta. <span className="mono-sm">{"{ content, type, node }"}</span> — concatenate <span className="mono-sm">content</span>.</FrameRow>
+            <FrameRow event="updates">Top-level step output/state change (nested sub-steps are omitted to keep it clean).</FrameRow>
+            <FrameRow event="custom">App-emitted data a node chose to stream (e.g. rich components).</FrameRow>
+            <FrameRow event="interrupt">A human-in-the-loop step is waiting. Answer it with <span className="mono-sm">{"{ thread_id, resume }"}</span>.</FrameRow>
+            <FrameRow event="node_error">A step failed. <span className="mono-sm">{"{ node, message }"}</span>.</FrameRow>
+            <FrameRow event="done">Terminal. <span className="mono-sm">{"{ status, answer, total_tokens, total_cost_usd }"}</span>.</FrameRow>
+            <FrameRow event="error">Terminal error. <span className="mono-sm">{"{ message }"}</span>.</FrameRow>
+          </div>
+          <CodeBlock code={sampleStream} />
+        </Collapse>
+
+        <Collapse title="Non-streaming — stream: false" sub="One JSON object, returned once the run finishes.">
+          <div className="field-help" style={{ margin: "10px 0" }}>
+            Simplest to consume: a normal <span className="mono-sm">application/json</span> response after the run completes. <span className="mono-sm">status</span> is one of <span className="mono-sm">done · interrupted · error · busy</span>. When <span className="mono-sm">interrupted</span>, <span className="mono-sm">interrupts</span> holds the human-in-the-loop payload — answer it by re-calling with <span className="mono-sm">{"{ thread_id, resume }"}</span>. <span className="mono-sm">answer</span> is the full reply; <span className="mono-sm">components</span> carries any structured UI a node produced.
+          </div>
+          <CodeBlock code={sampleJson} />
+        </Collapse>
+
+        <Collapse title="Continue a conversation & human-in-the-loop" sub="Reuse thread_id across turns; resume interrupts on the same thread.">
+          <div className="field-help" style={{ margin: "10px 0" }}>
+            Chat memory is keyed by <span className="mono-sm">thread_id</span>. Take it from the <span className="mono-sm">ready</span> frame (streaming) or the JSON reply (non-streaming) and send it back in the next request&apos;s body to keep context across turns — omit it to start fresh. To answer an interrupt the workflow raised, POST the same endpoint with the interrupted thread and a resume value:
+          </div>
+          <CodeBlock code={'{ "thread_id": "thr_x9", "resume": { "value": "approve" } }'} />
+        </Collapse>
+
+        <Collapse title="Per-user identity — X-Forge-Context" sub="Pass the caller's secrets out-of-band; tools read them as {{ctx.*}}.">
+          <div className="field-help" style={{ margin: "10px 0" }}>
+            Authenticate the call itself with the service token (<span className="mono-sm">Authorization: Bearer &lt;FORGE_SERVICE_API_TOKEN&gt;</span>). Anything the workflow&apos;s tools need to act <em>as the end user</em> — a session cookie, CSRF token, downstream bearer — goes in the <span className="mono-sm">X-Forge-Context</span> header as a JSON object, and tools reference it with <span className="mono-sm">{"{{ctx.*}}"}</span>. It is never written to the body, never persisted, and never echoed back.
+          </div>
+          <CodeBlock code={"X-Forge-Context: {\"jsessionid\":\"<user session>\",\"csrf\":\"<user csrf>\"}"} />
+          <div className="field-help" style={{ marginTop: 8 }}>Identify the end user for quotas/analytics with <span className="mono-sm">{"{ \"end_user\": { \"id\": \"user-123\" } }"}</span> in the body.</div>
+        </Collapse>
+
+        <div style={{ marginBottom: 24 }} />
 
         {/* ---- MCP server ---- */}
         <div className="t-h2" style={{ margin: "4px 0 10px" }}>MCP server (Claude Desktop / Cursor / VS Code)</div>

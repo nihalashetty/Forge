@@ -22,6 +22,13 @@ def _channel_thread_key(conversation_key: str) -> str:
     return f"ch:{conversation_key}"
 
 
+# Canonical run source per trigger kind, for the Traces conversation view.
+_TRIGGER_SOURCE = {
+    "webhook_in": "webhook", "schedule": "schedule",
+    "email_in": "channel_email", "chat_in": "chat", "app_event": "app_event",
+}
+
+
 async def _find_channel_thread(s, tenant_id: str, workflow_id: str, conversation_key: str) -> str | None:
     """Find the persisted Thread for a channel conversation so multi-turn email/Teams
     conversations keep history through the checkpointer (audit F6)."""
@@ -42,6 +49,7 @@ async def dispatch_trigger(run_service: RunService, trigger: Trigger, payload) -
         run = await run_service.create_run(
             s, tenant_id=trigger.tenant_id, project_id=trigger.project_id,
             workflow_id=trigger.workflow_id, input=run_input,
+            source=_TRIGGER_SOURCE.get(trigger.kind, trigger.kind or "webhook"),
         )
         run_id = run.id
         # stamp last_fired_at on the trigger
@@ -62,6 +70,7 @@ async def dispatch_trigger(run_service: RunService, trigger: Trigger, payload) -
 async def dispatch_message(
     run_service: RunService, *, tenant_id: str, project_id: str, workflow_id: str,
     text: str, thread_id: str | None = None, conversation_key: str | None = None,
+    source: str = "channel",
 ) -> dict:
     """Run `workflow_id` with a single user `text` (used by channels: email/teams).
 
@@ -76,7 +85,7 @@ async def dispatch_message(
     async with SessionLocal() as s:
         run = await run_service.create_run(
             s, tenant_id=tenant_id, project_id=project_id, workflow_id=workflow_id,
-            input=run_input, thread_id=thread_id,
+            input=run_input, thread_id=thread_id, source=source,
         )
         run_id, run_thread_id = run.id, run.thread_id
         # Tag a freshly-created thread with the conversation key so the next inbound message
