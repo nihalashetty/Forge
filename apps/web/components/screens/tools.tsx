@@ -247,7 +247,7 @@ export function ToolBuilderScreen({ project, toolId, onBack }: { project: any; t
                         <input className="input mono" value={draft.url} onChange={(e) => set({ url: e.target.value })} style={{ flex: 1 }} />
                       </div>
                     </Field>
-                    {isRest && <Field label="Headers" help="Values interpolate {{ctx.*}} (run context — e.g. a per-request session/CSRF injected by the caller) and {{input.*}}. Example: X-CSRF-Token = {{ctx.csrf}}."><KVEditor rows={draft.headers} onChange={(rows) => set({ headers: rows })} /></Field>}
+                    {isRest && <Field label="Headers" help="Values interpolate {{ctx.*}} (run context — per-request values injected by the caller) and {{input.*}}. Example: Authorization = Bearer {{ctx.token}}."><KVEditor rows={draft.headers} onChange={(rows) => set({ headers: rows })} /></Field>}
                     {isRest && (
                       <Field label="Body encoding" help="How the request body is sent. Auto: a structured body is JSON, a body template is sent as-is. Form (urlencoded): in:body fields are URL-encoded and the Content-Type is set automatically — use for classic HTML form posts, including multi-line values and repeated keys. Raw: send the Body template string verbatim.">
                         <div style={{ position: "relative" }}>
@@ -258,7 +258,49 @@ export function ToolBuilderScreen({ project, toolId, onBack }: { project: any; t
                         </div>
                       </Field>
                     )}
-                    {isRest && <Field label="Body template" help="Interpolates {{input.*}} (validated tool args) and {{ctx.*}} (run context). Parsed as JSON when possible, else sent as raw content. For form posts, prefer in:body fields with Body encoding = Form (auto URL-encoded) over hand-encoding here."><textarea className="textarea mono" rows={4} value={draft.body} onChange={(e) => set({ body: e.target.value })} placeholder={'{\n  "amount": {{ input.amount }},\n  "CSRFToken": "{{ ctx.csrf }}"\n}'} /></Field>}
+                    {isRest && <Field label="Body template" help={'Interpolates {{input.*}} (validated tool args) and {{ctx.*}} (run context). Parsed as JSON when possible, else sent as raw content. To repeat an array element per item (batch many items in one call), use a loop: "items": {"$each": "{{input.items}}", "$as": "item", "$do": { "label": "{{item.label}}" }}. For form posts, prefer in:body fields with Body encoding = Form (auto URL-encoded) over hand-encoding here.'}><textarea className="textarea mono" rows={4} value={draft.body} onChange={(e) => set({ body: e.target.value })} placeholder={'{\n  "name": "{{ input.name }}",\n  "count": {{ input.count }}\n}'} /></Field>}
+                    {isRest && (
+                      <details style={{ margin: "-4px 0 8px", paddingLeft: 2 }}>
+                        <summary className="t-caption fg-2" style={{ cursor: "pointer", userSelect: "none" }}>How to write the body template</summary>
+                        <div className="t-caption fg-2" style={{ marginTop: 8, lineHeight: 1.6, display: "flex", flexDirection: "column", gap: 10 }}>
+                          <div>
+                            The body is JSON. Insert values with <code className="mono">{"{{input.<arg>}}"}</code> (the validated tool args) and <code className="mono">{"{{ctx.<key>}}"}</code> (run context — per-request values supplied by the caller). It is parsed as JSON when possible, otherwise sent as raw text.
+                          </div>
+                          <div>
+                            <b style={{ color: "var(--fg-1)" }}>Type rule:</b> a value that is <i>exactly</i> one token keeps its native type — <code className="mono">{"\"{{input.count}}\""}</code> stays a number, an array stays an array. Wrapping a token in other text, like <code className="mono">{"\"[{{input.count}}]\""}</code>, makes the result a string. Do not add brackets around a token that is already an array.
+                          </div>
+                          <div>
+                            <div style={{ fontWeight: 600, color: "var(--fg-1)", marginBottom: 5 }}>Normal — one fixed body</div>
+                            <pre className="mono" style={{ background: "var(--bg-0)", border: "1px solid var(--line)", borderRadius: 6, padding: "9px 11px", margin: 0, overflowX: "auto", fontSize: 12, color: "var(--fg-1)" }}>{`{
+  "name": "{{input.name}}",
+  "count": {{input.count}},
+  "active": {{input.active}}
+}`}</pre>
+                          </div>
+                          <div>
+                            <div style={{ fontWeight: 600, color: "var(--fg-1)", marginBottom: 5 }}>Looping — repeat an element per array item</div>
+                            <div style={{ marginBottom: 5 }}>
+                              Use <code className="mono">$each</code> to expand a list-valued arg into a variable-length array — send many items in one call. <code className="mono">$each</code> is the source list, <code className="mono">$as</code> names each item, and <code className="mono">$do</code> is rendered once per item.
+                            </div>
+                            <pre className="mono" style={{ background: "var(--bg-0)", border: "1px solid var(--line)", borderRadius: 6, padding: "9px 11px", margin: 0, overflowX: "auto", fontSize: 12, color: "var(--fg-1)" }}>{`{
+  "listId": "{{input.listId}}",
+  "items": {
+    "$each": "{{input.items}}",
+    "$as": "item",
+    "$do": {
+      "label": "{{item.label}}",
+      "value": "{{item.value}}",
+      "tags": "{{item.tags}}"
+    }
+  }
+}`}</pre>
+                            <div style={{ marginTop: 5 }}>
+                              With <code className="mono">items</code> = <code className="mono">{"[{\"label\":\"A\",\"value\":10,\"tags\":[\"x\"]}]"}</code>, this builds one <code className="mono">items</code> entry per element, each field keeping its native type (so <code className="mono">tags</code> stays an array).
+                            </div>
+                          </div>
+                        </div>
+                      </details>
+                    )}
                     {isGraphql && <Field label="Query"><textarea className="textarea mono" rows={6} value={draft.query} onChange={(e) => set({ query: e.target.value })} /></Field>}
                     <Field label="Follow redirects" help="Follow 3xx redirects to the target URL. Each hop is re-checked by the SSRF guard. When off, the redirect's target URL is still reported to the model so it can act on it.">
                       <Toggle on={!!draft.follow_redirects} onChange={(v) => set({ follow_redirects: v })} />
@@ -302,7 +344,7 @@ export function ToolBuilderScreen({ project, toolId, onBack }: { project: any; t
             )}
             {tab === "schema" && (
               <div className="fade-in">
-                <div className="fg-1" style={{ marginBottom: 12 }}>Request parameters. <b>Model-visible</b> fields become the tool&apos;s JSON Schema (the agent fills them). Turn <b>model-visible</b> off and give a <span className="mono">{"{{ctx.*}}"}</span> default to inject a per-run value (e.g. session / CSRF) the model never sees.</div>
+                <div className="fg-1" style={{ marginBottom: 12 }}>Request parameters. <b>Model-visible</b> fields become the tool&apos;s JSON Schema (the agent fills them). Turn <b>model-visible</b> off and give a <span className="mono">{"{{ctx.*}}"}</span> default to inject a per-run value (e.g. an auth token) the model never sees.</div>
                 <FieldsEditor fields={draft.fields} onChange={(fields) => set({ fields })} />
               </div>
             )}
@@ -396,11 +438,17 @@ function draftToConfig(t: Tool, d: any): any {
   if ((d.display_name || "").trim()) base.display_name = d.display_name.trim(); else delete base.display_name;
   delete base._last_test;
   if (t.kind === "rest_api") {
-    base.request = {
+    const request: any = {
       ...(base.request || {}), method: d.method, url_template: d.url,
       headers: (d.headers || []).filter((r: any) => r[0]).map((r: any) => ({ name: r[0], value: r[1] })),
-      fields: d.fields, follow_redirects: !!d.follow_redirects, tls_skip_verify: !!d.tls_skip_verify, ...(d.body_encoding ? { body_encoding: d.body_encoding } : {}), ...(d.body ? { body_template: d.body } : {}),
+      fields: d.fields, follow_redirects: !!d.follow_redirects, tls_skip_verify: !!d.tls_skip_verify,
     };
+    // The saved config REPLACES the old one, but `...base.request` above carries the previous
+    // values forward - so an empty selection must explicitly DELETE the key, or "Auto" body
+    // encoding (and a cleared body template) silently revert to the last saved value.
+    if (d.body_encoding) request.body_encoding = d.body_encoding; else delete request.body_encoding;
+    if (d.body) request.body_template = d.body; else delete request.body_template;
+    base.request = request;
     base.response = { ...(base.response || {}), ...(d.projection ? { projection_jmespath: d.projection } : {}), on_error: d.on_error };
   } else if (t.kind === "graphql") {
     base.endpoint = d.url; base.query = d.query; base.variables = d.fields; base.follow_redirects = !!d.follow_redirects; base.tls_skip_verify = !!d.tls_skip_verify;
@@ -444,7 +492,7 @@ function FieldsEditor({ fields, onChange }: { fields: any[]; onChange: (f: any[]
           <div className="row gap2">
             <input className="input mono" value={f.path || ""} onChange={(e) => upd(i, { path: e.target.value })} placeholder="field" style={{ flex: 1 }} />
             <div style={{ width: 92 }}>
-              <select className="select" value={f.type || "string"} onChange={(e) => upd(i, { type: e.target.value })}>{["string", "integer", "number", "boolean"].map((t) => <option key={t}>{t}</option>)}</select>
+              <select className="select" value={f.type || "string"} onChange={(e) => upd(i, { type: e.target.value })}>{["string", "integer", "number", "boolean", "array", "object"].map((t) => <option key={t}>{t}</option>)}</select>
             </div>
             <div style={{ width: 92 }}>
               <select className="select" value={f.in || "query"} onChange={(e) => upd(i, { in: e.target.value })} title="Where this value is placed in the outbound request">{["query", "header", "path", "body", "cookie"].map((t) => <option key={t}>{t}</option>)}</select>
@@ -454,7 +502,7 @@ function FieldsEditor({ fields, onChange }: { fields: any[]; onChange: (f: any[]
           </div>
           <div className="row gap2" style={{ alignItems: "center" }}>
             <input className="input mono" value={f.default ?? ""} onChange={(e) => upd(i, { default: e.target.value || undefined })} placeholder="default — supports {{ctx.*}} (run context) / {{input.*}}" style={{ flex: 1 }} />
-            <label className="row gap1" title="On: the model decides this value (appears in the tool's args schema). Off: the server injects it (e.g. default {{ctx.csrf}}) and it is hidden from the model." style={{ whiteSpace: "nowrap", cursor: "pointer" }}>
+            <label className="row gap1" title="On: the model decides this value (appears in the tool's args schema). Off: the server injects it (e.g. default {{ctx.token}}) and it is hidden from the model." style={{ whiteSpace: "nowrap", cursor: "pointer" }}>
               <Toggle on={f.llm_visible !== false} onChange={() => upd(i, { llm_visible: f.llm_visible === false })} />
               <span className="t-caption fg-2">model-visible</span>
             </label>
@@ -534,7 +582,7 @@ function LiveResponse({ project, tool, draft, llmFields, result, setResult }: { 
                 : <input className="input mono" placeholder={f.type} value={args[f.path] || ""} onChange={(e) => setArgs((a) => ({ ...a, [f.path]: e.target.value }))} />}
             </Field>
           )) : <Field label="Arguments (JSON)"><textarea className="textarea mono" rows={2} placeholder='{ }' onChange={(e) => { try { setArgs(JSON.parse(e.target.value || "{}")); } catch { /* */ } }} /></Field>}
-          <Field label="Run context (CSRF/session for auth)"><textarea className="textarea mono" rows={2} placeholder='{ "csrf": "…" }' value={ctxText} onChange={(e) => setCtxText(e.target.value)} /></Field>
+          <Field label="Run context (auth values for the call)"><textarea className="textarea mono" rows={2} placeholder='{ "token": "…" }' value={ctxText} onChange={(e) => setCtxText(e.target.value)} /></Field>
           <button className="btn btn-secondary" style={{ width: "100%" }} onClick={run} disabled={busy}><Icon name={busy ? "refresh" : "validate"} size={15} style={busy ? { animation: "spin 1s linear infinite" } : {}} />{busy ? "Testing…" : "Test"}</button>
           {result && !result.ok && <div className="t-caption" style={{ color: "var(--err)", marginTop: 8 }}>{result.error}</div>}
         </div>

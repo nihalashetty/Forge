@@ -342,6 +342,22 @@ class KnowledgeSearchIn(BaseModel):
     # vector-only. In hybrid mode the returned score is a normalized fusion rank,
     # NOT cosine similarity.
     hybrid: bool = False
+    # Opt into a second-stage local cross-encoder rerank (see services.knowledge.search).
+    # After rerank the score is the cross-encoder relevance (0..1), not cosine/fusion.
+    rerank: bool = False
+
+
+class KnowledgeMapIn(BaseModel):
+    """Chunk-map visualizer request: project all stored chunk vectors to 2-D (PCA). An
+    optional query overlays the query point + which chunks retrieval would return."""
+
+    query: str | None = None
+    folders: list[str] | None = None
+    source_ids: list[str] | None = None
+    limit: int = 400  # cap points projected/returned (perf); response flags `truncated`
+    hybrid: bool = False
+    rerank: bool = False
+    top_k: int = 8  # how many chunks the query overlay marks as retrieved
 
 
 class ResumeIn(BaseModel):

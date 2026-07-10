@@ -27,7 +27,10 @@
         "embedding_model": { "type": "string", "default": "fastembed:BAAI/bge-small-en-v1.5", "x-ui": { "effect": "Embedder for RAG. Default 'fastembed:BAAI/bge-small-en-v1.5' is local, open-source, and free (runs offline). 'openai:text-embedding-3-small|large' is billed per token at ingest AND per query. Changing the model changes the vector dimension, so existing sources must be re-embedded." } },
         "chunk_size": { "type": "integer", "default": 1000 },
         "chunk_overlap": { "type": "integer", "default": 200 },
-        "chunking_strategy": { "type": "string", "enum": ["recursive", "section", "sentence"], "default": "recursive", "x-ui": { "effect": "Default chunking when a source doesn't specify one: recursive (general), section (Markdown headings), sentence (sentence-aware)." } }
+        "chunking_strategy": { "type": "string", "enum": ["recursive", "section", "sentence", "semantic"], "default": "recursive", "x-ui": { "effect": "Default chunking when a source doesn't specify one: recursive (general), section (Markdown headings), sentence (sentence-aware), semantic (splits where meaning shifts - uses the embedder, slower to ingest)." } },
+        "retrieval_mode": { "type": "string", "enum": ["chunk", "parent_child"], "default": "chunk", "x-ui": { "effect": "chunk: search and return the same chunks (default). parent_child: embed small child chunks for precise matching but feed the agent the larger parent passage for context. Changing this requires re-ingesting existing sources." } },
+        "child_chunk_size": { "type": "integer", "default": 300, "description": "Size (chars) of the small child chunks that get embedded in parent_child mode. The parent window uses chunk_size. Ignored in chunk mode." },
+        "reranker_model": { "type": "string", "default": "Xenova/ms-marco-MiniLM-L-6-v2", "x-ui": { "effect": "Local cross-encoder used when a retrieval node has rerank on. Default 'Xenova/ms-marco-MiniLM-L-6-v2' is small and CPU-fast; 'BAAI/bge-reranker-base' is heavier and more accurate. Runs offline, no API cost." } }
       }
     },
     "features": {

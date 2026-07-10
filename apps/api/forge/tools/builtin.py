@@ -181,6 +181,8 @@ def build_knowledge_capability_tools(knowledge: dict | None, ctx) -> list:
         top_k = int(rag.get("top_k") or 4)
         min_score = rag.get("min_score", 0.18)
         hybrid = bool(rag.get("hybrid", False))
+        rerank = bool(rag.get("rerank", False))
+        rerank_top_n = rag.get("rerank_top_n")
         scope = f" (folders: {', '.join(folders)})" if folders else ""
 
         async def search_knowledge_base(query: str) -> str:
@@ -194,10 +196,14 @@ def build_knowledge_capability_tools(knowledge: dict | None, ctx) -> list:
                     hits = await KnowledgeService.search(
                         s, ctx.tenant_id, ctx.project_id, query, top_k=top_k,
                         folders=folders, embedder=embedder, embedding=vec, hybrid=hybrid,
+                        rerank=rerank, rerank_top_n=rerank_top_n,
                     )
                 except Exception:  # noqa: BLE001 - store empty / not ready
                     hits = []
-                hits = [h for h in hits if h.score >= min_score]
+                # min_score is a cosine floor; a reranked score is a cross-encoder relevance on a
+                # different scale, so don't apply the cosine floor to reranked hits (see rag.py).
+                if not rerank:
+                    hits = [h for h in hits if h.score >= min_score]
             blocks = [f"[Doc {i + 1} · score {h.score:.2f}] {h.text}" for i, h in enumerate(hits)]
             return "\n\n".join(blocks) if blocks else "No relevant documents found in the knowledge base for this query."
 

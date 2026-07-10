@@ -2,7 +2,7 @@
 /* Settings: project config (model, budgets, features) + secrets (write-only). */
 import { useCallback, useEffect, useState } from "react";
 import { Icon } from "../icons";
-import { Field, Modal, StatusPill, Tile, Toggle } from "../primitives";
+import { Field, Modal, Segmented, StatusPill, Tile, Toggle } from "../primitives";
 import { api, AuditEntry, clearTokens, InviteResult, MeResult, Secret, TeamMember } from "@/lib/api";
 import { MODELS } from "@/lib/data";
 
@@ -11,6 +11,15 @@ const ROLES = ["owner", "admin", "editor", "viewer"];
 // Project default embedder when rag_defaults.embedding_model is unset. Matches the backend
 // default (embeddings._DEFAULT_FASTEMBED) and the project.json schema default.
 const DEFAULT_EMBEDDING_MODEL = "fastembed:BAAI/bge-small-en-v1.5";
+
+// Retrieval-mode + reranker defaults. Mirror the project.json rag_defaults schema and the
+// backend defaults (services.knowledge._DEFAULT_CHILD_CHUNK_SIZE, rerank.DEFAULT_RERANKER).
+const DEFAULT_CHILD_CHUNK_SIZE = 300;
+const DEFAULT_RERANKER_MODEL = "Xenova/ms-marco-MiniLM-L-6-v2";
+const RERANKER_OPTIONS = [
+  { value: "Xenova/ms-marco-MiniLM-L-6-v2", label: "MiniLM-L6 · small, CPU-fast (default)" },
+  { value: "BAAI/bge-reranker-base", label: "bge-reranker-base · heavier, more accurate" },
+];
 
 function TeamCard() {
   const [me, setMe] = useState<MeResult | null>(null);
@@ -216,6 +225,25 @@ export function SettingsScreen({ project }: { project: any }) {
                 : "⚠ No OpenAI key set — add one under Model providers below, or embeddings fall back to the local model."}
             </div>
           )}
+          <Field label="Retrieval mode" help="How chunks are matched vs. handed to the agent. Chunk: search and return the same chunks. Parent/child: embed small child chunks for precise matching but feed the agent the larger parent passage for context. Changing this requires re-ingesting existing sources.">
+            <Segmented
+              options={[{ value: "chunk", label: "Chunk" }, { value: "parent_child", label: "Parent / child" }]}
+              value={rag.retrieval_mode || "chunk"}
+              onChange={(v) => setRag({ retrieval_mode: v })}
+            />
+          </Field>
+          {rag.retrieval_mode === "parent_child" && (
+            <Field label="Child chunk size" help="Size (chars) of the small child chunks that get embedded in parent/child mode. The parent window uses the chunk size set per source. Smaller children = more precise matches.">
+              <input className="input mono" type="number" placeholder={String(DEFAULT_CHILD_CHUNK_SIZE)}
+                value={rag.child_chunk_size ?? ""}
+                onChange={(e) => setRag({ child_chunk_size: parseInt(e.target.value, 10) || undefined })} />
+            </Field>
+          )}
+          <Field label="Reranker model" help="Local cross-encoder used when a retrieval node (or the search debugger) has rerank on. Runs offline on CPU, no API cost. Ignored unless rerank is enabled.">
+            <select className="select" value={rag.reranker_model || DEFAULT_RERANKER_MODEL} onChange={(e) => setRag({ reranker_model: e.target.value })}>
+              {RERANKER_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          </Field>
         </Card>
 
         <Card title="Model providers" action={<button className="btn btn-primary btn-sm" onClick={saveKeys} disabled={keySave === "saving"}><Icon name={keySave === "saved" ? "check" : "save"} size={14} />{keySave === "saving" ? "Saving…" : keySave === "saved" ? "Saved" : "Save keys"}</button>}>

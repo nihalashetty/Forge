@@ -397,7 +397,7 @@ function CanvasInner({ project, workflowId, onWorkflowChange, onBack, onRun }: {
       type === "agent" || type === "deep_agent" ? { flavor: type === "deep_agent" ? "deep_agent" : "agent", model: "openai:gpt-4o-mini", middleware: [], tools: [] }
       : type === "router" ? { expression: "intent", cases: {}, default: "" }
       : type === "llm" ? { model: "openai:gpt-4o-mini", prompt: "" }
-      : type === "retrieval" ? { top_k: 4, include_docs: true, hybrid: false, include_qa: true, qa_threshold: 0.3, qa_top_k: 3, min_score: 0.18, announce_empty: true }
+      : type === "retrieval" ? { top_k: 4, include_docs: true, hybrid: false, rerank: false, include_qa: true, qa_threshold: 0.3, qa_top_k: 3, min_score: 0.18, announce_empty: true }
       : type === "classifier" ? { labels: ["question", "request", "complaint"], output_key: "intent" }
       : {};
     setNodes((nds) => [...nds, { id, type: "forge", position: { x: 360 + (n % 4) * 36, y: 140 + (n % 4) * 36 }, data: { nodeType: type, config: defConfig } }]);
@@ -934,6 +934,11 @@ function RetrievalForm({ c, set, folders, kinds }: { c: Record<string, any>; set
                 <span className="t-body-sm">Hybrid search (BM25 + vector)</span>
               </label>
               <div className="field-help">Blend lexical keyword (BM25) ranking with semantic vectors so exact terms - codes, names, SKUs - aren’t missed.</div>
+              <label className="row gap2" style={{ cursor: "pointer" }}>
+                <Toggle on={!!c.rerank} onChange={(on) => set({ rerank: on })} />
+                <span className="t-body-sm">Rerank (cross-encoder)</span>
+              </label>
+              <div className="field-help">Two-stage retrieval: a local cross-encoder re-scores the shortlist and keeps only the best matches. Big accuracy boost; adds some latency. Runs offline on CPU (no extra cost). Min score is ignored while this is on (the reranker score is on a different scale).</div>
             </div>
           )}
         </div>

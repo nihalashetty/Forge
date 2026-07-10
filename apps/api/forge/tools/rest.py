@@ -24,7 +24,7 @@ import httpx
 from langchain.tools import ToolRuntime
 from pydantic import Field, create_model
 
-from forge.auth_providers.templates import render_template
+from forge.auth_providers.templates import has_each_directive, render_template, render_value
 from forge.config import settings
 from forge.tracing import tool_io
 from forge.tools.projection import cap_payload, project_response
@@ -151,7 +151,21 @@ def _build_body(req: dict, fields: list[dict], values: dict, context: dict | Non
     assembled from `in: body` fields. Returns a dict/list, a str, or None."""
     tmpl = req.get("body_template")
     if tmpl:
-        rendered = render_template(tmpl, {"input": values, "ctx": context or {}})
+        tvars = {"input": values, "ctx": context or {}}
+        # A `$each` loop directive needs STRUCTURAL rendering (parse the JSON, then walk it with
+        # render_value) so the produced array is always valid JSON with native types - plain string
+        # substitution can't build a variable-length array without trailing-comma/quoting bugs.
+        # Gate on an ACTUAL parsed `$each` directive (a dict key), NOT a substring of the raw text:
+        # a template that merely mentions "$each" inside a string value must keep the exact
+        # string-substitution behavior (structural rendering coerces token types differently).
+        if "$each" in tmpl:
+            try:
+                parsed = _json.loads(tmpl)
+            except ValueError:
+                parsed = None
+            if parsed is not None and has_each_directive(parsed):
+                return render_value(parsed, tvars, allow_each=True)
+        rendered = render_template(tmpl, tvars)
         if isinstance(rendered, (dict, list)):
             return rendered
         if isinstance(rendered, str):
@@ -326,6 +340,26 @@ async def execute_rest(
         if rendered is not None:
             values[f["path"]] = rendered
     values.update({k: v for k, v in kwargs.items() if v is not None})
+    # A caller may hand a structured (`array`/`object`) arg as a JSON *string* rather than a
+    # native list/dict - the /test panel does this (every field is a textarea string), and some
+    # server-to-server callers stringify JSON args too. Coerce it to the type the field declares
+    # so a `$each` body template iterates the real list instead of treating the whole string as a
+    # single item (which renders every {{row.*}} to null). The LLM lane already supplies native
+    # lists/dicts (a non-string is skipped), so this only rescues the string case; an unparseable
+    # string is left as-is so the failure stays visible rather than being silently swallowed.
+    for f in fields:
+        if f.get("type") in ("array", "object"):
+            v = values.get(f["path"])
+            if isinstance(v, str) and v.strip():
+                try:
+                    parsed = _json.loads(v)
+                except ValueError:
+                    parsed = v  # unparseable -> leave as-is so the failure stays visible
+                # Only accept a parse that actually yields the declared container type. A scalar
+                # string like "5" or "null" parses to int/None; coercing that would silently
+                # change the value's type - leave it as the original string instead.
+                if isinstance(parsed, (list, dict)):
+                    values[f["path"]] = parsed
 
     # {{ctx.*}} is honored in the URL itself too (e.g. a base host, or a ?token= carried in run
     # context); {name} path params are then substituted from `values` as before.

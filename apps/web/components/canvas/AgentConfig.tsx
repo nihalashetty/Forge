@@ -155,6 +155,11 @@ export function AgentConfig({ config, onChange, tools = [], agents = [], folders
                 <span className="t-body-sm">Hybrid search (BM25 + vector)</span>
               </label>
               <div className="field-help">Blend lexical keyword (BM25) ranking with semantic vectors so exact terms - codes, names, SKUs - aren’t missed.</div>
+              <label className="row gap2" style={{ cursor: "pointer" }}>
+                <Toggle on={!!knowledge.rag?.rerank} onChange={(on) => setKnowledge("rag", { rerank: on })} />
+                <span className="t-body-sm">Rerank (cross-encoder)</span>
+              </label>
+              <div className="field-help">Two-stage retrieval: a local cross-encoder re-scores the shortlist and keeps only the best matches. Big accuracy boost; adds some latency. Runs offline on CPU (no extra cost). Min score is ignored while this is on (the reranker score is on a different scale).</div>
             </div>
           )}
         </div>

@@ -51,6 +51,10 @@ def retrieval_factory(cfg: dict, ctx: CompileContext):
     include_docs = cfg.get("include_docs", True)
     # Hybrid = fuse BM25 lexical ranking with vector search (RRF). Opt-in; default vector-only.
     hybrid = bool(cfg.get("hybrid", False))
+    # Rerank = a second-stage local cross-encoder over a larger shortlist, keeping the best
+    # top_k. Opt-in; big accuracy win at some latency. rerank_top_n sizes the shortlist.
+    rerank = bool(cfg.get("rerank", False))
+    rerank_top_n = cfg.get("rerank_top_n")
     source_filter = cfg.get("source_filter") or None
     # Restrict retrieval to sources in these folders (resolved to source ids at run
     # time, so it composes with source_filter and needs no Chroma re-ingest).
@@ -100,11 +104,15 @@ def retrieval_factory(cfg: dict, ctx: CompileContext):
                 hits = await KnowledgeService.search(
                     s, ctx.tenant_id, ctx.project_id, query, top_k=top_k,
                     source_ids=source_filter, folders=folders, embedder=embedder, embedding=qvec,
-                    hybrid=hybrid,
+                    hybrid=hybrid, rerank=rerank, rerank_top_n=rerank_top_n,
                 ) if (include_docs and embedder) else []
             except Exception:  # noqa: BLE001 - store not ready / empty
                 hits = []
-            if min_score is not None:
+            # min_score is a cosine-similarity floor. A reranked hit's score is a cross-encoder
+            # relevance on a different scale (often much lower for genuinely relevant passages),
+            # so applying the cosine floor to it would silently drop good docs - skip the floor
+            # when reranking (the cross-encoder already ordered by relevance and kept top_k).
+            if min_score is not None and not rerank:
                 hits = [h for h in hits if h.score >= min_score]
             for i, h in enumerate(hits):
                 blocks.append(f"[Doc {i + 1}] {h.text}")
@@ -147,7 +155,8 @@ def _retrieval_summary(c: dict) -> list[str]:
     """Glanceable canvas lines: which sources this retrieval node pulls from."""
     lines: list[str] = []
     if c.get("include_docs", True):
-        lines.append(f"docs top_k {c.get('top_k', 5)}" + (" · hybrid" if c.get("hybrid") else ""))
+        flags = ("" if not c.get("hybrid") else " · hybrid") + ("" if not c.get("rerank") else " · rerank")
+        lines.append(f"docs top_k {c.get('top_k', 5)}{flags}")
     if c.get("include_qa"):
         lines.append(f"Q&A top_k {c.get('qa_top_k', 3)}")
     return lines or ["no sources enabled"]

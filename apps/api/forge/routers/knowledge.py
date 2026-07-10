@@ -9,6 +9,7 @@ from forge.deps import current_tenant_id, get_session
 from forge.schemas.dto import (
     KbSourceCreate,
     KbSourceOut,
+    KnowledgeMapIn,
     KnowledgeSearchIn,
     QaPairCreate,
     QaPairOut,
@@ -179,8 +180,26 @@ async def delete_source(project_id: str, source_id: str, session: AsyncSession =
 
 @router.post("/search")
 async def search(project_id: str, body: KnowledgeSearchIn, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id)):
-    hits = await KnowledgeService.search(session, tenant_id, project_id, body.query, top_k=body.top_k, folders=body.folders, hybrid=body.hybrid)
+    hits = await KnowledgeService.search(session, tenant_id, project_id, body.query, top_k=body.top_k, folders=body.folders, hybrid=body.hybrid, rerank=body.rerank)
     return [{"text": h.text, "score": round(h.score, 4), "source_id": h.metadata.get("source_id")} for h in hits]
+
+
+@router.post("/dedupe")
+async def dedupe_chunks(project_id: str, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id)):
+    """Remove exact-duplicate chunks (identical text) project-wide, keeping one copy of each.
+    Returns {removed, groups, sources_affected, remaining}."""
+    return await KnowledgeService.dedupe_chunks(session, tenant_id, project_id)
+
+
+@router.post("/map")
+async def chunk_map(project_id: str, body: KnowledgeMapIn, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id)):
+    """Chunk-map visualizer: 2-D (PCA) projection of the project's chunk vectors, colored by
+    source, with an optional query overlay showing what retrieval returns. Read-only."""
+    return await KnowledgeService.chunk_map(
+        session, tenant_id, project_id, query=body.query, folders=body.folders,
+        source_ids=body.source_ids, limit=body.limit, hybrid=body.hybrid,
+        rerank=body.rerank, top_k=body.top_k,
+    )
 
 
 @qa_router.get("", response_model=list[QaPairOut])
