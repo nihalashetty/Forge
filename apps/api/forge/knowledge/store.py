@@ -126,6 +126,29 @@ class ChromaStore:
             for i in ranked if i in by_id
         ]
 
+    def dump(self, where: dict, limit: int | None = None, *, ids: list[str] | None = None) -> dict:
+        """Raw rows INCLUDING their embedding vectors - the input to the chunk map's
+        dimensionality reduction. Returns {ids, documents, metadatas, embeddings} (parallel
+        lists); embeddings come back as whatever numpy-ish rows Chroma stores. Empty on error.
+
+        Pass `ids` to fetch exactly those rows (used to pull in specific retrieved chunks that
+        fell outside the sampled `limit` window); otherwise fetch up to `limit` rows matching
+        `where`."""
+        include = ["embeddings", "documents", "metadatas"]
+        try:
+            if ids:
+                res = self._col.get(ids=ids, include=include)
+            else:
+                res = self._col.get(where=where, limit=limit, include=include)
+        except Exception:  # noqa: BLE001 - collection empty / not ready
+            return {"ids": [], "documents": [], "metadatas": [], "embeddings": []}
+        return {
+            "ids": res.get("ids") or [],
+            "documents": res.get("documents") or [],
+            "metadatas": res.get("metadatas") or [],
+            "embeddings": res.get("embeddings") if res.get("embeddings") is not None else [],
+        }
+
     def delete_ids(self, ids: list[str]) -> None:
         if ids:
             self._col.delete(ids=ids)
@@ -143,10 +166,25 @@ class ChromaStore:
         return self.count_where(_where(tenant_id, project_id, None))
 
     def count_where(self, where: dict) -> int:
+        # include=[] returns ids only (ids always come back) - Chroma otherwise also materializes
+        # every matching row's documents+metadatas just to be counted.
         try:
-            return len(self._col.get(where=where).get("ids", []))
+            return len(self._col.get(where=where, include=[]).get("ids", []))
         except Exception:  # noqa: BLE001
             return 0
+
+    def list_docs(self, where: dict) -> dict:
+        """ids + documents + metadatas (NO embeddings) for `where` - lighter than dump() for
+        operations that only need chunk text (e.g. exact-duplicate detection)."""
+        try:
+            res = self._col.get(where=where, include=["documents", "metadatas"])
+        except Exception:  # noqa: BLE001 - collection empty / not ready
+            return {"ids": [], "documents": [], "metadatas": []}
+        return {
+            "ids": res.get("ids") or [],
+            "documents": res.get("documents") or [],
+            "metadatas": res.get("metadatas") or [],
+        }
 
     def ids_where(self, where: dict) -> list[str]:
         """The ids currently stored matching `where` - lets a caller index only the rows

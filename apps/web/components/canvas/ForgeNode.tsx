@@ -33,7 +33,7 @@ function summarize(type: string, c: Record<string, any>): string[] {
       return [String(c.tool_id || "-")];
     case "retrieval": {
       const lines: string[] = [];
-      if (c.include_docs !== false) lines.push(`docs top_k ${c.top_k ?? 5}${c.hybrid ? " · hybrid" : ""}`);
+      if (c.include_docs !== false) lines.push(`docs top_k ${c.top_k ?? 5}${c.hybrid ? " · hybrid" : ""}${c.rerank ? " · rerank" : ""}`);
       if (c.include_qa) lines.push(`Q&A top_k ${c.qa_top_k ?? 3}`);
       return lines.length ? lines : ["no sources"];
     }

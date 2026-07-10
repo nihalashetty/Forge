@@ -1,7 +1,6 @@
 """Pluggable chunking strategies for knowledge ingestion.
 
-Three strategies, all targeting ~chunk_size characters with overlap and all fully
-offline (no network, no model download):
+Four strategies, all targeting ~chunk_size characters with overlap:
 
 - ``recursive`` (default): LangChain's RecursiveCharacterTextSplitter when the
   ``knowledge`` extra is installed, falling back to the dependency-free recursive
@@ -13,6 +12,11 @@ offline (no network, no model download):
 - ``sentence``: split on sentence boundaries (abbreviation-aware regex) then pack
   sentences into chunks with sentence-level overlap. Meaningful when meaning lives
   at the sentence level (FAQs, transcripts, prose).
+- ``semantic``: split where the *meaning* shifts. Embeds each sentence and cuts at
+  the largest drops in sentence-to-sentence similarity (percentile break-points), so
+  a chunk stays on one topic. Needs an ``embed_fn`` (the ingest pipeline injects the
+  project embedder) - without one, or for very short text, it falls back to recursive.
+  It is the only strategy that isn't purely lexical; the others need no model.
 
 ``chunk_text`` is the single dispatch entrypoint; ``split_text`` is kept as the
 pure-Python recursive splitter (public API + the universal fallback).
@@ -21,11 +25,20 @@ pure-Python recursive splitter (public API + the universal fallback).
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
+
+# A callable that embeds a batch of texts -> one vector (list of floats) each. Matches the
+# Embedder.embed signature in knowledge/embeddings.py, so ingest can pass `embedder.embed`.
+EmbedFn = Callable[[list[str]], list]
 
 # Canonical strategy names (kept in sync with packages/schemas/forge/project.json
 # rag_defaults.chunking_strategy and KbSourceCreate.chunking_strategy).
-CHUNK_STRATEGIES = ("recursive", "section", "sentence")
+CHUNK_STRATEGIES = ("recursive", "section", "sentence", "semantic")
 DEFAULT_STRATEGY = "recursive"
+
+# Break sentences into a new chunk when their similarity drop is in the top (100-N)% of drops.
+# 95 => cut only at the sharpest ~5% of topic shifts (few, clean boundaries).
+_SEMANTIC_BREAKPOINT_PERCENTILE = 95.0
 
 _SEPARATORS = ["\n\n", "\n", ". ", " "]
 
@@ -47,9 +60,14 @@ _ABBREVIATIONS = frozenset({
 
 
 def chunk_text(
-    text: str, *, strategy: str = DEFAULT_STRATEGY, chunk_size: int = 1000, overlap: int = 200
+    text: str, *, strategy: str = DEFAULT_STRATEGY, chunk_size: int = 1000, overlap: int = 200,
+    embed_fn: EmbedFn | None = None,
 ) -> list[str]:
-    """Split ``text`` using the named strategy. Unknown/empty strategy -> recursive."""
+    """Split ``text`` using the named strategy. Unknown/empty strategy -> recursive.
+
+    ``embed_fn`` is only used by the ``semantic`` strategy (the ingest pipeline passes the
+    project embedder). Every other strategy ignores it and stays fully offline/lexical.
+    """
     text = (text or "").strip()
     if not text:
         return []
@@ -58,6 +76,8 @@ def chunk_text(
         return _split_sections(text, chunk_size, overlap)
     if strategy == "sentence":
         return _split_sentences(text, chunk_size, overlap)
+    if strategy == "semantic":
+        return _split_semantic(text, chunk_size, overlap, embed_fn)
     return _split_recursive(text, chunk_size, overlap)
 
 
@@ -197,4 +217,64 @@ def _split_sentences(text: str, chunk_size: int, overlap: int) -> list[str]:
         cur_len += len(s) + 1
     if cur:
         chunks.append(" ".join(cur))
+    return [c for c in chunks if c.strip()]
+
+
+def _percentile(sorted_vals: list[float], pct: float) -> float:
+    """Linear-interpolated percentile over an already-sorted list (no numpy dependency)."""
+    if not sorted_vals:
+        return 0.0
+    if len(sorted_vals) == 1:
+        return sorted_vals[0]
+    rank = (pct / 100.0) * (len(sorted_vals) - 1)
+    lo = int(rank)
+    hi = min(lo + 1, len(sorted_vals) - 1)
+    return sorted_vals[lo] + (sorted_vals[hi] - sorted_vals[lo]) * (rank - lo)
+
+
+def _split_semantic(
+    text: str, chunk_size: int, overlap: int, embed_fn: EmbedFn | None
+) -> list[str]:
+    """Split on meaning-drift: embed each sentence, then cut between sentences whose
+    similarity drop is among the sharpest (strictly above the break-point percentile). A single
+    topic stays in one chunk; a topic shift starts a new one. Segments larger than chunk_size are
+    recursively sub-split. Falls back to recursive when there's no embedder, too few
+    sentences to compare, or embedding fails - so it can never hard-fail an ingest."""
+    if embed_fn is None:
+        return _split_recursive(text, chunk_size, overlap)
+    sentences = _split_into_sentences(text)
+    if len(sentences) < 3:
+        return _split_recursive(text, chunk_size, overlap)
+    try:
+        vectors = list(embed_fn(sentences))
+    except Exception:  # noqa: BLE001 - embedder failure -> lexical fallback, never abort ingest
+        return _split_recursive(text, chunk_size, overlap)
+    if len(vectors) != len(sentences):
+        return _split_recursive(text, chunk_size, overlap)
+
+    from forge.knowledge.embeddings import cosine
+
+    # Distance (1 - cosine) between each adjacent sentence pair; a large value = a topic shift.
+    # Materialize each vector to a list ONCE (each is otherwise re-listed as both a left and a
+    # right neighbor).
+    vecs = [list(v) for v in vectors]
+    dists = [1.0 - cosine(vecs[i], vecs[i + 1]) for i in range(len(vecs) - 1)]
+    threshold = _percentile(sorted(dists), _SEMANTIC_BREAKPOINT_PERCENTILE)
+
+    segments: list[str] = []
+    cur = [sentences[0]]
+    for i in range(1, len(sentences)):
+        if dists[i - 1] > threshold:  # sharp enough drop -> boundary before this sentence
+            segments.append(" ".join(cur))
+            cur = []
+        cur.append(sentences[i])
+    if cur:
+        segments.append(" ".join(cur))
+
+    chunks: list[str] = []
+    for seg in segments:
+        if len(seg) <= chunk_size:
+            chunks.append(seg)
+        else:
+            chunks.extend(_split_recursive(seg, chunk_size, overlap))
     return [c for c in chunks if c.strip()]

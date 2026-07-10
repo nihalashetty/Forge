@@ -119,6 +119,9 @@ export interface KbSource { id: string; project_id: string; kind: string; name: 
 export interface RechunkSettings { chunking_strategy?: string; chunk_size?: number; chunk_overlap?: number; }
 export interface QaPair { id: string; question: string; answer: string; kind: string; tags: string[]; upvotes: number; }
 export interface SearchHit { text: string; score: number; source_id?: string; }
+// Chunk-map visualizer (POST /knowledge/map): a 2-D (PCA) projection of the stored chunk vectors.
+export interface ChunkPoint { id: string; x: number; y: number; source_id?: string | null; chunk_idx?: number | null; parent_id?: string | null; preview: string; retrieved?: number; }
+export interface ChunkMapResult { points: ChunkPoint[]; sources: { id: string; name: string }[]; query_point: [number, number] | null; query: string | null; total: number; truncated: boolean; }
 export interface Trace { id: string; run_id: string; workflow_id?: string | null; name: string; status: string; started_at?: string | null; ended_at?: string | null; latency_ms: number; total_tokens: number; total_cost_usd: number; }
 export interface Span { id: string; parent_span_id?: string | null; name: string; kind: string; latency_ms: number; input?: any; output?: any; model?: string | null; input_tokens: number; output_tokens: number; cost_usd: number; error?: string | null; }
 export interface Conversation { thread_id: string; actor: string; source: string; end_user_id?: string | null; workflow_id?: string | null; turns: number; total_tokens: number; total_cost_usd: number; started_at?: string | null; last_activity?: string | null; status: string; preview: string; }
@@ -323,8 +326,12 @@ export const api = {
   embeddingHealth: (pid: string) =>
     json<{ current_model: string; current_dim: number; sources: number; needs_reembed: boolean; mismatched: { id: string; name: string; embedded_with: string; dim: number }[] }>(`/v1/projects/${pid}/knowledge/health`),
   deleteSource: (pid: string, sid: string) => notifyCounts(fetch(`${BASE}/v1/projects/${pid}/knowledge/sources/${sid}`, { method: "DELETE", headers: authHeader() })),
-  searchKnowledge: (pid: string, query: string, top_k = 5, folders?: string[], hybrid = false) =>
-    json<SearchHit[]>(`/v1/projects/${pid}/knowledge/search`, { method: "POST", body: JSON.stringify({ query, top_k, hybrid, ...(folders?.length ? { folders } : {}) }) }),
+  searchKnowledge: (pid: string, query: string, top_k = 5, folders?: string[], hybrid = false, rerank = false) =>
+    json<SearchHit[]>(`/v1/projects/${pid}/knowledge/search`, { method: "POST", body: JSON.stringify({ query, top_k, hybrid, rerank, ...(folders?.length ? { folders } : {}) }) }),
+  chunkMap: (pid: string, body: { query?: string; folders?: string[]; source_ids?: string[]; limit?: number; hybrid?: boolean; rerank?: boolean; top_k?: number }) =>
+    json<ChunkMapResult>(`/v1/projects/${pid}/knowledge/map`, { method: "POST", body: JSON.stringify(body) }),
+  dedupeChunks: (pid: string) =>
+    json<{ removed: number; groups: number; sources_affected: number; remaining: number }>(`/v1/projects/${pid}/knowledge/dedupe`, { method: "POST" }),
   listQa: (pid: string) => json<QaPair[]>(`/v1/projects/${pid}/qa-pairs`),
   listQaKinds: (pid: string) => json<string[]>(`/v1/projects/${pid}/qa-pairs/kinds`),
   addQa: (pid: string, body: { question: string; answer: string; kind?: string; tags?: string[] }) =>

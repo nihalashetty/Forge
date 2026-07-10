@@ -5,12 +5,23 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Icon } from "../icons";
 import { Field, Modal, Segmented, StatusPill } from "../primitives";
 import { api, KbSource, QaPair, SearchHit } from "@/lib/api";
+import { ChunkMap } from "./chunk-map";
 
 const VTABS = [
   { value: "files", label: "Files", icon: "knowledge" },
   { value: "qa", label: "Q&A pairs", icon: "n_qa" },
   { value: "search", label: "Search debugger", icon: "search" },
+  { value: "map", label: "Chunk map", icon: "layers" },
 ] as const;
+
+// Chunking strategies offered in the UI - mirrors CHUNK_STRATEGIES in the backend splitter.
+const CHUNK_OPTIONS = [
+  { value: "recursive", label: "Recursive" },
+  { value: "section", label: "By section" },
+  { value: "sentence", label: "By sentence" },
+  { value: "semantic", label: "Semantic" },
+] as const;
+const CHUNK_HELP = "Recursive suits most documents; By section keeps each Markdown heading’s content together; By sentence groups whole sentences (good for FAQs and transcripts); Semantic splits where the meaning shifts (uses the embedder, slower to ingest).";
 
 export function KnowledgeScreen({ project }: { project: any }) {
   const [tab, setTab] = useState<string>("files");
@@ -45,6 +56,7 @@ export function KnowledgeScreen({ project }: { project: any }) {
             {tab === "files" && <Files project={project} />}
             {tab === "qa" && <QA project={project} />}
             {tab === "search" && <SearchDebugger project={project} />}
+            {tab === "map" && <ChunkMap project={project} />}
           </div>
         </div>
       </div>
@@ -84,6 +96,8 @@ function Files({ project }: { project: any }) {
   const [rechunkErr, setRechunkErr] = useState<string | null>(null);
   const [rechunkForm, setRechunkForm] = useState<{ strategy: string; size: number; overlap: number }>({ strategy: DEFAULT_CHUNK_STRATEGY, size: DEFAULT_CHUNK_SIZE, overlap: DEFAULT_CHUNK_OVERLAP });
 
+  const [dedupeBusy, setDedupeBusy] = useState(false);
+  const [dedupeMsg, setDedupeMsg] = useState<string | null>(null);
   const [health, setHealth] = useState<{ needs_reembed: boolean; current_model: string; mismatched: { id: string; name: string }[] } | null>(null);
   const reload = useCallback(() => {
     if (!project?.id) return;
@@ -110,6 +124,21 @@ function Files({ project }: { project: any }) {
   }, [rows, project?.id]);
 
   async function reingest(id: string) { await api.reingestSource(project.id, id).catch(() => {}); reload(); }
+
+  async function dedupe() {
+    if (!window.confirm("Remove exact-duplicate chunks (identical text) across this project, keeping one copy of each?\n\nIf duplicates come from the same document added twice, delete the duplicate source instead — re-ingesting regenerates the chunks.")) return;
+    setDedupeBusy(true);
+    setDedupeMsg(null);
+    try {
+      const r = await api.dedupeChunks(project.id);
+      setDedupeMsg(r.removed === 0
+        ? "No duplicate chunks found."
+        : `Removed ${r.removed} duplicate chunk${r.removed === 1 ? "" : "s"} (${r.groups} group${r.groups === 1 ? "" : "s"}) across ${r.sources_affected} source${r.sources_affected === 1 ? "" : "s"}. ${r.remaining} remain.`);
+      reload();
+    } catch (e: any) {
+      setDedupeMsg(`Dedupe failed: ${e?.message || e}`);
+    } finally { setDedupeBusy(false); }
+  }
 
   const folders = useMemo(() => {
     const set = new Set<string>();
@@ -247,10 +276,21 @@ function Files({ project }: { project: any }) {
       <div style={{ flex: 1, minWidth: 0 }}>
         <div className="row spread" style={{ marginBottom: 12 }}>
           <div className="t-h2">{folder === null ? "All files" : folder === UNFILED ? "Unfiled" : folder}</div>
-          <button className="btn btn-primary btn-sm" onClick={() => openAdd()}>
-            <Icon name="plus" size={14} />Add source
-          </button>
+          <div className="row gap2">
+            <button className="btn btn-ghost btn-sm" onClick={dedupe} disabled={dedupeBusy} title="Remove exact-duplicate chunks (identical text) so the same passage never fills two retrieval slots.">
+              <Icon name={dedupeBusy ? "refresh" : "layers"} size={14} style={dedupeBusy ? { animation: "spin 1s linear infinite" } : {}} />{dedupeBusy ? "Removing…" : "Remove duplicates"}
+            </button>
+            <button className="btn btn-primary btn-sm" onClick={() => openAdd()}>
+              <Icon name="plus" size={14} />Add source
+            </button>
+          </div>
         </div>
+        {dedupeMsg && (
+          <div className="card row spread" style={{ padding: "8px 12px", marginBottom: 10, alignItems: "center" }}>
+            <span className="t-body-sm">{dedupeMsg}</span>
+            <button className="iconbtn" title="Dismiss" onClick={() => setDedupeMsg(null)}><Icon name="x" size={13} /></button>
+          </div>
+        )}
         {selected.size > 0 && (
           <div className="card row spread" style={{ padding: "8px 12px", marginBottom: 10, alignItems: "center" }}>
             <span className="t-body-sm"><b>{selected.size}</b> selected</span>
@@ -327,9 +367,9 @@ function Files({ project }: { project: any }) {
             {form.file && <div className="t-caption fg-2" style={{ marginTop: 6 }}>{form.file.name} · {(form.file.size / 1024).toFixed(1)} KB</div>}
           </Field>
         )}
-        <Field label="Chunking" help="How this source is split before embedding. Recursive suits most documents; By section keeps each Markdown heading’s content together; By sentence groups whole sentences (good for FAQs and transcripts).">
+        <Field label="Chunking" help={`How this source is split before embedding. ${CHUNK_HELP}`}>
           <Segmented
-            options={[{ value: "recursive", label: "Recursive" }, { value: "section", label: "By section" }, { value: "sentence", label: "By sentence" }]}
+            options={CHUNK_OPTIONS as any}
             value={form.chunkStrategy}
             onChange={(v) => setForm((f) => ({ ...f, chunkStrategy: v }))}
           />
@@ -341,9 +381,9 @@ function Files({ project }: { project: any }) {
         title={`Re-chunk ${rechunkTargets.length} source${rechunkTargets.length === 1 ? "" : "s"}`}
         footer={<><button className="btn btn-ghost" onClick={() => setRechunkOpen(false)}>Cancel</button><button className="btn btn-primary" onClick={doRechunk} disabled={rechunkBusy}>{rechunkBusy ? "Re-chunking…" : "Apply & re-embed"}</button></>}>
         <div className="t-caption fg-2" style={{ marginBottom: 12 }}>Re-splits and re-embeds the selected source(s) with these settings. Existing chunks are replaced. Text &amp; file sources reuse their stored content; URLs &amp; crawls are re-fetched.</div>
-        <Field label="Chunking strategy" help="Recursive suits most documents; By section keeps each Markdown heading’s content together; By sentence groups whole sentences (good for FAQs and transcripts).">
+        <Field label="Chunking strategy" help={CHUNK_HELP}>
           <Segmented
-            options={[{ value: "recursive", label: "Recursive" }, { value: "section", label: "By section" }, { value: "sentence", label: "By sentence" }]}
+            options={CHUNK_OPTIONS as any}
             value={rechunkForm.strategy}
             onChange={(v) => setRechunkForm((f) => ({ ...f, strategy: v }))}
           />
@@ -498,10 +538,19 @@ function SearchDebugger({ project }: { project: any }) {
   const [folders, setFolders] = useState<string[]>([]);
   const [folder, setFolder] = useState("");
   const [mode, setMode] = useState<"vector" | "hybrid">("vector");
+  const [rerank, setRerank] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
   useEffect(() => { if (project?.id) api.listFolders(project.id).then(setFolders).catch(() => {}); }, [project?.id]);
   async function run() {
-    const h = await api.searchKnowledge(project.id, q, 8, folder ? [folder] : undefined, mode === "hybrid");
-    setHits(h); setSearched(true);
+    if (busy || !q.trim()) return;
+    setBusy(true); setErr(null);
+    try {
+      const h = await api.searchKnowledge(project.id, q, 8, folder ? [folder] : undefined, mode === "hybrid", rerank);
+      setHits(h); setSearched(true);
+    } catch (e: any) {
+      setErr(e?.message || "Search failed."); setHits([]); setSearched(true);
+    } finally { setBusy(false); }
   }
   return (
     <>
@@ -513,18 +562,27 @@ function SearchDebugger({ project }: { project: any }) {
             {folders.map((f) => <option key={f} value={f}>{f}</option>)}
           </select>
         )}
-        <button className="btn btn-primary" onClick={run}><Icon name="search" size={14} />Search</button>
+        <button className="btn btn-primary" onClick={run} disabled={busy || !q.trim()}>
+          <Icon name={busy ? "refresh" : "search"} size={14} style={busy ? { animation: "spin 1s linear infinite" } : {}} />{busy ? "Searching…" : "Search"}
+        </button>
       </div>
+      {err && <div className="t-caption" style={{ color: "var(--err)", marginBottom: 8 }}>{err}</div>}
       <div className="row gap2" style={{ marginBottom: 6, alignItems: "center" }}>
         <Segmented
           options={[{ value: "vector", label: "Vector" }, { value: "hybrid", label: "Hybrid" }]}
           value={mode}
           onChange={(v) => setMode(v as "vector" | "hybrid")}
         />
+        <label className="row gap1" style={{ alignItems: "center", cursor: "pointer", fontSize: 13 }} title="Two-stage retrieval: a local cross-encoder re-scores the shortlist and keeps the best matches. Runs offline; adds some latency.">
+          <input type="checkbox" checked={rerank} onChange={(e) => setRerank(e.target.checked)} />
+          Rerank
+        </label>
         <span className="t-caption fg-2">
-          {mode === "hybrid"
-            ? "BM25 lexical + vector, fused via RRF. Score is a normalized fusion rank (0–1), not cosine."
-            : "Vector-only. Score is cosine similarity (0–1) between the query and each chunk."}
+          {rerank
+            ? "Cross-encoder rerank on. Score is the reranker’s relevance (0–1)."
+            : mode === "hybrid"
+              ? "BM25 lexical + vector, fused via RRF. Score is a normalized fusion rank (0–1), not cosine."
+              : "Vector-only. Score is cosine similarity (0–1) between the query and each chunk."}
         </span>
       </div>
       <div style={{ marginBottom: 14 }} />

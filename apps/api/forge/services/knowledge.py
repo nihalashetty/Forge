@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from forge.knowledge.embeddings import KNOWN_EMBEDDING_DIMS, resolve_embedder
 from forge.knowledge.splitter import chunk_text
-from forge.knowledge.store import ChromaStore, Hit
+from forge.knowledge.store import ChromaStore, Hit, _where
 from forge.models import KbSource, Project, QaPair
 from forge.secrets.store import SecretStore
 from forge.util.http import shared_async_client
@@ -24,6 +24,13 @@ log = logging.getLogger("forge.knowledge")
 _DEFAULT_CHUNK_STRATEGY = "recursive"
 _DEFAULT_CHUNK_SIZE = 1000
 _DEFAULT_CHUNK_OVERLAP = 200
+# Parent-child mode: size (chars) of the small child chunks that actually get embedded. The
+# parent window uses the normal chunk_size. Overridable via rag_defaults.child_chunk_size.
+_DEFAULT_CHILD_CHUNK_SIZE = 300
+# Chunk-map visualizer point budget: the UI lets the user choose how many chunks to plot; this
+# is the default and the hard ceiling (projecting/SVD-ing every vector gets slow + heavy).
+_CHUNK_MAP_DEFAULT_POINTS = 400
+_CHUNK_MAP_MAX_POINTS = 2000
 
 
 def _dim_collections(prefix: str) -> list[str]:
@@ -41,6 +48,54 @@ def _strip_html(html: str) -> str:
         return BeautifulSoup(html, "html.parser").get_text(" ", strip=True)
     except Exception:  # noqa: BLE001
         return re.sub(r"<[^>]+>", " ", html)
+
+
+def _project_chunks_2d(embeddings: list, query_vec: list | None = None, *, spread: float = 1000.0):
+    """PCA the chunk vectors down to 2-D for the chunk map: fit on the chunk embeddings, then
+    project both the chunks AND (optionally) the query into the SAME plane so nearby dots really
+    are semantically near. Both axes are scaled by one factor so distances stay proportional.
+    Returns (coords: list[[x, y]], query_xy: [x, y] | None). Falls back to a plain grid layout
+    when numpy is unavailable or the vectors are degenerate - the map still renders, just without
+    the semantic placement."""
+    n = len(embeddings)
+    if n == 0:
+        return [], None
+
+    def _grid():
+        import math
+
+        cols = max(1, int(math.ceil(math.sqrt(n))))
+        return [[float((i % cols) * 60), float((i // cols) * 60)] for i in range(n)], None
+
+    try:
+        import numpy as np
+
+        # Chroma rows are already numpy-ish sequences; asarray copies them into one (n, d) matrix
+        # directly (a ragged/degenerate set raises and drops to the grid fallback below).
+        x = np.asarray(embeddings, dtype=float)
+        if x.ndim != 2 or x.shape[0] < 2:
+            return _grid()
+        mean = x.mean(axis=0)
+        xc = x - mean
+        _, _, vt = np.linalg.svd(xc, full_matrices=False)
+        k = min(2, vt.shape[0])
+        comps = vt[:k]  # (k, d) principal directions
+        proj = xc @ comps.T  # (n, k)
+        if k == 1:  # only one usable component -> spread along x, flat y
+            proj = np.column_stack([proj[:, 0], np.zeros(n)])
+        mn = proj.min(axis=0)
+        span = float((proj.max(axis=0) - mn).max()) or 1.0
+        norm = (proj - mn) / span * spread
+        coords = [[round(float(a), 2), round(float(b), 2)] for a, b in norm]
+        query_xy = None
+        if query_vec is not None:
+            q = (np.asarray(query_vec, dtype=float) - mean) @ comps.T
+            q = np.array([q[0], q[1] if k > 1 else 0.0])
+            qn = (q - mn) / span * spread
+            query_xy = [round(float(qn[0]), 2), round(float(qn[1]), 2)]
+        return coords, query_xy
+    except Exception:  # noqa: BLE001 - numpy missing / SVD failed -> grid layout
+        return _grid()
 
 
 class KnowledgeService:
@@ -77,6 +132,28 @@ class KnowledgeService:
     @staticmethod
     def _store(embedder) -> ChromaStore:
         return ChromaStore(collection=f"forge_kb_{embedder.dim}")
+
+    @staticmethod
+    def _collapse_parents(hits: list[Hit]) -> list[Hit]:
+        """Parent-child retrieval: a child hit carries `parent_id` + `parent_text` in metadata.
+        Swap the small matched child for its wider parent window and keep only the best-scoring
+        child per parent (hits arrive score-ordered), so the agent gets deduped, context-rich
+        passages. Flat-mode hits (no `parent_id`) pass through unchanged, so this is a no-op
+        until a project opts into parent_child ingestion."""
+        from dataclasses import replace
+
+        out: list[Hit] = []
+        seen: set[str] = set()
+        for h in hits:
+            pid = (h.metadata or {}).get("parent_id")
+            if not pid:
+                out.append(h)
+                continue
+            if pid in seen:
+                continue
+            seen.add(pid)
+            out.append(replace(h, text=(h.metadata or {}).get("parent_text") or h.text))
+        return out
 
     @staticmethod
     async def embedding_health(session, tenant_id: str, project_id: str) -> dict:
@@ -237,22 +314,57 @@ class KnowledgeService:
             if _overlap is None:
                 _overlap = rag.get("chunk_overlap")
             overlap = int(_overlap) if _overlap is not None else _DEFAULT_CHUNK_OVERLAP
-            chunks = chunk_text(content, strategy=strategy, chunk_size=chunk_size, overlap=overlap)
+            parent_child = rag.get("retrieval_mode") == "parent_child"
+            child_size = int(rag.get("child_chunk_size") or _DEFAULT_CHILD_CHUNK_SIZE)
+
             embedder = await KnowledgeService.embedder_for_project(session, src.tenant_id, src.project_id)
             store = KnowledgeService._store(embedder)
-            if chunks:
-                vectors = await embedder.aembed(chunks)
-                store.upsert(
-                    ids=[f"{src.id}:{i}" for i in range(len(chunks))],
-                    embeddings=vectors,
-                    documents=chunks,
-                    metadatas=[{"tenant_id": src.tenant_id, "project_id": src.project_id, "source_id": src.id, "chunk_idx": i} for i in range(len(chunks))],
-                )
-            src.chunks = len(chunks)
+
+            # Semantic chunking embeds each sentence, so it needs the embedder AND must run off
+            # the event loop; every other strategy is pure-Python. This helper hides that.
+            async def _split(t: str, size: int) -> list[str]:
+                if strategy == "semantic":
+                    return await asyncio.to_thread(
+                        chunk_text, t, strategy=strategy, chunk_size=size, overlap=overlap,
+                        embed_fn=embedder.embed,
+                    )
+                return chunk_text(t, strategy=strategy, chunk_size=size, overlap=overlap)
+
+            base = {"tenant_id": src.tenant_id, "project_id": src.project_id, "source_id": src.id}
+            ids: list[str] = []
+            docs: list[str] = []
+            metas: list[dict] = []
+            n_parents = 0
+            if parent_child:
+                # Split into parent windows (the chosen strategy), then each parent into small
+                # children (recursive). ONLY children are embedded/searched; each child carries
+                # its parent's text so retrieval can hand back the wider context (see search()).
+                parents = await _split(content, chunk_size)
+                n_parents = len(parents)
+                child_overlap = min(overlap, max(child_size // 4, 0))
+                for pj, parent in enumerate(parents):
+                    for child in chunk_text(parent, strategy="recursive", chunk_size=child_size, overlap=child_overlap):
+                        ids.append(f"{src.id}:{len(ids)}")
+                        docs.append(child)
+                        metas.append({**base, "chunk_idx": len(metas), "parent_idx": pj,
+                                      "parent_id": f"{src.id}:p{pj}", "parent_text": parent})
+            else:
+                for i, chunk in enumerate(await _split(content, chunk_size)):
+                    ids.append(f"{src.id}:{i}")
+                    docs.append(chunk)
+                    metas.append({**base, "chunk_idx": i})
+
+            if ids:
+                vectors = await embedder.aembed(docs)
+                store.upsert(ids=ids, embeddings=vectors, documents=docs, metadatas=metas)
+            src.chunks = len(ids)  # embedded/searchable units (children in parent_child mode)
             src.embedding_model = embedder.name
-            # Record the chunking actually used (covers the project-default fallback) so
-            # the UI can show it and reingest / re-chunk reuses it.
-            src.meta = {**(src.meta or {}), "chunk_strategy": strategy, "chunk_size": chunk_size, "chunk_overlap": overlap}
+            # Record the chunking actually used (covers the project-default fallback) so the UI
+            # can show it and reingest / re-chunk reuses it.
+            src.meta = {**(src.meta or {}), "chunk_strategy": strategy, "chunk_size": chunk_size,
+                        "chunk_overlap": overlap, "retrieval_mode": "parent_child" if parent_child else "chunk"}
+            if parent_child:
+                src.meta["parents"] = n_parents
             src.status = "ready"
         except Exception as e:  # noqa: BLE001
             src.status = "error"
@@ -328,18 +440,79 @@ class KnowledgeService:
         await session.commit()
 
     @staticmethod
+    async def dedupe_chunks(session, tenant_id, project_id) -> dict:
+        """Remove EXACT-duplicate chunks (identical text, ignoring only surrounding whitespace)
+        across the whole project, keeping the FIRST occurrence of each. Recomputes the chunk
+        count of every source it touched so the UI stays accurate.
+
+        Cleanup only: re-ingesting a source regenerates all its chunks, so if the duplicates come
+        from the same document ingested twice, delete the duplicate SOURCE (Files tab) - otherwise
+        the dupes reappear on the next reingest. Operates on the project's current embedder
+        collection (the one search uses)."""
+        embedder = await KnowledgeService.embedder_for_project(session, tenant_id, project_id)
+        store = KnowledgeService._store(embedder)
+        where = _where(tenant_id, project_id, None)
+        data = store.list_docs(where)
+        ids, docs, metas = data["ids"], data["documents"], data["metadatas"]
+
+        seen: set[str] = set()
+        dupe_ids: list[str] = []
+        dupe_keys: set[str] = set()
+        affected: set[str] = set()
+        for i, cid in enumerate(ids):
+            key = ((docs[i] if i < len(docs) else "") or "").strip()
+            if not key:
+                continue
+            if key in seen:
+                dupe_ids.append(cid)
+                dupe_keys.add(key)
+                sid = (metas[i] or {}).get("source_id") if i < len(metas) else None
+                if sid:
+                    affected.add(sid)
+            else:
+                seen.add(key)
+
+        if dupe_ids:
+            store.delete_ids(dupe_ids)
+            # Keep each affected source's DB chunk count in sync with what actually remains.
+            for sid in affected:
+                remaining = store.count_where(_where(tenant_id, project_id, [sid]))
+                src = (await session.execute(
+                    select(KbSource).where(
+                        KbSource.tenant_id == tenant_id, KbSource.project_id == project_id, KbSource.id == sid
+                    )
+                )).scalar_one_or_none()
+                if src is not None:
+                    src.chunks = remaining
+            await session.commit()
+
+        return {
+            "removed": len(dupe_ids),
+            "groups": len(dupe_keys),
+            "sources_affected": len(affected),
+            "remaining": len(ids) - len(dupe_ids),
+        }
+
+    @staticmethod
     async def search(
         session, tenant_id, project_id, query, *, top_k=5, source_ids=None, folders=None,
-        embedder=None, embedding=None, hybrid=False,
+        embedder=None, embedding=None, hybrid=False, rerank=False, rerank_top_n=None,
     ) -> list[Hit]:
         """Vector search over the project's chunks - or hybrid (BM25 lexical + vector,
         fused via RRF) when `hybrid=True`. Hybrid is opt-in; vector-only is the default.
 
+        When `rerank=True`, a second stage runs a local cross-encoder over a larger stage-1
+        shortlist (`rerank_top_n`, default max(top_k*5, 25)) and keeps the best `top_k` - a
+        big accuracy win at the cost of some latency. Opt-in; degrades to stage-1 order if the
+        reranker model is unavailable (see knowledge/rerank.py). NOTE: a reranked `Hit.score` is a
+        cross-encoder relevance on a DIFFERENT scale than cosine/fusion - a caller applying a
+        cosine-tuned floor (e.g. the retrieval node's min_score) must not apply it to reranked
+        hits (see nodes/rag.py).
+
         `embedder`/`embedding` let a caller that already embedded the query (e.g. the
         retrieval node, which reuses one vector for docs AND Q&A) skip re-embedding.
         `folders` narrows to sources in those folders (resolved to source ids here, so
-        existing Chroma data needs no re-ingest). In hybrid mode `Hit.score` is a
-        normalized fusion rank, not cosine similarity.
+        existing Chroma data needs no re-ingest).
         """
         if folders:
             folder_ids = await KnowledgeService._source_ids_for_folders(session, tenant_id, project_id, folders)
@@ -349,14 +522,117 @@ class KnowledgeService:
         embedder = embedder or await KnowledgeService.embedder_for_project(session, tenant_id, project_id)
         vec = embedding if embedding is not None else await embedder.aembed_query(query)
         store = KnowledgeService._store(embedder)
+        # Stage 1: pull a candidate shortlist. Over-fetch beyond top_k so parent-window collapse
+        # (which dedups many child hits into a single parent) still yields top_k distinct
+        # passages. The over-fetch is driven by the hits' own parent_id metadata, NOT the
+        # project's live retrieval_mode, so it stays correct even when the mode was flipped after
+        # ingest or sources are mixed. For flat data collapse is a no-op and the extra candidates
+        # are simply sliced back off, leaving ordering identical to a plain top_k query. Reranking
+        # needs its own (possibly larger) shortlist to trim down from. pool is always >= top_k.
+        pool = max(rerank_top_n or top_k * 5, 25) if rerank else top_k
+        pool = max(pool, top_k * 6)
         if hybrid:
-            return store.hybrid_query(
+            hits = store.hybrid_query(
                 embedding=vec, query=query, tenant_id=tenant_id, project_id=project_id,
-                top_k=top_k, source_ids=source_ids,
+                top_k=pool, source_ids=source_ids,
             )
-        return store.query(
-            embedding=vec, tenant_id=tenant_id, project_id=project_id, top_k=top_k, source_ids=source_ids
-        )
+        else:
+            hits = store.query(
+                embedding=vec, tenant_id=tenant_id, project_id=project_id, top_k=pool, source_ids=source_ids
+            )
+        # Stage 2: optional cross-encoder rerank (over child text in parent_child mode). Only this
+        # path needs the project config (reranker model), so the common flat/vector-only search
+        # makes NO extra Project DB round-trip.
+        if rerank:
+            from forge.knowledge.rerank import arerank_hits
+
+            rag = await KnowledgeService._rag_defaults(session, project_id)
+            hits = await arerank_hits(query, hits, top_k=pool, model=rag.get("reranker_model"))
+        # ...then collapse child hits to their (deduped) parent windows and keep the best top_k.
+        return KnowledgeService._collapse_parents(hits)[:top_k]
+
+    @staticmethod
+    async def chunk_map(
+        session, tenant_id, project_id, *, query=None, folders=None, source_ids=None,
+        limit=400, hybrid=False, rerank=False, top_k=8,
+    ) -> dict:
+        """Project the project's stored chunk vectors to 2-D (PCA) for the chunk-map visualizer.
+
+        Each point is a chunk (a child chunk in parent_child mode) with its source, a text
+        preview, and its `parent_id` (so the UI can draw parent->child links). When `query` is
+        given, it is embedded, projected into the SAME plane (`query_point`), and the chunks that
+        retrieval would return are tagged with their `retrieved` rank (so the UI can draw
+        query->hit links). `limit` caps how many points are projected/returned (the user picks
+        this in the UI); it is clamped to [1, _CHUNK_MAP_MAX_POINTS] so a huge value can't force
+        an unbounded fetch + SVD. `truncated` says whether more chunks exist than were shown.
+        Read-only: it never writes to the store.
+        """
+        limit = max(1, min(int(limit or _CHUNK_MAP_DEFAULT_POINTS), _CHUNK_MAP_MAX_POINTS))
+        embedder = await KnowledgeService.embedder_for_project(session, tenant_id, project_id)
+        if folders:
+            folder_ids = await KnowledgeService._source_ids_for_folders(session, tenant_id, project_id, folders)
+            source_ids = sorted(set(folder_ids) & set(source_ids)) if source_ids else folder_ids
+            if not source_ids:
+                return {"points": [], "sources": [], "query_point": None, "query": query or None, "total": 0, "truncated": False}
+
+        where = _where(tenant_id, project_id, list(source_ids) if source_ids else None)
+
+        store = KnowledgeService._store(embedder)
+        dumped = store.dump(where, limit=limit)
+        ids = list(dumped["ids"]); docs = list(dumped["documents"])
+        metas = list(dumped["metadatas"]); embs = list(dumped["embeddings"])
+        # `total` is the full corpus count. Derive it from the dump when the dump didn't hit the
+        # cap (the dump already returned everything), and only pay a count scan when we truncated.
+        n_sampled = len(ids)
+        total = n_sampled if n_sampled < limit else store.count_where(where)
+        if not ids:
+            return {"points": [], "sources": [], "query_point": None, "query": query or None, "total": total, "truncated": False}
+
+        qvec = await embedder.aembed_query(query) if query else None
+
+        rank_by_id: dict = {}
+        if query:
+            # Run the overlay search FIRST so we know which chunks retrieval surfaces (reuse the
+            # already-embedded query vector).
+            hits = await KnowledgeService.search(
+                session, tenant_id, project_id, query, top_k=top_k, source_ids=source_ids,
+                embedder=embedder, embedding=qvec, hybrid=hybrid, rerank=rerank,
+            )
+            rank_by_id = {h.id: r + 1 for r, h in enumerate(hits)}
+            # Pull in any retrieved chunk that fell OUTSIDE the sampled window, so a hit is never
+            # silently missing from the map (and it lands on the same PCA plane as everything else).
+            have = set(ids)
+            missing = [hid for hid in rank_by_id if hid not in have]
+            if missing:
+                extra = store.dump(where, ids=missing)
+                ids += list(extra["ids"]); docs += list(extra["documents"])
+                metas += list(extra["metadatas"]); embs += list(extra["embeddings"])
+
+        coords, query_xy = _project_chunks_2d(embs, qvec)
+
+        points: list[dict] = []
+        for i, cid in enumerate(ids):
+            m = metas[i] if i < len(metas) else {}
+            m = m or {}
+            xy = coords[i] if i < len(coords) else [0.0, 0.0]
+            p = {
+                "id": cid, "x": xy[0], "y": xy[1],
+                "source_id": m.get("source_id"), "chunk_idx": m.get("chunk_idx"),
+                "parent_id": m.get("parent_id"),
+                "preview": ((docs[i] if i < len(docs) else "") or "")[:180],
+            }
+            if cid in rank_by_id:
+                p["retrieved"] = rank_by_id[cid]
+            points.append(p)
+
+        present = {p["source_id"] for p in points if p["source_id"]}
+        srcs = await KnowledgeService.list_sources(session, tenant_id, project_id)
+        sources = [{"id": s.id, "name": s.name} for s in srcs if s.id in present]
+
+        return {
+            "points": points, "sources": sources, "query_point": query_xy,
+            "query": query or None, "total": total, "truncated": total > len(points),
+        }
 
     # --- Q&A ---
     @staticmethod

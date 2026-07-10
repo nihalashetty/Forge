@@ -58,8 +58,10 @@
             "enabled": { "type": "boolean", "default": false },
             "folders": { "type": "array", "items": { "type": "string" }, "x-ui": { "widget": "chips", "refType": "kb_folder" }, "description": "Restrict to these knowledge folders (empty = all)." },
             "top_k": { "type": "integer", "default": 4, "description": "Document chunks returned per search." },
-            "min_score": { "type": "number", "default": 0.18, "description": "Drop chunks below this similarity so off-topic queries surface nothing." },
-            "hybrid": { "type": "boolean", "default": false, "description": "Blend lexical BM25 keyword ranking with vector search (RRF) so exact terms - codes, names, SKUs - aren't missed." }
+            "min_score": { "type": "number", "default": 0.18, "description": "Drop chunks below this cosine similarity so off-topic queries surface nothing. Not applied when rerank is on (the cross-encoder score is on a different scale)." },
+            "hybrid": { "type": "boolean", "default": false, "description": "Blend lexical BM25 keyword ranking with vector search (RRF) so exact terms - codes, names, SKUs - aren't missed." },
+            "rerank": { "type": "boolean", "default": false, "description": "Two-stage retrieval: a local cross-encoder re-scores the shortlist and keeps only the best matches. Big accuracy boost; adds some latency. Runs offline on CPU (no extra cost)." },
+            "rerank_top_n": { "type": "integer", "description": "How many chunks to pull into the rerank shortlist before the cross-encoder trims them to top_k (only when rerank is on). Leave unset to auto-size (roughly 6× top_k, minimum 25)." }
           }
         },
         "qa": {
