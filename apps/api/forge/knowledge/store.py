@@ -186,6 +186,22 @@ class ChromaStore:
             "metadatas": res.get("metadatas") or [],
         }
 
+    def get_texts(self, ids: list[str], where: dict) -> dict:
+        """Documents + metadatas for specific `ids`, ADDITIONALLY constrained by `where` - so a
+        caller-supplied id can't read a row outside its tenant/project. NO embeddings (lighter
+        than dump()); backs the chunk-map detail panel's on-demand full-text fetch."""
+        if not ids:
+            return {"ids": [], "documents": [], "metadatas": []}
+        try:
+            res = self._col.get(ids=ids, where=where, include=["documents", "metadatas"])
+        except Exception:  # noqa: BLE001 - collection empty / not ready
+            return {"ids": [], "documents": [], "metadatas": []}
+        return {
+            "ids": res.get("ids") or [],
+            "documents": res.get("documents") or [],
+            "metadatas": res.get("metadatas") or [],
+        }
+
     def ids_where(self, where: dict) -> list[str]:
         """The ids currently stored matching `where` - lets a caller index only the rows
         that are actually MISSING (vs. a count comparison that can't detect stale ids)."""

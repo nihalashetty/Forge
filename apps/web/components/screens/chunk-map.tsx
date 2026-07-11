@@ -11,7 +11,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "../icons";
 import { Segmented } from "../primitives";
-import { api, ChunkMapResult, ChunkPoint } from "@/lib/api";
+import { api, ChunkDetail, ChunkMapResult, ChunkPoint } from "@/lib/api";
 
 // How many chunks to plot. More points = a fuller picture but slower to project (PCA/SVD); the
 // backend clamps to a hard ceiling regardless of what's requested here.
@@ -79,6 +79,10 @@ function ChunkMapInner({ project }: { project: any }) {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [selId, setSelId] = useState<string | null>(null);
+  // Full text of the selected chunk, fetched on demand (the map payload carries only a preview).
+  const [detail, setDetail] = useState<ChunkDetail | null>(null);
+  const [detailBusy, setDetailBusy] = useState(false);
+  const [detailErr, setDetailErr] = useState(false);
 
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
@@ -125,7 +129,10 @@ function ChunkMapInner({ project }: { project: any }) {
     /* eslint-disable-next-line react-hooks/exhaustive-deps */
   }, [limit]);
 
-  // Rebuild React Flow nodes/edges whenever the map result (or selection) changes.
+  // Build the React Flow graph whenever the map RESULT changes (fresh load, query overlay, or a
+  // new point budget). Framing (fitView) lives ONLY here: re-fitting on selection would yank the
+  // user back out of whatever zoom they'd dialed in. Nodes start unselected — the selection effect
+  // below toggles the highlight ring in place without rebuilding or re-framing the graph.
   useEffect(() => {
     if (!res) { setNodes([]); setEdges([]); return; }
     const ns: Node[] = res.points.map((p) => ({
@@ -133,7 +140,7 @@ function ChunkMapInner({ project }: { project: any }) {
       type: "chunk",
       position: { x: p.x, y: p.y },
       draggable: false,
-      data: { ...p, color: colorOf(p.source_id), selected: p.id === selId },
+      data: { ...p, color: colorOf(p.source_id), selected: false },
     }));
     const es: Edge[] = [];
     // Parent-group "constellation": link a parent's children to the group's first child so you
@@ -163,7 +170,32 @@ function ChunkMapInner({ project }: { project: any }) {
     setEdges(es);
     // Frame the new layout after React Flow measures the nodes.
     setTimeout(() => fitView({ padding: 0.15, duration: 250 }).catch?.(() => {}), 60);
-  }, [res, selId, colorOf, setNodes, setEdges, fitView]);
+  }, [res, colorOf, setNodes, setEdges, fitView]);
+
+  // Selection just flips the highlight ring on the affected dots. It must NOT re-run the builder
+  // above (which re-fits the view and was zooming the map out on every click) — patch the
+  // `selected` flag in place, leaving unchanged nodes untouched so React Flow does minimal work.
+  useEffect(() => {
+    setNodes((nds) => nds.map((n) => {
+      if (n.type !== "chunk") return n;
+      const sel = n.id === selId;
+      return (n.data as any).selected === sel ? n : { ...n, data: { ...n.data, selected: sel } };
+    }));
+  }, [selId, setNodes]);
+
+  // Pull the FULL chunk text on demand when a dot is selected. The panel shows the short preview
+  // from the map payload instantly, then swaps in the full text once it arrives (or keeps the
+  // preview if the fetch fails). `cancelled` guards against a slow response for a stale selection.
+  useEffect(() => {
+    if (!selId || !project?.id) { setDetail(null); setDetailErr(false); setDetailBusy(false); return; }
+    let cancelled = false;
+    setDetail(null); setDetailErr(false); setDetailBusy(true);
+    api.chunkDetail(project.id, selId)
+      .then((d) => { if (!cancelled) setDetail(d); })
+      .catch(() => { if (!cancelled) setDetailErr(true); })
+      .finally(() => { if (!cancelled) setDetailBusy(false); });
+    return () => { cancelled = true; };
+  }, [selId, project?.id]);
 
   const selected = res?.points.find((p) => p.id === selId) || null;
   const empty = res && res.points.length === 0;
@@ -248,7 +280,11 @@ function ChunkMapInner({ project }: { project: any }) {
               {selected.retrieved && <span className="chip chip-mono" style={{ color: RETRIEVED }}>rank {selected.retrieved}</span>}
               {selected.parent_id && <span className="chip chip-mono" title={selected.parent_id}>parent</span>}
             </div>
-            <div className="t-body-sm" style={{ maxHeight: 360, overflow: "auto", whiteSpace: "pre-wrap" }}>{selected.preview}</div>
+            <div className="t-body-sm" style={{ maxHeight: 360, overflow: "auto", whiteSpace: "pre-wrap" }}>
+              {detail && detail.id === selId ? detail.text : selected.preview}
+            </div>
+            {detailBusy && <div className="t-caption fg-2" style={{ marginTop: 6 }}>Loading full chunk…</div>}
+            {detailErr && <div className="t-caption fg-2" style={{ marginTop: 6 }}>Showing preview — full text unavailable.</div>}
           </div>
         )}
       </div>

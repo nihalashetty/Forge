@@ -202,6 +202,17 @@ async def chunk_map(project_id: str, body: KnowledgeMapIn, session: AsyncSession
     )
 
 
+@router.get("/chunk")
+async def chunk_detail(project_id: str, chunk_id: str, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id)):
+    """Full text (+ light metadata) of a single chunk, fetched on demand when a dot is selected
+    in the chunk map (the map payload carries only a short preview). Scoped to the tenant/project.
+    404 when the id isn't in this project's current-embedder collection."""
+    detail = await KnowledgeService.chunk_detail(session, tenant_id, project_id, chunk_id)
+    if detail is None:
+        raise HTTPException(404, "Chunk not found.")
+    return detail
+
+
 @qa_router.get("", response_model=list[QaPairOut])
 async def list_qa(project_id: str, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id)):
     return await KnowledgeService.list_qa(session, tenant_id, project_id)

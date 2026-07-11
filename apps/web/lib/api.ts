@@ -122,6 +122,7 @@ export interface SearchHit { text: string; score: number; source_id?: string; }
 // Chunk-map visualizer (POST /knowledge/map): a 2-D (PCA) projection of the stored chunk vectors.
 export interface ChunkPoint { id: string; x: number; y: number; source_id?: string | null; chunk_idx?: number | null; parent_id?: string | null; preview: string; retrieved?: number; }
 export interface ChunkMapResult { points: ChunkPoint[]; sources: { id: string; name: string }[]; query_point: [number, number] | null; query: string | null; total: number; truncated: boolean; }
+export interface ChunkDetail { id: string; text: string; source_id?: string | null; chunk_idx?: number | null; parent_id?: string | null; }
 export interface Trace { id: string; run_id: string; workflow_id?: string | null; name: string; status: string; started_at?: string | null; ended_at?: string | null; latency_ms: number; total_tokens: number; total_cost_usd: number; }
 export interface Span { id: string; parent_span_id?: string | null; name: string; kind: string; latency_ms: number; input?: any; output?: any; model?: string | null; input_tokens: number; output_tokens: number; cost_usd: number; error?: string | null; }
 export interface Conversation { thread_id: string; actor: string; source: string; end_user_id?: string | null; workflow_id?: string | null; turns: number; total_tokens: number; total_cost_usd: number; started_at?: string | null; last_activity?: string | null; status: string; preview: string; }
@@ -330,6 +331,10 @@ export const api = {
     json<SearchHit[]>(`/v1/projects/${pid}/knowledge/search`, { method: "POST", body: JSON.stringify({ query, top_k, hybrid, rerank, ...(folders?.length ? { folders } : {}) }) }),
   chunkMap: (pid: string, body: { query?: string; folders?: string[]; source_ids?: string[]; limit?: number; hybrid?: boolean; rerank?: boolean; top_k?: number }) =>
     json<ChunkMapResult>(`/v1/projects/${pid}/knowledge/map`, { method: "POST", body: JSON.stringify(body) }),
+  // Full text of one chunk, fetched on demand for the chunk-map detail panel (the map response
+  // itself carries only a short preview, so the payload stays lean at large point budgets).
+  chunkDetail: (pid: string, chunkId: string) =>
+    json<ChunkDetail>(`/v1/projects/${pid}/knowledge/chunk?chunk_id=${encodeURIComponent(chunkId)}`),
   dedupeChunks: (pid: string) =>
     json<{ removed: number; groups: number; sources_affected: number; remaining: number }>(`/v1/projects/${pid}/knowledge/dedupe`, { method: "POST" }),
   listQa: (pid: string) => json<QaPair[]>(`/v1/projects/${pid}/qa-pairs`),

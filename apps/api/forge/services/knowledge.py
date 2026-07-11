@@ -558,8 +558,10 @@ class KnowledgeService:
     ) -> dict:
         """Project the project's stored chunk vectors to 2-D (PCA) for the chunk-map visualizer.
 
-        Each point is a chunk (a child chunk in parent_child mode) with its source, a text
-        preview, and its `parent_id` (so the UI can draw parent->child links). When `query` is
+        Each point is a chunk (a child chunk in parent_child mode) with its source, a short text
+        preview, and its `parent_id` (so the UI can draw parent->child links). The full chunk
+        text is fetched on demand per selection (see `chunk_detail`) to keep this payload lean
+        even at large point budgets. When `query` is
         given, it is embedded, projected into the SAME plane (`query_point`), and the chunks that
         retrieval would return are tagged with their `retrieved` rank (so the UI can draw
         query->hit links). `limit` caps how many points are projected/returned (the user picks
@@ -619,6 +621,8 @@ class KnowledgeService:
                 "id": cid, "x": xy[0], "y": xy[1],
                 "source_id": m.get("source_id"), "chunk_idx": m.get("chunk_idx"),
                 "parent_id": m.get("parent_id"),
+                # Short preview only (hover tooltip + instant panel text). The panel swaps in the
+                # full chunk via chunk_detail on select, so this stays small across all points.
                 "preview": ((docs[i] if i < len(docs) else "") or "")[:180],
             }
             if cid in rank_by_id:
@@ -632,6 +636,29 @@ class KnowledgeService:
         return {
             "points": points, "sources": sources, "query_point": query_xy,
             "query": query or None, "total": total, "truncated": total > len(points),
+        }
+
+    @staticmethod
+    async def chunk_detail(session, tenant_id, project_id, chunk_id: str) -> dict | None:
+        """Full text (+ light metadata) of ONE stored chunk, scoped to the tenant/project so a
+        caller-supplied id can't read another project's data. Backs the chunk-map detail panel:
+        the map payload carries only a short preview, and the whole chunk is fetched here when a
+        dot is selected. Returns None when the id isn't in this project's current-embedder
+        collection. Read-only."""
+        embedder = await KnowledgeService.embedder_for_project(session, tenant_id, project_id)
+        store = KnowledgeService._store(embedder)
+        got = store.get_texts([chunk_id], _where(tenant_id, project_id, None))
+        ids = got["ids"]
+        if not ids:
+            return None
+        docs, metas = got["documents"], got["metadatas"]
+        m = (metas[0] if metas else {}) or {}
+        return {
+            "id": ids[0],
+            "text": (docs[0] if docs else "") or "",
+            "source_id": m.get("source_id"),
+            "chunk_idx": m.get("chunk_idx"),
+            "parent_id": m.get("parent_id"),
         }
 
     # --- Q&A ---

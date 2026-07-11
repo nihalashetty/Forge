@@ -593,7 +593,7 @@ function SearchDebugger({ project }: { project: any }) {
               <span className="t-caption fg-2 mono">{h.source_id?.slice(0, 12) || "-"}</span>
               <span className="chip chip-mono" style={{ color: "var(--signal)" }}>score {h.score.toFixed(3)}</span>
             </div>
-            <div className="t-body-sm">{h.text}</div>
+            <div className="t-body-sm" style={{ whiteSpace: "pre-wrap" }}>{h.text}</div>
           </div>
         ))}
         {searched && hits.length === 0 && <div className="fg-2" style={{ padding: 22, textAlign: "center" }}>No matches. Add sources first.</div>}
