@@ -581,8 +581,10 @@ class KnowledgeService:
 
         store = KnowledgeService._store(embedder)
         dumped = store.dump(where, limit=limit)
-        ids = list(dumped["ids"]); docs = list(dumped["documents"])
-        metas = list(dumped["metadatas"]); embs = list(dumped["embeddings"])
+        ids = list(dumped["ids"])
+        docs = list(dumped["documents"])
+        metas = list(dumped["metadatas"])
+        embs = list(dumped["embeddings"])
         # `total` is the full corpus count. Derive it from the dump when the dump didn't hit the
         # cap (the dump already returned everything), and only pay a count scan when we truncated.
         n_sampled = len(ids)
@@ -607,8 +609,10 @@ class KnowledgeService:
             missing = [hid for hid in rank_by_id if hid not in have]
             if missing:
                 extra = store.dump(where, ids=missing)
-                ids += list(extra["ids"]); docs += list(extra["documents"])
-                metas += list(extra["metadatas"]); embs += list(extra["embeddings"])
+                ids += list(extra["ids"])
+                docs += list(extra["documents"])
+                metas += list(extra["metadatas"])
+                embs += list(extra["embeddings"])
 
         coords, query_xy = _project_chunks_2d(embs, qvec)
 

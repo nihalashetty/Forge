@@ -27,7 +27,7 @@ def _lookup(path: str, vars: dict) -> Any:
     return cur
 
 
-def _sub_one(mm: "re.Match", vars: dict) -> str:
+def _sub_one(mm: re.Match, vars: dict) -> str:
     # Embedded token (not a whole-string match): stringify the resolved value. Only a missing
     # value (None) becomes empty - a falsy-but-real value like 0 or False must render as "0"/
     # "False", not "" (an `x or ""` here would silently drop legitimate zeros/booleans).

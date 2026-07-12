@@ -1,4 +1,4 @@
-"""Phase 2 validation: secrets, auth resolver (csrf/bearer), REST tool + projection, builtin /test."""
+"""Secrets, auth resolver (csrf/bearer), REST tool + projection, and builtin /test validation."""
 
 from __future__ import annotations
 

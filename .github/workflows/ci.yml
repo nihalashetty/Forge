@@ -23,6 +23,9 @@ jobs:
           pip install -e ".[dev,all]"
       - name: Ruff
         run: ruff check forge migrations
+      - name: Mypy (advisory — gradual typing, see CONTRIBUTING.md)
+        continue-on-error: true
+        run: mypy forge
       - name: Pytest
         run: pytest -q
 

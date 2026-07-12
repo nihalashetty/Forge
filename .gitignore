@@ -28,9 +28,14 @@ master.key
 # --- Editors / OS / tooling ---
 .vscode/
 .idea/
-.claude/settings.local.json
 .DS_Store
 Thumbs.db
+
+# --- Claude Code / agent tooling (local dev only; not part of the product) ---
+# Keep .claude/launch.json (the preview config) tracked; ignore everything else.
+.agents/
+.claude/*
+!.claude/launch.json
 
 # --- WebFetch / temp artifacts ---
 *.bin

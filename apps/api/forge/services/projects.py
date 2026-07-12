@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from sqlalchemy import delete as sa_delete
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from forge.knowledge.embeddings import KNOWN_EMBEDDING_DIMS
@@ -14,6 +14,7 @@ from forge.models import (
     Agent,
     AuthProvider,
     Channel,
+    Component,
     Dataset,
     HandoffRequest,
     KbSource,
@@ -31,6 +32,17 @@ from forge.models import (
     Workflow,
 )
 
+# Sidebar badge counts. Keys match `countKey` in apps/web/lib/data.ts (PROJECT_NAV); the
+# sidebar reads these instead of fetching six full lists just to call `.length`.
+_COUNT_MODELS: dict[str, type] = {
+    "workflows": Workflow,
+    "agents": Agent,
+    "tools": Tool,
+    "components": Component,
+    "knowledge": KbSource,
+    "auth": AuthProvider,
+}
+
 
 class ProjectService:
     @staticmethod
@@ -39,6 +51,20 @@ class ProjectService:
             select(Project).where(Project.tenant_id == tenant_id, Project.archived.is_(False))
         )
         return list(rows.scalars())
+
+    @staticmethod
+    async def counts(session: AsyncSession, tenant_id: str, project_id: str) -> dict[str, int]:
+        """Per-resource counts for the project sidebar badges. Cheap COUNT(*) per table
+        (tenant+project scoped) instead of pulling six full lists client-side."""
+        out: dict[str, int] = {}
+        for key, model in _COUNT_MODELS.items():
+            n = await session.scalar(
+                select(func.count()).select_from(model).where(
+                    model.tenant_id == tenant_id, model.project_id == project_id
+                )
+            )
+            out[key] = int(n or 0)
+        return out
 
     @staticmethod
     async def get(session: AsyncSession, tenant_id: str, project_id: str) -> Project | None:

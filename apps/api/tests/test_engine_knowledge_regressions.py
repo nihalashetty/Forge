@@ -1,4 +1,4 @@
-"""Regression tests for the 2026-06-11 fix round (docs/FIXES-2026-06-11.md):
+"""Engine + knowledge regression tests:
 multi-label classifier + parallel router, knowledge_search builtin, KB folders,
 run-thread reuse, retry_on mapping, guardrail replacement, validation warnings,
 and the embedder cache.
@@ -247,7 +247,7 @@ def test_embedder_cache_returns_same_instance_and_right_dims():
     assert large.name == "text-embedding-3-large"
 
 
-# ---------- qa kinds multi-filter + report rows ----------
+# ---------- qa kinds multi-filter ----------
 
 async def test_lookup_kinds_list_filters_multiple_categories():
     from forge.services.knowledge import KnowledgeService
@@ -265,21 +265,8 @@ async def test_lookup_kinds_list_filters_multiple_categories():
         assert any_hit and any_hit["kind"] == "faq"
 
 
-def test_report_rows_group_workflows_and_assistant():
-    from types import SimpleNamespace
-
-    from forge.routers.stats import _report_rows
-
-    mk = lambda **kw: SimpleNamespace(total_tokens=10, total_cost_usd=0.01, latency_ms=100, **kw)  # noqa: E731
-    traces = [
-        mk(name="run", workflow_id="wf1"),
-        mk(name="run", workflow_id="wf1"),
-        mk(name="assistant", workflow_id=None),
-    ]
-    rows = _report_rows(traces, {"wf1": "Support"})
-    by_kind = {r["kind"]: r for r in rows}
-    assert by_kind["workflow"]["label"] == "Support" and by_kind["workflow"]["runs"] == 2
-    assert by_kind["assistant"]["label"] == "Forge Assistant" and by_kind["assistant"]["runs"] == 1
+# Report-row grouping (workflow / assistant / other / deleted-workflow) is now covered
+# end-to-end against the SQL aggregate path in tests/test_stats.py.
 
 
 # ---------- qa custom kinds ----------

@@ -17,7 +17,7 @@ import { ConnectScreen } from "@/components/screens/deploy";
 import { McpClientsScreen } from "@/components/screens/mcp";
 import { ChannelsScreen, TriggersScreen, DatasetsScreen, HandoffScreen } from "@/components/screens/platform";
 import { Icon } from "@/components/icons";
-import { api, Agent, ComponentT, Project, Tool, Workflow } from "@/lib/api";
+import { api, Agent, ComponentT, DashboardStats, Project, Tool, Workflow } from "@/lib/api";
 import { groundedWorkflow } from "@/lib/graph";
 import { spark } from "@/lib/data";
 import { AuthGate } from "@/components/login";
@@ -47,12 +47,16 @@ function App() {
   const [selAgent, setSelAgent] = useState<Agent | null>(null);
   const [selComponent, setSelComponent] = useState<ComponentT | null>(null);
   const [refreshNonce, setRefreshNonce] = useState(0);
-  const [projStats, setProjStats] = useState<Record<string, { workflows: number; tools: number; runs_7d: number }>>({});
+  // Dashboard stats are fetched ONCE here and shared: the project cards read `.projects`
+  // (per-project counts) and the DashboardScreen reuses the same object for its KPIs -
+  // no second /stats/dashboard call.
+  const [dashboard, setDashboard] = useState<DashboardStats | null>(null);
+  const projStats = useMemo(() => dashboard?.projects || {}, [dashboard]);
 
   const reloadProjects = () =>
     api.listProjects().then((p) => { setProjects(p); setLoaded(true); }).catch(() => setLoaded(true));
   useEffect(() => { reloadProjects(); }, []);
-  useEffect(() => { api.dashboardStats().then((s) => setProjStats(s.projects || {})).catch(() => {}); }, [refreshNonce]);
+  useEffect(() => { api.dashboardStats().then(setDashboard).catch(() => setDashboard(null)); }, [refreshNonce]);
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); setCmdOpen((o) => !o); }
@@ -81,12 +85,7 @@ function App() {
     if (!window.confirm(`Delete project "${projectToDelete.name}"?\n\nThis removes its workflows, agents, tools, auth providers, knowledge, secrets, runs, and traces. This cannot be undone.`)) return;
     await api.deleteProject(projectToDelete.id);
     setProjects((prev) => prev.filter((p) => p.id !== projectToDelete.id));
-    setProjStats((prev) => {
-      const next = { ...prev };
-      delete next[projectToDelete.id];
-      return next;
-    });
-    setRefreshNonce((n) => n + 1);
+    setRefreshNonce((n) => n + 1); // refetches dashboard stats (drops the deleted project's counts)
     if (view.project === projectToDelete.id) {
       setSelWorkflow(null);
       setSelAgent(null);
@@ -147,7 +146,7 @@ function App() {
 
   const body = (() => {
     if (view.name === "dashboard")
-      return <DashboardScreen projects={cards} loaded={loaded} onOpenProject={(id) => go({ name: "project", project: id, screen: "overview" })} onNewProject={() => go({ name: "onboarding" })} onDeleteProject={deleteProject} />;
+      return <DashboardScreen projects={cards} loaded={loaded} stats={dashboard} onOpenProject={(id) => go({ name: "project", project: id, screen: "overview" })} onNewProject={() => go({ name: "onboarding" })} onDeleteProject={deleteProject} />;
     if (view.name === "onboarding")
       return (
         <OnboardingScreen

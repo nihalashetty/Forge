@@ -5,7 +5,7 @@ from __future__ import annotations
 from sqlalchemy import func, select
 
 from forge.db.base import SessionLocal
-from forge.models import Agent, AuthProvider, KbSource, McpClient, Project, QaPair, Run, Secret, Span, Thread, Tool, Trace, Workflow
+from forge.models import Agent, AuthProvider, Component, KbSource, McpClient, Project, QaPair, Run, Secret, Span, Thread, Tool, Trace, Workflow
 from forge.services.projects import ProjectService
 
 
@@ -14,6 +14,39 @@ async def _count(session, model, **where) -> int:
     for key, value in where.items():
         stmt = stmt.where(getattr(model, key) == value)
     return int((await session.execute(stmt)).scalar_one())
+
+
+async def test_project_counts_are_scoped_to_project():
+    tenant_id = "tenant_counts"
+    async with SessionLocal() as session:
+        proj = await ProjectService.create(session, tenant_id, name="Counts", slug="counts")
+        other = await ProjectService.create(session, tenant_id, name="Other", slug="other")
+        session.add_all([
+            Workflow(tenant_id=tenant_id, project_id=proj.id, name="wf1"),
+            Workflow(tenant_id=tenant_id, project_id=proj.id, name="wf2"),
+            Agent(tenant_id=tenant_id, project_id=proj.id, name="a", config={}),
+            Tool(tenant_id=tenant_id, project_id=proj.id, name="t1", kind="builtin", config={}),
+            Tool(tenant_id=tenant_id, project_id=proj.id, name="t2", kind="builtin", config={}),
+            Tool(tenant_id=tenant_id, project_id=proj.id, name="t3", kind="builtin", config={}),
+            Component(tenant_id=tenant_id, project_id=proj.id, name="card"),
+            KbSource(tenant_id=tenant_id, project_id=proj.id, kind="text", name="src"),
+            AuthProvider(tenant_id=tenant_id, project_id=proj.id, name="auth", kind="bearer", config={}),
+            # Belongs to a different project in the same tenant - must NOT be counted for `proj`.
+            Tool(tenant_id=tenant_id, project_id=other.id, name="other_tool", kind="builtin", config={}),
+            Workflow(tenant_id=tenant_id, project_id=other.id, name="other_wf"),
+        ])
+        await session.commit()
+
+        counts = await ProjectService.counts(session, tenant_id, proj.id)
+        assert counts == {
+            "workflows": 2, "agents": 1, "tools": 3,
+            "components": 1, "knowledge": 1, "auth": 1,
+        }
+        # An empty project is all zeros (never None).
+        empty = await ProjectService.create(session, tenant_id, name="Empty", slug="empty")
+        assert await ProjectService.counts(session, tenant_id, empty.id) == {
+            "workflows": 0, "agents": 0, "tools": 0, "components": 0, "knowledge": 0, "auth": 0,
+        }
 
 
 async def test_delete_project_removes_project_scoped_data_and_trace_spans():

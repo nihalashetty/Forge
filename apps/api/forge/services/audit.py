@@ -9,7 +9,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from sqlalchemy import String, inspect as sa_inspect, select
+from sqlalchemy import String, select
+from sqlalchemy import inspect as sa_inspect
 
 from forge.db.base import SessionLocal
 from forge.models import AuditLog

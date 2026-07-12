@@ -31,7 +31,6 @@ const P: Record<string, string> = {
   n_retrieval: '<circle cx="11" cy="11" r="6"/><path d="m20 20-3.5-3.5M11 8v6M8 11h6"/>',
   n_qa: '<path d="M21 12a8 8 0 1 1-3-6.2"/><path d="M21 4v4h-4"/><path d="M9.5 10a2.5 2.5 0 1 1 3 2.4V14"/>',
   n_human: '<circle cx="12" cy="7" r="3"/><path d="M6 21a6 6 0 0 1 12 0"/><path d="M19 4l1 1 2-2"/>',
-  n_code: '<path d="M8 8l-4 4 4 4M16 8l4 4-4 4M13 6l-2 12"/>',
   n_transform: '<path d="M4 7h11M11 3l4 4-4 4M20 17H9M13 21l-4-4 4-4"/>',
   n_subworkflow: '<rect x="3" y="3" width="18" height="18" rx="2"/><rect x="7" y="7" width="5" height="5" rx="1"/><rect x="13" y="12" width="4" height="4" rx="1"/><path d="M12 9.5h1a2 2 0 0 1 2 2v.5"/>',
   n_fanout: '<circle cx="5" cy="12" r="2"/><circle cx="19" cy="5" r="2"/><circle cx="19" cy="12" r="2"/><circle cx="19" cy="19" r="2"/><path d="M7 12h4M11 12l6-6M11 12h6M11 12l6 6"/>',

@@ -22,6 +22,16 @@ class ProjectOut(ORMModel):
     config: dict = {}
 
 
+class ProjectCountsOut(BaseModel):
+    """Per-resource counts for the project sidebar badges."""
+    workflows: int
+    agents: int
+    tools: int
+    components: int
+    knowledge: int
+    auth: int
+
+
 class ProjectCreate(BaseModel):
     name: str
     slug: str | None = None

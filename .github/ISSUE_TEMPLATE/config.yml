@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 🔒 Report a security vulnerability
+    url: https://github.com/nihalashetty/Forge/security/advisories/new
+    about: Please report vulnerabilities privately via a GitHub Security Advisory, not a public issue.
+  - name: 💬 Questions & discussion
+    url: https://github.com/nihalashetty/Forge/discussions
+    about: Ask questions and share ideas with the community.

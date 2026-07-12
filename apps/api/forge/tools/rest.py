@@ -26,8 +26,8 @@ from pydantic import Field, create_model
 
 from forge.auth_providers.templates import has_each_directive, render_template, render_value
 from forge.config import settings
-from forge.tracing import tool_io
 from forge.tools.projection import cap_payload, project_response
+from forge.tracing import tool_io
 from forge.util.http import select_client
 from forge.util.ratelimit import rate_limiter
 from forge.util.ssrf import EgressPolicy, guarded_request, validate_url
