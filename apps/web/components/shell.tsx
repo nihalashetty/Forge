@@ -99,13 +99,16 @@ export function ProjectSidebar({ project, active, onNav, onBack, refreshKey }: {
     if (!pid) return;
     let live = true;
     (async () => {
+      // One cheap counts call (COUNT(*) per resource) instead of fetching six full lists
+      // just to read their `.length`. Re-runs on create/delete via countsBump so badges
+      // stay in sync; the screens themselves lazily load the actual lists on tab click.
       const { api } = await import("@/lib/api");
-      const [wf, ag, tl, ap, kb, cp] = await Promise.allSettled([
-        api.listWorkflows(pid), api.listAgents(pid), api.listTools(pid), api.listAuthProviders(pid), api.listSources(pid), api.listComponents(pid),
-      ]);
-      if (!live) return;
-      const n = (r: PromiseSettledResult<any[]>) => (r.status === "fulfilled" ? r.value.length : 0);
-      setCounts({ workflows: n(wf), agents: n(ag), tools: n(tl), auth: n(ap), knowledge: n(kb), components: n(cp) });
+      try {
+        const c = await api.projectCounts(pid);
+        if (live) setCounts(c as unknown as Record<string, number>);
+      } catch {
+        if (live) setCounts({});
+      }
     })();
     return () => { live = false; };
   }, [project?.id, refreshKey, countsBump]);

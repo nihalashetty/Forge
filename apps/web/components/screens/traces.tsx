@@ -1,11 +1,15 @@
 "use client";
 /* Traces: conversations (chat sessions) grouped by end user, their user<->AI turns, and a
    drill-in to the per-turn span waterfall (tool + LLM request/response). */
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "../icons";
 import { StatusPill } from "../primitives";
 import { api, Conversation, ConversationDetail, Facets, Span, Turn } from "@/lib/api";
 import { fmtUSD } from "@/lib/data";
+
+// Conversations are paged in on scroll (newest-activity first) so the Traces view never
+// pulls a project's entire history in one shot.
+const PAGE = 20;
 
 const KIND_COLOR: Record<string, string> = {
   llm: "var(--accent)", tool: "var(--io-tool)", chain: "var(--io-json)", node: "var(--io-control)",
@@ -28,14 +32,52 @@ export function TracesScreen({ project }: { project: any }) {
   const [status, setStatus] = useState("");
   const [sel, setSel] = useState<string | null>(null);
   const [detail, setDetail] = useState<ConversationDetail | null>(null);
+  const [nextOffset, setNextOffset] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const listRef = useRef<HTMLDivElement>(null);
 
+  // Distinct actors for the filter dropdown. A separate call because the paged list below
+  // only holds one 20-row window - the full actor set can't be derived from it.
   useEffect(() => { if (project?.id) api.conversationFacets(project.id).then(setFacets).catch(() => {}); }, [project?.id]);
+
+  // First page - and a reload whenever the project or a filter changes.
   useEffect(() => {
-    if (!project?.id) return;
-    api.listConversations(project.id, { actor: actor || undefined, status: status || undefined })
-      .then((c) => { setConvos(c); setSel((cur) => (cur && c.some((x) => x.thread_id === cur) ? cur : c[0]?.thread_id ?? null)); })
-      .catch(() => setConvos([]));
+    if (!project?.id) { setConvos([]); setHasMore(false); setNextOffset(0); return; }
+    let live = true;
+    api.listConversations(project.id, { actor: actor || undefined, status: status || undefined, limit: PAGE, offset: 0 })
+      .then((c) => {
+        if (!live) return;
+        setConvos(c);
+        setNextOffset(c.length);
+        setHasMore(c.length === PAGE);
+        setSel((cur) => (cur && c.some((x) => x.thread_id === cur) ? cur : c[0]?.thread_id ?? null));
+        if (listRef.current) listRef.current.scrollTop = 0;
+      })
+      .catch(() => { if (live) { setConvos([]); setHasMore(false); setNextOffset(0); } });
+    return () => { live = false; };
   }, [project?.id, actor, status]);
+
+  const loadMore = useCallback(async () => {
+    if (!project?.id || loadingMore || !hasMore) return;
+    setLoadingMore(true);
+    try {
+      const next = await api.listConversations(project.id, { actor: actor || undefined, status: status || undefined, limit: PAGE, offset: nextOffset });
+      // De-dupe by thread_id in case the scan window shifted between pages.
+      setConvos((prev) => {
+        const seen = new Set(prev.map((x) => x.thread_id));
+        return [...prev, ...next.filter((x) => !seen.has(x.thread_id))];
+      });
+      setNextOffset((o) => o + next.length);
+      setHasMore(next.length === PAGE);
+    } catch { /* keep what we have */ } finally { setLoadingMore(false); }
+  }, [project?.id, actor, status, nextOffset, hasMore, loadingMore]);
+
+  const onListScroll = () => {
+    const el = listRef.current;
+    if (el && el.scrollHeight - el.scrollTop - el.clientHeight < 120) loadMore();
+  };
+
   useEffect(() => { if (project?.id && sel) api.getConversation(project.id, sel).then(setDetail).catch(() => setDetail(null)); else setDetail(null); }, [project?.id, sel]);
 
   const purge = async () => {
@@ -46,7 +88,11 @@ export function TracesScreen({ project }: { project: any }) {
     try {
       const { removed } = await api.purgeConversations(project.id, n);
       window.alert(`Removed ${removed} conversation turn(s) older than ${n} days.`);
-      api.listConversations(project.id, { actor: actor || undefined, status: status || undefined }).then(setConvos).catch(() => {});
+      // Reset back to the first page after a purge.
+      const first = await api.listConversations(project.id, { actor: actor || undefined, status: status || undefined, limit: PAGE, offset: 0 });
+      setConvos(first);
+      setNextOffset(first.length);
+      setHasMore(first.length === PAGE);
     } catch { window.alert("Purge failed — this action requires an admin role."); }
   };
 
@@ -73,7 +119,7 @@ export function TracesScreen({ project }: { project: any }) {
             ))}
           </div>
         </div>
-        <div className="scroll-y" style={{ minHeight: 0, flex: 1 }}>
+        <div ref={listRef} onScroll={onListScroll} className="scroll-y" style={{ minHeight: 0, flex: 1 }}>
           {convos.length === 0 && <div className="fg-2 t-caption" style={{ padding: "8px 16px" }}>No conversations yet. Run a workflow in the Playground or from your app.</div>}
           {convos.map((c) => (
             <button key={c.thread_id} onClick={() => setSel(c.thread_id)} className="row gap2" style={{ width: "100%", textAlign: "left", padding: "11px 16px", border: "none", borderBottom: "1px solid var(--line)", background: sel === c.thread_id ? "var(--bg-3)" : "transparent", cursor: "pointer" }}>
@@ -88,6 +134,10 @@ export function TracesScreen({ project }: { project: any }) {
               <Icon name="chevright" size={15} style={{ color: "var(--fg-2)" }} />
             </button>
           ))}
+          {loadingMore && <div className="fg-2 t-caption" style={{ padding: "10px 16px", textAlign: "center" }}>Loading more…</div>}
+          {hasMore && !loadingMore && (
+            <button onClick={loadMore} className="t-caption fg-2" style={{ width: "100%", padding: "10px 16px", background: "none", border: "none", borderTop: "1px solid var(--line)", cursor: "pointer" }}>Load more</button>
+          )}
         </div>
       </div>
       {/* transcript */}

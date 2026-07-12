@@ -43,6 +43,17 @@ async def get_project(
     return project
 
 
+@router.get("/{project_id}/counts")
+async def project_counts(
+    project_id: str,
+    session: AsyncSession = Depends(get_session),
+    tenant_id: str = Depends(current_tenant_id),
+) -> dict[str, int]:
+    """Lightweight per-resource counts for the project sidebar badges
+    ({workflows, agents, tools, components, knowledge, auth})."""
+    return await ProjectService.counts(session, tenant_id, project_id)
+
+
 @router.patch("/{project_id}", response_model=ProjectOut)
 async def update_project(
     project_id: str,

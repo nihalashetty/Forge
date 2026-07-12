@@ -140,6 +140,12 @@ export interface ProjectStats {
   reports: ReportRow[];
 }
 
+// Sidebar badge counts (keys match countKey in data.ts PROJECT_NAV). One cheap call
+// replaces six full-list fetches that were only ever read for their `.length`.
+export interface ProjectCounts {
+  workflows: number; agents: number; tools: number; components: number; knowledge: number; auth: number;
+}
+
 export interface DashboardStats {
   runs_7d: number;
   total_runs: number;
@@ -193,14 +199,32 @@ function on401() {
   }
 }
 
+// In-flight GET de-duplication: identical GET requests issued while one is still pending
+// share a single promise (and thus one network round-trip). This collapses React
+// StrictMode's double-invoked effects in dev AND any accidental concurrent duplicate
+// fetches (e.g. sidebar + overview both asking for counts). There is NO time-based cache -
+// the entry is dropped the moment the request settles, so data is never served stale.
+const _inflight = new Map<string, Promise<any>>();
+
 async function json<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json", ...authHeader(), ...(init?.headers || {}) },
-    ...init,
-  });
-  if (res.status === 401) on401();
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText} on ${path}`);
-  return res.json() as Promise<T>;
+  const method = (init?.method || "GET").toUpperCase();
+  const key = method === "GET" ? path : null;
+  if (key && _inflight.has(key)) return _inflight.get(key) as Promise<T>;
+  const p = (async () => {
+    const res = await fetch(`${BASE}${path}`, {
+      headers: { "Content-Type": "application/json", ...authHeader(), ...(init?.headers || {}) },
+      ...init,
+    });
+    if (res.status === 401) on401();
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText} on ${path}`);
+    return res.json() as Promise<T>;
+  })();
+  if (key) {
+    _inflight.set(key, p);
+    const done = () => _inflight.delete(key);
+    p.then(done, done); // clear on settle (both fulfil + reject); never itself rejects
+  }
+  return p;
 }
 
 /** Fired after any create/delete of a counted resource so the project sidebar can
@@ -217,6 +241,7 @@ function notifyCounts<T>(p: Promise<T>): Promise<T> {
 export const api = {
   listProjects: () => json<Project[]>("/v1/projects"),
   getProject: (id: string) => json<Project>(`/v1/projects/${id}`),
+  projectCounts: (pid: string) => json<ProjectCounts>(`/v1/projects/${pid}/counts`),
   createProject: (body: { name: string; slug?: string; description?: string; config?: Record<string, unknown> }) =>
     json<Project>("/v1/projects", { method: "POST", body: JSON.stringify(body) }),
   listWorkflows: (pid: string) => json<Workflow[]>(`/v1/projects/${pid}/workflows`),
@@ -345,11 +370,13 @@ export const api = {
   // traces + conversations (Traces view)
   listTraces: (pid: string) => json<Trace[]>(`/v1/projects/${pid}/traces`),
   getTrace: (pid: string, trid: string) => json<{ trace: Trace; spans: Span[] }>(`/v1/projects/${pid}/traces/${trid}`),
-  listConversations: (pid: string, opts?: { actor?: string; source?: string; status?: string }) => {
+  listConversations: (pid: string, opts?: { actor?: string; source?: string; status?: string; limit?: number; offset?: number }) => {
     const q = new URLSearchParams();
     if (opts?.actor) q.set("actor", opts.actor);
     if (opts?.source) q.set("source", opts.source);
     if (opts?.status) q.set("status", opts.status);
+    if (opts?.limit != null) q.set("limit", String(opts.limit));
+    if (opts?.offset != null) q.set("offset", String(opts.offset));
     const qs = q.toString();
     return json<Conversation[]>(`/v1/projects/${pid}/conversations${qs ? `?${qs}` : ""}`);
   },

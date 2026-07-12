@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { Icon } from "../icons";
 import { Sparkline, StatusPill, Tabs, Tile, Field, Toggle, EmptyState } from "../primitives";
-import { api, Workflow, Tool, DashboardStats, ProjectStats, ReportRow } from "@/lib/api";
+import { api, Workflow, DashboardStats, ProjectCounts, ProjectStats, ReportRow } from "@/lib/api";
 import { fmtUSD } from "@/lib/data";
 
 const fmtLatencyMs = (ms: number) => (ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`);
@@ -48,20 +48,21 @@ export interface ProjectCard {
 export function DashboardScreen({
   projects = [],
   loaded = false,
+  stats = null,
   onOpenProject,
   onNewProject,
   onDeleteProject,
 }: {
   projects?: ProjectCard[];
   loaded?: boolean;
+  // Fetched once by the parent (App) and shared - avoids a second /stats/dashboard call.
+  stats?: DashboardStats | null;
   onOpenProject: (id: string) => void;
   onNewProject: () => void;
   onDeleteProject?: (project: { id: string; name: string }) => Promise<void> | void;
 }) {
   const empty = loaded && projects.length === 0;
-  const [stats, setStats] = useState<DashboardStats | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
-  useEffect(() => { api.dashboardStats().then(setStats).catch(() => setStats(null)); }, [loaded]);
 
   const fmtLatency = (ms: number) => (ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`);
   const kpis = [
@@ -216,26 +217,24 @@ export function DashboardScreen({
 /* ============ PROJECT OVERVIEW ============ */
 export function OverviewScreen({ project, onNav, onDeleteProject }: { project: any; onNav: (s: string) => void; onDeleteProject?: (project: { id: string; name: string }) => Promise<void> | void }) {
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
-  const [tools, setTools] = useState<Tool[]>([]);
-  const [agentCount, setAgentCount] = useState<number | null>(null);
-  const [kbCount, setKbCount] = useState<number | null>(null);
+  const [counts, setCounts] = useState<ProjectCounts | null>(null);
   const [stats, setStats] = useState<ProjectStats | null>(null);
   const [tab, setTab] = useState("overview");
   const [deleting, setDeleting] = useState(false);
   useEffect(() => {
     if (!project?.id) return;
+    // The workflow list is rendered below (needs the rows); the other tiles only need
+    // counts, so they come from the single shared counts call (deduped with the sidebar's).
     api.listWorkflows(project.id).then(setWorkflows).catch(() => setWorkflows([]));
-    api.listTools(project.id).then(setTools).catch(() => setTools([]));
-    api.listAgents(project.id).then((a) => setAgentCount(a.length)).catch(() => setAgentCount(null));
-    api.listSources(project.id).then((s) => setKbCount(s.length)).catch(() => setKbCount(null));
+    api.projectCounts(project.id).then(setCounts).catch(() => setCounts(null));
     api.projectStats(project.id).then(setStats).catch(() => setStats(null));
   }, [project?.id]);
 
   const health = [
-    { label: "Workflows", value: workflows.length, icon: "workflows", screen: "workflows", color: "var(--accent)" },
-    { label: "Agents", value: agentCount ?? "-", icon: "agents", screen: "agents", color: "var(--io-json)" },
-    { label: "Tools", value: tools.length, icon: "tools", screen: "tools", color: "var(--signal)" },
-    { label: "Knowledge", value: kbCount ?? "-", icon: "knowledge", screen: "knowledge", color: "var(--io-vector)" },
+    { label: "Workflows", value: counts?.workflows ?? workflows.length, icon: "workflows", screen: "workflows", color: "var(--accent)" },
+    { label: "Agents", value: counts?.agents ?? "-", icon: "agents", screen: "agents", color: "var(--io-json)" },
+    { label: "Tools", value: counts?.tools ?? "-", icon: "tools", screen: "tools", color: "var(--signal)" },
+    { label: "Knowledge", value: counts?.knowledge ?? "-", icon: "knowledge", screen: "knowledge", color: "var(--io-vector)" },
   ];
   const usage = [
     { label: "API calls (all-time)", value: stats ? stats.totals.runs.toLocaleString() : "-", sub: stats ? `${stats.last_7d.runs.toLocaleString()} in last 7 days` : "", color: "var(--accent)" },
