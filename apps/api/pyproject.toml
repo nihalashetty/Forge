@@ -16,7 +16,7 @@ dependencies = [
   # --- Web / API ---
   "fastapi>=0.115,<1",
   "uvicorn[standard]>=0.32,<1",
-  "sse-starlette>=2.1,<3",
+  "sse-starlette>=2.1,<4",
   "python-multipart>=0.0.18",
   # --- Data / settings ---
   "pydantic>=2.9,<3",
@@ -47,7 +47,7 @@ dependencies = [
   "cryptography>=43",
   "python-jose[cryptography]>=3.3,<4",
   # bcrypt directly (passlib 1.7.x is unmaintained and crashes probing bcrypt>=4.1).
-  "bcrypt>=4,<5",
+  "bcrypt>=4,<6",
 ]
 
 [project.optional-dependencies]
@@ -65,7 +65,7 @@ providers = [
 mcp = ["langchain-mcp-adapters>=0.2,<1", "mcp>=1.9", "fastmcp>=3,<4"]
 # Background workers + cache (prod). Local default uses in-process fakes.
 # croniter powers cron `schedule` triggers (interval schedules need nothing extra).
-workers = ["redis>=5,<7", "arq>=0.26,<1", "croniter>=2,<6"]
+workers = ["redis>=5,<9", "arq>=0.26,<1", "croniter>=2,<7"]
 # Durable Postgres checkpointer + async driver (prod run/HITL state, shared across workers).
 # Set FORGE_CHECKPOINT_BACKEND=postgres and FORGE_DATABASE_URL to a postgresql+asyncpg URL.
 postgres = ["langgraph-checkpoint-postgres>=2,<5", "psycopg[binary,pool]>=3.2", "asyncpg>=0.30"]
@@ -82,13 +82,13 @@ knowledge = ["langchain-text-splitters>=1,<2", "pypdf>=5", "beautifulsoup4>=4.12
 # the local stack fakes in-process. Install with: pip install -e ".[dev,all]"
 all = ["forge-api[vectors,providers,knowledge,mcp]"]
 dev = [
-  "pytest>=8.3,<9",
-  "pytest-asyncio>=0.24,<1",
+  "pytest>=8.3,<10",
+  "pytest-asyncio>=0.24,<2",
   "anyio>=4.6",
   # Pin the minor so CI lint is reproducible (an unbounded ruff pulls new rule sets that
   # can turn CI red without a code change). Bump deliberately.
   "ruff>=0.15,<0.16",
-  "mypy>=1.13,<2",
+  "mypy>=1.13,<3",
 ]
 
 [tool.hatch.build.targets.wheel]
