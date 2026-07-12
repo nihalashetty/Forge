@@ -10,8 +10,10 @@ from langchain_core.messages import BaseMessage
 # LLM tool name -> human-readable label for the run currently being streamed. Set by the
 # run stream from CompileContext.tool_display_names so `jsonable` can relabel tool_calls
 # for end-user surfaces (the model still calls the tool by its underscore identifier).
-# Empty by default => every tool_call's display_name falls back to its own name.
-_TOOL_DISPLAY_NAMES: ContextVar[dict[str, str]] = ContextVar("forge_tool_display_names", default={})
+# None by default (no active run) => every tool_call's display_name falls back to its own
+# name. A ContextVar must not default to a mutable literal (it would be shared across
+# contexts), so the default is None and readers treat it as the empty map.
+_TOOL_DISPLAY_NAMES: ContextVar[dict[str, str] | None] = ContextVar("forge_tool_display_names", default=None)
 
 
 def set_tool_display_names(mapping: dict[str, str] | None) -> Token:
@@ -55,7 +57,7 @@ def _interrupt_to_json(obj: Any) -> dict[str, Any] | None:
 def jsonable(obj: Any) -> Any:
     if isinstance(obj, BaseMessage):
         tool_calls = getattr(obj, "tool_calls", None) or None
-        names = _TOOL_DISPLAY_NAMES.get()
+        names = _TOOL_DISPLAY_NAMES.get() or {}
         return {
             "type": obj.type,
             "content": content_to_text(obj.content),

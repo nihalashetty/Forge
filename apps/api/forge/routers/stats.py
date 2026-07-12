@@ -12,6 +12,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends
+from pydantic import BaseModel
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,6 +20,69 @@ from forge.deps import current_tenant_id, get_session
 from forge.models import Project, Tool, Trace, Workflow
 
 router = APIRouter(prefix="/v1/stats", tags=["stats"])
+
+
+# --- response models (typed contract for the generated OpenAPI schema) --------------------
+
+class RollupOut(BaseModel):
+    runs: int
+    tokens: int
+    cost_usd: float
+    avg_latency_ms: int
+    errors: int
+    error_rate: float
+
+
+class RecentRunOut(BaseModel):
+    id: str
+    workflow: str
+    project: str
+    status: str
+    tokens: int
+    latency_ms: int
+    cost_usd: float
+    started_at: str | None = None
+
+
+class ProjectCardStatsOut(BaseModel):
+    workflows: int
+    tools: int
+    runs_7d: int
+
+
+class DashboardReportOut(RollupOut):
+    project_id: str
+    project: str
+    assistant_cost_usd: float
+    assistant_turns: int
+
+
+class DashboardStatsOut(BaseModel):
+    runs_7d: int
+    total_runs: int
+    success_rate: float
+    avg_latency_ms: int
+    spend_7d: float
+    recent: list[RecentRunOut]
+    projects: dict[str, ProjectCardStatsOut]
+    reports: list[DashboardReportOut]
+    totals: RollupOut
+
+
+class ReportRowOut(RollupOut):
+    label: str
+    kind: str
+
+
+class AssistantRollupOut(RollupOut):
+    turns: int
+
+
+class ProjectStatsOut(BaseModel):
+    totals: RollupOut
+    last_7d: RollupOut
+    assistant: AssistantRollupOut
+    reports: list[ReportRowOut]
 
 # When a trace has no start time, fall back to its insert time (matches the old
 # `t.started_at or t.created_at`) for the 7-day activity window.
@@ -51,7 +115,7 @@ def _rollup(row) -> dict:
     }
 
 
-@router.get("/dashboard")
+@router.get("/dashboard", response_model=DashboardStatsOut)
 async def dashboard(session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id)):
     since = datetime.utcnow() - timedelta(days=7)
     tenant = Trace.tenant_id == tenant_id
@@ -92,12 +156,12 @@ async def dashboard(session: AsyncSession = Depends(get_session), tenant_id: str
         bucket(pid)["runs_7d"] = int(n)
 
     # Name lookups (bounded by #workflows / #projects, not #traces).
-    wf_names = dict((await session.execute(
+    wf_names: dict[str, str] = {wid: name for wid, name in (await session.execute(
         select(Workflow.id, Workflow.name).where(Workflow.tenant_id == tenant_id)
-    )).all())
-    proj_names = dict((await session.execute(
+    )).all()}
+    proj_names: dict[str, str] = {pid: name for pid, name in (await session.execute(
         select(Project.id, Project.name).where(Project.tenant_id == tenant_id)
-    )).all())
+    )).all()}
 
     # 8 most recent all-time - only the columns the card renders.
     recent_rows = (await session.execute(
@@ -154,7 +218,7 @@ async def dashboard(session: AsyncSession = Depends(get_session), tenant_id: str
     }
 
 
-@router.get("/projects/{project_id}")
+@router.get("/projects/{project_id}", response_model=ProjectStatsOut)
 async def project_stats(project_id: str, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id)):
     """Project-scoped rollups + report rows (per workflow + Forge Assistant)."""
     since = datetime.utcnow() - timedelta(days=7)
@@ -165,9 +229,9 @@ async def project_stats(project_id: str, session: AsyncSession = Depends(get_ses
     asst = (await session.execute(select(*_agg_columns()).where(*scope, Trace.name == "assistant"))).one()
     assistant = {**_rollup(asst), "turns": int(asst.runs or 0)}
 
-    wf_names = dict((await session.execute(
+    wf_names: dict[str, str] = {wid: name for wid, name in (await session.execute(
         select(Workflow.id, Workflow.name).where(Workflow.tenant_id == tenant_id, Workflow.project_id == project_id)
-    )).all())
+    )).all()}
 
     # Report rows grouped like the old _report_rows: one bucket for the assistant, one per
     # workflow_id, and an "other" bucket keyed by trace name for runs with no workflow.

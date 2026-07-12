@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from forge.deps import current_tenant_id, get_session
-from forge.schemas.dto import ProjectCreate, ProjectOut, ProjectUpdate
+from forge.schemas.dto import ProjectCountsOut, ProjectCreate, ProjectOut, ProjectUpdate
 from forge.services.projects import ProjectService
 
 router = APIRouter(prefix="/v1/projects", tags=["projects"])
@@ -43,12 +43,12 @@ async def get_project(
     return project
 
 
-@router.get("/{project_id}/counts")
+@router.get("/{project_id}/counts", response_model=ProjectCountsOut)
 async def project_counts(
     project_id: str,
     session: AsyncSession = Depends(get_session),
     tenant_id: str = Depends(current_tenant_id),
-) -> dict[str, int]:
+):
     """Lightweight per-resource counts for the project sidebar badges
     ({workflows, agents, tools, components, knowledge, auth})."""
     return await ProjectService.counts(session, tenant_id, project_id)

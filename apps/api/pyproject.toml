@@ -85,7 +85,10 @@ dev = [
   "pytest>=8.3,<9",
   "pytest-asyncio>=0.24,<1",
   "anyio>=4.6",
-  "ruff>=0.8",
+  # Pin the minor so CI lint is reproducible (an unbounded ruff pulls new rule sets that
+  # can turn CI red without a code change). Bump deliberately.
+  "ruff>=0.15,<0.16",
+  "mypy>=1.13,<2",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -95,6 +98,17 @@ packages = ["forge"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.mypy]
+python_version = "3.11"
+# Most runtime deps (langchain, chromadb, fastmcp, …) ship without type stubs.
+ignore_missing_imports = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+# Gradual typing: the engine predates static type-checking, so a full strict pass is a
+# tracked backlog (~90 findings, dominated by dynamic SQLAlchemy Row/column access). CI
+# runs mypy in advisory (non-blocking) mode today; newly written / refactored modules are
+# kept clean. The gate is tightened as the backlog is cleared - see CONTRIBUTING.md.
 
 [tool.ruff]
 line-length = 100
