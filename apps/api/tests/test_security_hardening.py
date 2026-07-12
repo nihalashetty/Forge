@@ -1,8 +1,8 @@
-"""Regression tests for the 2026-06-18 security + correctness hardening pass.
+"""Security + correctness hardening regression tests.
 
-Covers the high-risk new behaviors that previously had no coverage: embed/run project
-scoping, anonymous thread-identity isolation, atomic quota admission, the stale-run
-reaper, the resume-state guard, JWT revocation, and component tenant/project scoping.
+Covers high-risk behaviors: embed/run project scoping, anonymous thread-identity
+isolation, atomic quota admission, the stale-run reaper, the resume-state guard,
+JWT revocation, and component tenant/project scoping.
 """
 
 from __future__ import annotations

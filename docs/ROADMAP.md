@@ -25,7 +25,7 @@ planned item are welcome - see [Contributing](../README.md#contributing).
 - Auth Providers: Bearer, API key, Basic, OAuth2 (client-credentials and 3-legged with auto-refresh), and CSRF/session - backed by encrypted, reference-only secrets.
 
 ### Knowledge & RAG
-- Ingestion from pasted text, URLs, site crawls, or file uploads; recursive chunking; folders.
+- Ingestion from pasted text, URLs, site crawls, or file uploads; recursive / section / sentence / semantic chunking; folders.
 - **Local open-source embedder (fastembed) by default** - free and offline; provider embedders optional.
 - Vectors in Chroma (local) or pgvector (production); curated Q&A pairs with deflection; a search debugger; and re-embed health checks.
 

@@ -103,13 +103,16 @@ A pnpm + Python monorepo with a shared schema contract that keeps the backend an
 forge/
 ├── apps/
 │   ├── api/        FastAPI backend - the engine (compiler, registry, middleware), tools,
-│   │              auth, knowledge, tracing, MCP server, build assistant.   [Python]
-│   └── web/        Next.js console - canvas, config panels, playground, traces.  [TS/React]
+│   │              auth, knowledge, tracing, MCP server, build assistant. Dockerfile +
+│   │              Alembic migrations live here.   [Python]
+│   └── web/        Next.js console - canvas, config panels, playground, traces. Dockerfile
+│                  lives here.   [TS/React]
 ├── packages/
 │   └── schemas/    Shared JSON Schemas - the single source of truth, imported by the
 │                  backend validator/compiler AND the frontend <SchemaForm>.
 ├── docs/           User manual, roadmap, and media.
-└── infra/          Dockerfiles, migrations, and production swaps.
+├── infra/          Production database swaps (Postgres row-level-security policies).
+└── docker-compose.yml   Production-shaped stack (Postgres · Redis · api · worker · web).
 ```
 
 The **shared schemas** are the contract behind three consumers: the backend **validator** (rejects bad configs on save), the **compiler** (`compile_workflow`, `build_middleware`), and the frontend **`<SchemaForm>`** (forms generated from the same files).

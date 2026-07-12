@@ -47,7 +47,6 @@ export const NODE_CATALOG = [
     { type: "classifier", icon: "n_router", label: "Classifier", desc: "Intent classification" },
     { type: "tool_call", icon: "n_tool", label: "Tool Call", desc: "Run a specific tool" },
     { type: "transform", icon: "n_transform", label: "Transform", desc: "JMESPath data map" },
-    { type: "code", icon: "n_code", label: "Code", desc: "Sandboxed transform" },
   ]},
   { group: "Knowledge", color: "var(--io-vector)", items: [
     { type: "retrieval", icon: "n_retrieval", label: "Retrieval", desc: "RAG + Q&A" },

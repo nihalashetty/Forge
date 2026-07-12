@@ -31,22 +31,29 @@ pytest                            # validate the engine
 ## Layout
 
 ```
-forge/
-  main.py            FastAPI app factory + lifespan
-  config.py          Settings (pydantic-settings, env-driven)
-  db/                async engine, session, RLS-style tenant scoping
-  models/            SQLAlchemy ORM (tenants, projects, workflows, runs, traces, ...)
-  schemas/           Pydantic request/response DTOs + JSON-Schema loader/validator
-  services/          business logic (ProjectSvc, WorkflowSvc, RunSvc, ...)
-  routers/           HTTP + SSE endpoints
-  engine/            the heart: registry, compiler, state, middleware_compiler, models
-  nodes/             node-type factories (start, end, agent, router, llm, tool_call, ...)
-  tools/             tool materialization (rest, graphql, code, mcp, builtin) + projection
-  auth_providers/    Auth Provider resolver (csrf_session, oauth2, bearer, ...)
-  secrets/           Fernet store (+ vault adapter)
-  sandbox/           Sandbox interface (subprocess MVP -> docker -> remote)
-  knowledge/         EmbeddingStore (Chroma), ingestion, Q&A, hybrid search
-  tracing/           ForgeTracer callback + span sink + pricing
-  mcp_server/        multi-tenant FastMCP exposure
-  assistant/         the in-product build assistant (meta-agent)
+apps/api/
+  forge/
+    main.py              FastAPI app factory + lifespan (DB init, checkpointer, scheduler/reaper)
+    config.py            Settings (pydantic-settings, env-driven) + production hardening guard
+    deps.py              FastAPI dependencies: session, auth/tenant resolution, RBAC
+    security.py          Auth primitives: bcrypt password hashing + JWT mint/verify
+    audit_middleware.py  ASGI middleware that audits successful mutations
+    queue.py, worker.py  Optional arq/Redis queue + worker for offloaded runs (prod)
+    db/                  async engine, session, tenant scoping, dev seed/bootstrap
+    models/              SQLAlchemy ORM (tenants, projects, workflows, runs, traces, ...)
+    schemas/             Pydantic request/response DTOs + shared JSON-Schema loader/validator
+    services/            business logic (ProjectSvc, WorkflowSvc, RunSvc, assistant, ...)
+    routers/             HTTP + SSE endpoints (incl. assistant, mcp_server, oauth, embed)
+    engine/              the heart: registry, compiler, state, middleware_compiler, context
+    nodes/               node-type factories (start, end, agent, llm, tool_call, flow, rag, triggers)
+    tools/               tool materialization (rest, graphql, code, sql, mcp, builtin) + projection
+    auth_providers/      Auth Provider resolver (csrf_session, oauth2, bearer, ...)
+    secrets/             Fernet-encrypted, reference-only secret store
+    channels/            outbound deploy surfaces (email, Microsoft Teams)
+    knowledge/           EmbeddingStore (Chroma), ingestion/crawl, splitter, hybrid + rerank
+    tracing/             ForgeTracer callback + span sink + pricing + tool-I/O capture
+    util/                cross-cutting helpers (SSRF guard, http client, rate limit, mailer, ...)
+    assistant_skills/    skill(s) the in-product build assistant loads
+  migrations/            Alembic migrations (prod schema path; SQLite auto-creates in dev)
+  tests/                 pytest suite (engine, tools, knowledge, auth, security, ...)
 ```

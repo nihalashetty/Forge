@@ -39,6 +39,7 @@ Every technology used in Forge, its purpose, and where it lives. Sourced from `a
 | **MCP** | mcp 1.9 | Model Context Protocol SDK | `[mcp]` extra |
 | **MCP** | fastmcp 3 | Expose Forge projects as MCP servers | `[mcp]` extra |
 | **Knowledge / RAG** | chromadb 1.5 | Embedded persistent vector store (zero infra) | `[vectors]` extra; `.data/chroma` |
+| **Knowledge / RAG** | fastembed 0.3+ | **Default embedder** — local open-source ONNX model (no API cost / no PyTorch); also powers the local cross-encoder **reranker** (`TextCrossEncoder`) | `[knowledge]` extra |
 | **Knowledge / RAG** | langchain-text-splitters 1.x | Chunk/split documents for ingestion | `[knowledge]` extra |
 | **Knowledge / RAG** | pypdf 5 | Extract text from PDF documents | `[knowledge]` extra |
 | **Knowledge / RAG** | beautifulsoup4 4.12 | Parse HTML for URL ingestion | `[knowledge]` extra |
