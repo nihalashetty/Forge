@@ -439,8 +439,10 @@ export const api = {
   listDatasets: (pid: string) => json<Dataset[]>(`/v1/projects/${pid}/datasets`),
   createDataset: (pid: string, body: { name: string; workflow_id?: string; score_mode?: string; items?: any[] }) =>
     json<Dataset>(`/v1/projects/${pid}/datasets`, { method: "POST", body: JSON.stringify(body) }),
+  updateDataset: (pid: string, did: string, body: { name: string; workflow_id?: string; score_mode?: string; items?: any[] }) =>
+    json<Dataset>(`/v1/projects/${pid}/datasets/${did}`, { method: "PATCH", body: JSON.stringify(body) }),
   runDataset: (pid: string, did: string) =>
-    json<EvalReport>(`/v1/projects/${pid}/datasets/${did}/run`, { method: "POST" }),
+    json<EvalRunResult>(`/v1/projects/${pid}/datasets/${did}/run`, { method: "POST" }),
   deleteDataset: (pid: string, did: string) =>
     json<{ ok: boolean }>(`/v1/projects/${pid}/datasets/${did}`, { method: "DELETE" }),
   // handoff inbox
@@ -458,6 +460,10 @@ export interface Channel { id: string; type: string; name: string; workflow_id?:
 export interface Trigger { id: string; workflow_id: string; node_id: string; kind: string; enabled: boolean; config: Record<string, any>; webhook_url?: string; last_fired_at?: string | null; }
 export interface Dataset { id: string; name: string; workflow_id?: string | null; score_mode: string; items: any[]; n_items: number; last_pass_rate?: number | null; }
 export interface EvalReport { summary: { total: number; passed: number; pass_rate: number }; results: { input: string; expected: string; answer: string; passed: boolean; reason?: string | null }[]; }
+/** A dataset run either scores (EvalReport) or fails before scoring (no workflow bound,
+ *  quota exceeded, …) - the backend returns a bare `{error}` for the latter, so callers
+ *  must narrow before reading `summary`/`results`. */
+export type EvalRunResult = EvalReport | { error: string };
 export interface Handoff { id: string; run_id: string; workflow_id?: string | null; customer?: string | null; customer_message?: string | null; reason?: string | null; status: string; at?: string | null; }
 export interface EmbedSettings { enabled: boolean; allowed_origins: string[]; workflow_id?: string | null; publishable_key?: string | null; embed_src?: string | null; }
 

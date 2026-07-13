@@ -40,6 +40,18 @@ async def create_dataset(project_id: str, body: DatasetIn, session: AsyncSession
     return _out(ds)
 
 
+@router.patch("/{dataset_id}")
+async def update_dataset(project_id: str, dataset_id: str, body: DatasetIn, session: AsyncSession = Depends(get_session),
+                         tenant_id: str = Depends(current_tenant_id),
+                         _: CurrentUser = Depends(require_role("editor"))):
+    ds = await EvalService.get(session, tenant_id, dataset_id)
+    if not ds:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "dataset not found")
+    ds = await EvalService.update(session, ds, name=body.name, workflow_id=body.workflow_id,
+                                  score_mode=body.score_mode, items=body.items)
+    return _out(ds)
+
+
 @router.delete("/{dataset_id}")
 async def delete_dataset(project_id: str, dataset_id: str, session: AsyncSession = Depends(get_session),
                          tenant_id: str = Depends(current_tenant_id),

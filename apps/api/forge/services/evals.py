@@ -71,6 +71,16 @@ class EvalService:
         return ds
 
     @staticmethod
+    async def update(session, ds: Dataset, *, name, workflow_id=None, score_mode="contains", items=None) -> Dataset:
+        ds.name = name
+        ds.workflow_id = workflow_id
+        ds.score_mode = score_mode
+        ds.items = items or []
+        await session.commit()
+        await session.refresh(ds)
+        return ds
+
+    @staticmethod
     async def delete(session, ds: Dataset) -> None:
         await session.delete(ds)
         await session.commit()

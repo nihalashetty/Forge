@@ -1,6 +1,7 @@
 "use client";
 /* Forge shared UI primitives - ported from the design handoff (primitives.jsx). */
 import { CSSProperties, ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Icon } from "./icons";
 
 /* ---------------- Sparkline ---------------- */
@@ -157,14 +158,20 @@ export function Segmented({ options, value, onChange }: { options: (string | { v
 
 /* ---------------- Modal ---------------- */
 export function Modal({ open, onClose, children, width = 520, title, footer }: { open: boolean; onClose: () => void; children: ReactNode; width?: number; title?: string; footer?: ReactNode }) {
+  // Portal to <body> so the fixed overlay escapes any transformed ancestor (e.g. the
+  // `.fade-up` screen wrapper). A transformed ancestor becomes the containing block for
+  // `position:fixed`, which otherwise traps the modal inside the content column and clips
+  // its header. `mounted` avoids touching `document` during SSR / first hydration.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
   useEffect(() => {
     if (!open) return;
     const h = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
   }, [open, onClose]);
-  if (!open) return null;
-  return (
+  if (!open || !mounted) return null;
+  return createPortal(
     <div className="fade-in" style={{ position: "fixed", inset: 0, zIndex: 8000, background: "rgba(8,10,14,.5)", backdropFilter: "blur(3px)", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }} onMouseDown={onClose}>
       <div className="card fade-up" style={{ width, maxWidth: "94vw", maxHeight: "88vh", boxShadow: "var(--sh-pop)", display: "flex", flexDirection: "column" }} onMouseDown={(e) => e.stopPropagation()}>
         {title && (
@@ -176,7 +183,8 @@ export function Modal({ open, onClose, children, width = 520, title, footer }: {
         <div className="scroll-y" style={{ padding: 18, flex: 1 }}>{children}</div>
         {footer && <div className="row gap2" style={{ padding: "12px 18px", borderTop: "1px solid var(--line)", justifyContent: "flex-end" }}>{footer}</div>}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
