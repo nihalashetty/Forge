@@ -16,7 +16,7 @@ import re
 from dataclasses import dataclass, field
 
 import forge.nodes  # noqa: F401  (ensure node types are registered)
-from forge.engine.registry import NODE_REGISTRY
+from forge.engine.registry import NODE_REGISTRY, io_compatible
 from forge.schemas import contracts
 
 END_TOKENS = {"END", "__end__"}
@@ -50,6 +50,15 @@ def _adjacency(definition: dict) -> dict[str, set[str]]:
             for tgt in list((cfg.get("cases") or {}).values()) + ([cfg.get("default")] if cfg.get("default") else []):
                 if tgt in nodes:
                     adj[n["id"]].add(tgt)
+            routed.add(n["id"])
+        # A parallel_fanout routes to its child_node via Send (no explicit edge), so model that
+        # here too - otherwise the child (and everything after it) is wrongly reported
+        # unreachable / no-path-to-END for every valid fan-out workflow (pre-existing gap).
+        if n["type"] == "parallel_fanout":
+            cfg = n.get("config", {}) or {}
+            child = cfg.get("child_node")
+            if child in nodes:
+                adj[n["id"]].add(child)
             routed.add(n["id"])
         if n["type"] == "end":
             adj[n["id"]].add("__END__")
@@ -150,6 +159,15 @@ def validate_workflow(definition: dict) -> ValidationResult:
         for val, btgt in (e.get("branches") or {}).items():
             if btgt not in node_ids:
                 res.add(f"/edges/{j}/branches/{val}", f"Unknown branch target {btgt!r}")
+        # A branches edge routes on a `condition` expression; without one it can only ever
+        # fall through to END (see compiler._branch_path), silently dead-ending the run
+        # (audit F10c). Require the condition so the branch map can actually be reached.
+        if e.get("branches") and not str(e.get("condition") or "").strip():
+            res.add(
+                f"/edges/{j}/condition",
+                "Edge defines branches but has no condition, so it can only route to END. "
+                "Add a condition expression whose value selects one of the branch keys.",
+            )
 
     for i, n in enumerate(nodes):
         if isinstance(n, dict) and n.get("type") == "router":
@@ -168,6 +186,19 @@ def validate_workflow(definition: dict) -> ValidationResult:
     # request; flag it at publish rather than failing silently at request time (feature/F4).
     _warn_webhook_signing(res, nodes)
 
+    # State-write sanity: a node whose output_key isn't a declared state field has its write
+    # SILENTLY DROPPED at runtime (LangGraph applies updates only to declared channels), so a
+    # downstream router/agent sees nothing - error with a fix-it message (audit F10a).
+    _check_undeclared_writes(res, definition)
+
+    # io-type sanity (warnings): flag a data-node edge whose producer/consumer port types are
+    # incompatible (audit F10d). Conservative - skips control/any ports and message consumers.
+    _warn_io_incompatible_edges(res, definition, node_types)
+
+    # Agent fields exposed in the UI but not yet enforced by the compiler (audit F9): warn so
+    # users aren't misled into thinking they take effect.
+    _warn_unwired_agent_fields(res, nodes)
+
     if entry in node_ids:
         adj = _adjacency(definition)
         reachable: set[str] = set()
@@ -184,6 +215,17 @@ def validate_workflow(definition: dict) -> ValidationResult:
         reaches_end = any("__END__" in adj.get(n, set()) for n in reachable)
         if not reaches_end:
             res.add("/edges", "No path reaches END (workflow would not terminate)")
+        # Dead-end warning (audit F10b): a reachable, non-`end` node with no outgoing edge just
+        # halts that branch without hitting END - almost always a missing edge. (routers/fanouts
+        # carry their routing in config, modeled in _adjacency, so they're covered too.)
+        for node_id in sorted(n for n in reachable if n):
+            if node_types.get(node_id) != "end" and not adj.get(node_id):
+                res.warn(
+                    "/nodes",
+                    f"Node {node_id!r} is reachable but has no outgoing edge, so the run stops "
+                    f"here without reaching an End node. Add an edge to the next node or to END.",
+                    node_id=node_id,
+                )
         bad = _find_bad_cycle(adj, node_types)
         if bad:
             res.add("/edges", f"Cycle through non-loop node(s): {' -> '.join(bad)}")
@@ -264,6 +306,124 @@ def _warn_webhook_signing(res: ValidationResult, nodes: list) -> None:
                 f"/nodes/{i}/config/secret_ref",
                 "Webhook requires a signature but no secret_ref is set - every inbound request "
                 "will be REJECTED. Set the HMAC secret, or turn off require_signature.",
+                node_id=n.get("id"),
+            )
+
+
+# state.py always provides `messages`; `structured_response` is the conventional channel for
+# structured llm/agent output; loop nodes manage their own private `_loop`/`_loop_count`. All
+# are treated as implicitly declared so the declared-state check doesn't false-flag them.
+_IMPLICIT_STATE_KEYS = frozenset({"messages", "structured_response", "_loop", "_loop_count"})
+
+
+def _node_output_keys(node: dict) -> list[tuple[str, str]]:
+    """(config-field, state-key) pairs a node WRITES via its config, for the declared-state
+    check. Nodes that only ever write messages/structured_response are omitted (those keys are
+    always present); the loop node's private keys are implicit too."""
+    cfg = node.get("config", {}) or {}
+    t = node.get("type")
+    if t == "classifier":
+        return [("output_key", cfg.get("output_key", "intent"))]
+    if t == "transform":
+        return [("output_key", cfg.get("output_key", "data"))]
+    if t == "tool_call":
+        return [("output_key", cfg.get("output_key", "tool_result"))]
+    if t == "webhook_out":
+        return [("output_key", cfg.get("output_key", "webhook_result"))]
+    if t == "retrieval" and cfg.get("route_key"):
+        return [("route_key", cfg["route_key"])]
+    if t == "human_input" and cfg.get("output_key"):
+        return [("output_key", cfg["output_key"])]
+    return []
+
+
+def _check_undeclared_writes(res: ValidationResult, definition: dict) -> None:
+    declared = set((definition.get("state") or {}).keys()) | _IMPLICIT_STATE_KEYS
+    for i, n in enumerate(definition.get("nodes", [])):
+        if not isinstance(n, dict):
+            continue
+        for field_name, key in _node_output_keys(n):
+            if key and key not in declared:
+                res.add(
+                    f"/nodes/{i}/config/{field_name}",
+                    f"Node {n.get('id')!r} writes state key {key!r}, which is not declared in the "
+                    f"workflow State - the write is silently dropped at runtime (a downstream "
+                    f"router/agent would see nothing). Add {key!r} to the State schema.",
+                    node_id=n.get("id"),
+                )
+
+
+# Nodes that read the conversation from shared state (not the incoming edge's data), so an
+# io-type mismatch on the edge INTO them is expected and shouldn't be flagged.
+_MESSAGE_CONSUMERS = frozenset({"agent", "deep_agent", "llm", "classifier", "human_input", "handoff"})
+
+
+def _port_io(ports: list, handle: str | None) -> str | None:
+    if not ports:
+        return None
+    if handle:
+        for p in ports:
+            if p.id == handle:
+                return p.io_type
+    return ports[0].io_type
+
+
+def _warn_io_incompatible_edges(res: ValidationResult, definition: dict, node_types: dict) -> None:
+    """Conservatively flag data-pipe edges whose producer/consumer port types are incompatible
+    (audit F10d). Skips control/any ports, router/fanout producers (they route via config), and
+    message consumers (they read from state), so ordinary control-flow edges never false-fire."""
+    for j, e in enumerate(definition.get("edges", [])):
+        if not isinstance(e, dict) or e.get("branches"):
+            continue
+        src, tgt = e.get("source"), e.get("target")
+        if tgt in END_TOKENS:
+            continue
+        s_type, t_type = node_types.get(src), node_types.get(tgt)
+        if s_type in ("router", "parallel_fanout") or t_type in _MESSAGE_CONSUMERS:
+            continue
+        s_spec, t_spec = NODE_REGISTRY.get(s_type or ""), NODE_REGISTRY.get(t_type or "")
+        if not s_spec or not t_spec:
+            continue
+        s_io = _port_io(s_spec.output_ports, e.get("source_handle"))
+        t_io = _port_io(t_spec.input_ports, e.get("target_handle"))
+        if not s_io or not t_io or s_io in ("any", "control") or t_io in ("any", "control"):
+            continue
+        if not io_compatible(s_io, t_io):
+            res.warn(
+                f"/edges/{j}",
+                f"Edge {src!r} → {tgt!r} connects a {s_io!r} output to a {t_io!r} input, which are "
+                f"incompatible port types. Double-check the wiring.",
+            )
+
+
+def _warn_unwired_agent_fields(res: ValidationResult, nodes: list) -> None:
+    """Warn when an agent node sets fields the compiler doesn't (yet) enforce, so the config
+    isn't silently ignored (audit F9). dynamic_prompt/dynamic_model/skills ARE wired now, so
+    only memory, filesystem, and permissions remain."""
+    for i, n in enumerate(nodes):
+        if not (isinstance(n, dict) and n.get("type") in ("agent", "deep_agent")):
+            continue
+        cfg = n.get("config", {}) or {}
+        mem = cfg.get("memory") or {}
+        if mem.get("long_term") or mem.get("store_namespace") or mem.get("state_extensions"):
+            res.warn(
+                f"/nodes/{i}/config/memory",
+                "Agent 'memory' (long-term / store namespace / state extensions) is exposed but "
+                "not yet enforced by the compiler - it currently has no effect.",
+                node_id=n.get("id"),
+            )
+        if cfg.get("filesystem"):
+            res.warn(
+                f"/nodes/{i}/config/filesystem",
+                "Deep-agent 'filesystem' backend config is not yet wired - the default backend is "
+                "used regardless of this setting.",
+                node_id=n.get("id"),
+            )
+        if cfg.get("permissions"):
+            res.warn(
+                f"/nodes/{i}/config/permissions",
+                "Deep-agent 'permissions' are exposed but NOT yet enforced by the compiler - do "
+                "not rely on them as a security control.",
                 node_id=n.get("id"),
             )
 

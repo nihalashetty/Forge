@@ -10,6 +10,7 @@ plumbing for auth'd tools; retrieval needs the Chroma store.)
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import jmespath
@@ -18,17 +19,58 @@ from forge.auth_providers.templates import render_value
 from forge.engine.context import CompileContext
 from forge.engine.registry import NodeSpec, Port, register
 
+log = logging.getLogger("forge.data")
+
+
+def _jq_transform(expr: str, input_key: str | None, output_key: str):
+    """Build a jq-powered transform node. jq is optional; if the `jq` package isn't installed
+    we raise a clear ValueError WHEN THE NODE RUNS rather than silently falling back to
+    JMESPath (which speaks a different language and would quietly produce wrong data) - audit
+    F7. Compile succeeds so the rest of the workflow still previews."""
+    try:
+        import jq as _jq
+    except ImportError:
+        def _unavailable(state: dict) -> dict:
+            raise ValueError(
+                "transform engine 'jq' requires the `jq` package, which is not installed. "
+                "Install it (pip install jq) or switch this transform's engine to 'jmespath'."
+            )
+        return _unavailable
+
+    try:
+        program = _jq.compile(expr)  # a malformed program surfaces here, at compile time
+    except Exception as e:  # noqa: BLE001 - re-raise as a clear config error
+        raise ValueError(f"Invalid jq expression {expr!r}: {e}") from e
+
+    def _node(state: dict) -> dict:
+        src = state.get(input_key) if input_key else dict(state)
+        try:
+            result: Any = program.input(src).first()
+        except Exception as e:  # noqa: BLE001 - a runtime jq failure -> None, but log it
+            log.warning("transform jq %r failed: %s: %s", expr, type(e).__name__, e)
+            result = None
+        return {output_key: result}
+
+    return _node
+
 
 def transform_factory(cfg: dict, ctx: CompileContext):
     expr = cfg["expression"]
+    engine = cfg.get("engine", "jmespath")
     input_key = cfg.get("input_key")
     output_key = cfg.get("output_key", "data")
+
+    if engine == "jq":
+        return _jq_transform(expr, input_key, output_key)
 
     def _node(state: dict) -> dict:
         src = state.get(input_key) if input_key else dict(state)
         try:
             result: Any = jmespath.search(expr, src)
-        except jmespath.exceptions.JMESPathError:
+        except jmespath.exceptions.JMESPathError as e:
+            # Previously swallowed to None silently, which hid typo'd expressions; log it so a
+            # broken transform is traceable in the run log (audit F7).
+            log.warning("transform jmespath %r failed: %s: %s", expr, type(e).__name__, e)
             result = None
         return {output_key: result}
 

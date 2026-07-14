@@ -11,12 +11,14 @@ schemas/middleware.json + a `category-map` entry). It then appears everywhere.
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Callable
-from typing import Any
+from typing import Annotated, Any, NotRequired
 
 from langchain.agents.middleware import (
     AgentMiddleware,
+    AgentState,
     ClearToolUsesEdit,
     ContextEditingMiddleware,
     HumanInTheLoopMiddleware,
@@ -30,14 +32,16 @@ from langchain.agents.middleware import (
     TodoListMiddleware,
     ToolCallLimitMiddleware,
     ToolRetryMiddleware,
-    after_model,
-    before_model,
-    wrap_model_call,
+    hook_config,
 )
+from langchain.agents.middleware.types import PrivateStateAttr
+from langgraph.channels.untracked_value import UntrackedValue
 
 from forge.engine.context import CompileContext
 from forge.engine.expressions import eval_truthy
 from forge.engine.models import resolve_model
+
+log = logging.getLogger("forge.middleware")
 
 Builder = Callable[[dict, CompileContext], AgentMiddleware]
 
@@ -154,9 +158,13 @@ def _tool_retry(c: dict, ctx: CompileContext) -> AgentMiddleware:
 
 
 def _model_retry(c: dict, ctx: CompileContext) -> AgentMiddleware:
-    return ModelRetryMiddleware(
-        **_pick(c, ["max_retries", "on_failure", "backoff_factor", "initial_delay", "max_delay", "jitter"])
-    )
+    kw = _pick(c, ["max_retries", "on_failure", "backoff_factor", "initial_delay", "max_delay", "jitter"])
+    # Pass retry_on through like _tool_retry does - it was dropped before, so "retry only on
+    # timeouts/http errors" configs silently retried on ANY exception (audit F5).
+    retry_on = _retry_exceptions(c.get("retry_on") or [])
+    if retry_on:
+        kw["retry_on"] = retry_on
+    return ModelRetryMiddleware(**kw)
 
 
 def _tool_emulator(c: dict, ctx: CompileContext) -> AgentMiddleware:
@@ -198,94 +206,225 @@ def _openai_moderation(c: dict, ctx: CompileContext) -> AgentMiddleware:
 # --- custom / advanced builders (declarative rules -> hooks) ---------------
 
 
-def _dynamic_model_by_state(c: dict, ctx: CompileContext) -> AgentMiddleware:
-    rules = c.get("rules", [])
-    default = c.get("default")
+class _DynamicModelByStateMiddleware(AgentMiddleware):
+    """Switch the model at runtime by a state expression. Implemented as a class with BOTH the
+    sync and async wrap hooks: the previous `@wrap_model_call`-on-a-sync-function version only
+    provided the sync path, so it raised NotImplementedError under astream/ainvoke (the runtime
+    path) - it never actually worked live. Wiring the agent-node `dynamic_model` field depends
+    on this being async-safe (audit F9)."""
 
-    @wrap_model_call
-    def _mw(request, handler):  # type: ignore[no-untyped-def]
-        chosen = default
-        for r in rules:
+    def __init__(self, rules: list[dict], default: Any, ctx: CompileContext):
+        super().__init__()
+        self._rules = rules or []
+        self._default = default
+        self._ctx = ctx
+
+    def _apply(self, request):
+        chosen = self._default
+        for r in self._rules:
             try:
                 if eval_truthy(r["when"], dict(request.state or {})):
                     chosen = r["use"]
                     break
             except Exception:  # noqa: BLE001 - a bad rule shouldn't kill the run
                 continue
-        if chosen:
-            request = request.override(model=resolve_model(chosen, ctx))
-        return handler(request)
+        return request.override(model=resolve_model(chosen, self._ctx)) if chosen else request
 
-    return _mw
+    def wrap_model_call(self, request, handler):  # type: ignore[no-untyped-def]
+        return handler(self._apply(request))
+
+    async def awrap_model_call(self, request, handler):  # type: ignore[no-untyped-def]
+        return await handler(self._apply(request))
+
+
+def _dynamic_model_by_state(c: dict, ctx: CompileContext) -> AgentMiddleware:
+    return _DynamicModelByStateMiddleware(c.get("rules", []), c.get("default"), ctx)
+
+
+class _ToolFilterByContextMiddleware(AgentMiddleware):
+    """Show/hide tools at runtime based on the run's context (auth state, role, flags). Same
+    sync+async fix as _DynamicModelByStateMiddleware - it was sync-only and thus a no-op-then-
+    crash under async execution."""
+
+    def __init__(self, expose_when: dict, gated: set[str]):
+        super().__init__()
+        self._expose_when = expose_when
+        self._gated = gated
+
+    def _apply(self, request):
+        rt_ctx = getattr(getattr(request, "runtime", None), "context", None) or {}
+        allowed = _context_matches(self._expose_when, rt_ctx if isinstance(rt_ctx, dict) else {})
+        if not allowed and self._gated:
+            kept = [t for t in (request.tools or []) if getattr(t, "name", None) not in self._gated]
+            return request.override(tools=kept)
+        return request
+
+    def wrap_model_call(self, request, handler):  # type: ignore[no-untyped-def]
+        return handler(self._apply(request))
+
+    async def awrap_model_call(self, request, handler):  # type: ignore[no-untyped-def]
+        return await handler(self._apply(request))
 
 
 def _tool_filter_by_context(c: dict, ctx: CompileContext) -> AgentMiddleware:
-    expose_when = c.get("expose_when", {})
-    gated = set(c.get("tools", []))
+    return _ToolFilterByContextMiddleware(c.get("expose_when", {}), set(c.get("tools", [])))
 
-    @wrap_model_call
-    def _mw(request, handler):  # type: ignore[no-untyped-def]
-        rt_ctx = getattr(getattr(request, "runtime", None), "context", None) or {}
-        allowed = _context_matches(expose_when, rt_ctx if isinstance(rt_ctx, dict) else {})
-        if not allowed and gated:
-            kept = [t for t in (request.tools or []) if getattr(t, "name", None) not in gated]
-            request = request.override(tools=kept)
-        return handler(request)
 
-    return _mw
+_GUARDRAIL_REDACTION = "[redacted]"
+
+
+class _GuardrailRegexMiddleware(AgentMiddleware):
+    """Regex content guardrail honoring `apply_to` (input/output/both) and all three actions
+    (block/redact/flag) - previously only the OUTPUT was scanned and only `block` did anything;
+    `apply_to`, `redact` and `flag` were silently ignored (audit F4).
+
+    - block:  replace the offending message with a fixed notice (existing behavior kept).
+    - redact: mask each matched span with `[redacted]`, leaving the rest of the message intact.
+    - flag:   keep the content but tag `additional_kwargs['guardrail_flagged']` and log it.
+
+    Scanning input happens in before_model (so redaction is applied before the model sees it);
+    scanning output happens in after_model (the model's reply)."""
+
+    def __init__(self, patterns: list[str], on_match: str = "block", apply_to: str = "output"):
+        super().__init__()
+        self._patterns = [re.compile(p) for p in patterns]
+        self._mode = on_match
+        self._apply_to = apply_to
+
+    def _rewrite(self, msg: Any):
+        """Return a replacement message if a pattern matches under the mode, else None."""
+        text = _msg_text(msg)
+        if not self._patterns or not any(p.search(text) for p in self._patterns):
+            return None
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        is_ai = getattr(msg, "type", None) == "ai"
+        make = AIMessage if is_ai else HumanMessage
+        if self._mode == "block":
+            return make(content="[blocked by content guardrail]")
+        if self._mode == "redact":
+            redacted = text
+            for p in self._patterns:
+                redacted = p.sub(_GUARDRAIL_REDACTION, redacted)
+            return make(content=redacted)
+        # flag: keep content, mark it for review (visible in the transcript / trace) + log.
+        ak = dict(getattr(msg, "additional_kwargs", {}) or {})
+        ak["guardrail_flagged"] = True
+        log.warning("guardrail_regex flagged a message (a pattern matched)")
+        return make(content=text, additional_kwargs=ak)
+
+    def _scan(self, state: dict, which: str):
+        from langchain_core.messages import RemoveMessage
+
+        msgs = state.get("messages") or []
+        want = ("human", "user") if which == "input" else ("ai",)
+        target = next((m for m in reversed(msgs) if getattr(m, "type", None) in want), None)
+        if target is None:
+            return None
+        repl = self._rewrite(target)
+        if repl is None:
+            return None
+        tid = getattr(target, "id", None)
+        return {"messages": [RemoveMessage(id=tid), repl] if tid else [repl]}
+
+    def before_model(self, state, runtime=None):  # type: ignore[no-untyped-def]
+        if self._apply_to in ("input", "both"):
+            return self._scan(state, "input")
+        return None
+
+    def after_model(self, state, runtime=None):  # type: ignore[no-untyped-def]
+        if self._apply_to in ("output", "both"):
+            return self._scan(state, "output")
+        return None
 
 
 def _guardrail_regex(c: dict, ctx: CompileContext) -> AgentMiddleware:
-    patterns = [re.compile(p) for p in c.get("patterns", [])]
-    on_match = c.get("on_match", "block")
+    return _GuardrailRegexMiddleware(
+        patterns=c.get("patterns", []),
+        on_match=c.get("on_match", "block"),
+        apply_to=c.get("apply_to", "output"),
+    )
 
-    @after_model
-    def _mw(state, runtime=None):  # type: ignore[no-untyped-def]
-        msgs = state.get("messages") or []
-        if not msgs or not patterns:
-            return None
-        last = msgs[-1]
-        text = _msg_text(last)
-        if not any(p.search(text) for p in patterns):
-            return None
-        if on_match == "block":
-            from langchain_core.messages import AIMessage, RemoveMessage
 
-            # Actually REPLACE the offending reply (remove + substitute) so the
-            # blocked content never reaches the transcript.
-            replacement = AIMessage(content="[blocked by content guardrail]")
-            last_id = getattr(last, "id", None)
-            if last_id:
-                return {"messages": [RemoveMessage(id=last_id), replacement]}
-            return {"messages": [replacement]}
-        # redact/flag are best-effort; full redaction is handled by PIIMiddleware.
+class _TenantBudgetState(AgentState):
+    # Run-scoped token tally: UntrackedValue channels are NOT checkpointed, so this resets at
+    # the start of every run (invocation) - giving true per-RUN scoping, unlike the old code
+    # that summed usage over the whole persisted thread (audit F3). PrivateStateAttr keeps it
+    # out of the agent's input/output schema so it never leaks to the workflow state.
+    _forge_run_tokens: NotRequired[Annotated[int, UntrackedValue, PrivateStateAttr]]
+    # Thread-scoped USD tally: a normal (checkpointed) channel, so it accumulates across the
+    # runs of a thread - matching `max_usd_per_thread`.
+    _forge_thread_cost_usd: NotRequired[Annotated[float, PrivateStateAttr]]
+
+
+class _TenantBudgetMiddleware(AgentMiddleware):
+    """Stop the run/thread when accumulated tokens or USD exceed a cap.
+
+    - `max_tokens_per_run` is now scoped to the current RUN (was: whole persisted thread).
+    - `max_usd_per_thread` is implemented via span-style pricing (forge.tracing.pricing.price)
+      accumulated across the thread - previously the field was accepted and ignored (F3).
+    Cost is only priced when a USD cap is set (keeps the token-only path free of lookups)."""
+
+    state_schema = _TenantBudgetState  # type: ignore[assignment]
+
+    def __init__(self, max_tokens_per_run: int | None, max_usd_per_thread: float | None, on_exceed: str = "end"):
+        super().__init__()
+        self._max_tokens = max_tokens_per_run
+        self._max_usd = max_usd_per_thread
+        self._on_exceed = on_exceed
+
+    def _exceeded(self, reason: str):
+        if self._on_exceed == "error":
+            raise RuntimeError(f"Tenant budget exceeded: {reason}")
+        from langchain_core.messages import AIMessage
+
+        return {"jump_to": "end", "messages": [AIMessage(content=f"[budget] run stopped: {reason}")]}
+
+    @hook_config(can_jump_to=["end"])
+    def before_model(self, state, runtime=None):  # type: ignore[no-untyped-def]
+        run_tokens = state.get("_forge_run_tokens", 0) or 0
+        thread_cost = state.get("_forge_thread_cost_usd", 0.0) or 0.0
+        if self._max_tokens and run_tokens >= self._max_tokens:
+            return self._exceeded(f"{run_tokens} >= {self._max_tokens} tokens (this run)")
+        if self._max_usd and thread_cost >= self._max_usd:
+            return self._exceeded(f"${thread_cost:.4f} >= ${self._max_usd} (this thread)")
         return None
 
-    return _mw
+    def after_model(self, state, runtime=None):  # type: ignore[no-untyped-def]
+        msgs = state.get("messages") or []
+        if not msgs:
+            return None
+        last = msgs[-1]
+        usage = getattr(last, "usage_metadata", None) or (
+            last.get("usage_metadata") if isinstance(last, dict) else None
+        )
+        if not usage:
+            return None
+        in_tok = usage.get("input_tokens", 0) or 0
+        out_tok = usage.get("output_tokens", 0) or 0
+        total = usage.get("total_tokens", in_tok + out_tok) or 0
+        update: dict[str, Any] = {"_forge_run_tokens": (state.get("_forge_run_tokens", 0) or 0) + total}
+        if self._max_usd:
+            from forge.tracing.pricing import price
+
+            rm = getattr(last, "response_metadata", None) or {}
+            model_name = rm.get("model_name") or rm.get("model")
+            details = usage.get("input_token_details") or {}
+            cost = price(
+                model_name, in_tok, out_tok,
+                cache_read_tokens=details.get("cache_read", 0) or 0,
+                cache_creation_tokens=details.get("cache_creation", 0) or 0,
+            )
+            update["_forge_thread_cost_usd"] = (state.get("_forge_thread_cost_usd", 0.0) or 0.0) + cost
+        return update
 
 
 def _tenant_budget(c: dict, ctx: CompileContext) -> AgentMiddleware:
-    max_tokens = c.get("max_tokens_per_run")
-    on_exceed = c.get("on_exceed", "end")
-
-    @before_model
-    def _mw(state, runtime=None):  # type: ignore[no-untyped-def]
-        if not max_tokens:
-            return None
-        used = 0
-        for m in state.get("messages") or []:
-            usage = getattr(m, "usage_metadata", None) or (
-                m.get("usage_metadata") if isinstance(m, dict) else None
-            )
-            if usage:
-                used += usage.get("total_tokens", 0)
-        if used >= max_tokens:
-            if on_exceed == "error":
-                raise RuntimeError(f"Tenant budget exceeded: {used} >= {max_tokens} tokens")
-            return {"jump_to": "end"}
-        return None
-
-    return _mw
+    return _TenantBudgetMiddleware(
+        max_tokens_per_run=c.get("max_tokens_per_run"),
+        max_usd_per_thread=c.get("max_usd_per_thread"),
+        on_exceed=c.get("on_exceed", "end"),
+    )
 
 
 MW_BUILDERS: dict[str, Builder] = {

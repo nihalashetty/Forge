@@ -168,6 +168,55 @@ def _end_user_block(end_user: dict) -> str:
     return line
 
 
+def _dynamic_field_middleware(config: dict, ctx: CompileContext, base_prompt: str | None) -> list:
+    """Compile the agent node's `dynamic_model` / `dynamic_prompt` blocks - both exposed in the
+    UI but previously unwired (audit F9) - into middleware.
+
+    - dynamic_model reuses the proven `dynamic_model_by_state` builder (switch model by a
+      state expression).
+    - dynamic_prompt renders the FIRST matching rule's prompt (with `{{state.*}}` tokens) as
+      the system prompt per model call, falling back to the node's static prompt when no rule
+      matches - so enabling it with no matching rule is behavior-neutral."""
+    extra: list = []
+
+    dm = config.get("dynamic_model") or {}
+    if dm.get("enabled") and dm.get("rules"):
+        extra += build_middleware(
+            [{"type": "dynamic_model_by_state", "config": {"rules": dm["rules"], "default": dm.get("default")}}],
+            ctx,
+        )
+
+    dp = config.get("dynamic_prompt") or {}
+    rules = dp.get("rules") or []
+    if dp.get("enabled") and rules:
+        from langchain.agents.middleware import dynamic_prompt as _dynamic_prompt
+
+        from forge.auth_providers.templates import render_template
+        from forge.engine.expressions import ExpressionError, eval_truthy
+
+        fallback = base_prompt or ""
+
+        @_dynamic_prompt
+        def _prompt(request):  # type: ignore[no-untyped-def]
+            state = dict(getattr(request, "state", {}) or {})
+            for r in rules:
+                text = r.get("prompt")
+                if not text:
+                    continue
+                when = r.get("when")
+                try:
+                    if not when or eval_truthy(when, state):
+                        rendered = render_template(text, {"state": state}) if isinstance(text, str) else text
+                        return str(rendered) if rendered is not None else fallback
+                except ExpressionError:
+                    continue
+            return fallback
+
+        extra.append(_prompt)
+
+    return extra
+
+
 def _common_kwargs(config: dict, ctx: CompileContext) -> dict:
     tools = list(ctx.tools_for(config.get("tools", [])))
     # Built-in knowledge access (RAG / Q&A) attached straight to the agent via its
@@ -199,6 +248,12 @@ def _common_kwargs(config: dict, ctx: CompileContext) -> dict:
             prompt = f"{prompt}\n\n{eu_block}" if prompt else eu_block
     if prompt:
         common["system_prompt"] = prompt
+    # Wire the dynamic_model / dynamic_prompt config blocks (append after the static stack so
+    # a matching rule overrides the base at call time). base_prompt = the fully-built static
+    # prompt so a non-matching dynamic_prompt run reproduces the static behavior exactly.
+    dynamic_mw = _dynamic_field_middleware(config, ctx, prompt)
+    if dynamic_mw:
+        common["middleware"] = list(middleware) + dynamic_mw
     rf = _build_response_format(config)
     if rf is not None:
         common["response_format"] = rf
@@ -238,6 +293,15 @@ def agent_factory(config: dict, ctx: CompileContext):
         backend = ctx.sandbox_backend_for(config.get("sandbox", {}) or {})
         if backend is not None:
             kwargs["backend"] = backend
+        # Deep-agent skills (agent-skills source paths) map straight through to create_deep_agent
+        # (audit F9). filesystem/permissions/memory are intentionally NOT auto-wired here - their
+        # UI shapes don't map 1:1 to the deepagents API and mis-wiring a filesystem permission
+        # would be a security footgun, so validate_workflow WARNS on them instead (see
+        # services/validation._warn_unwired_agent_fields).
+        # TODO(F9): map `permissions` ({path,access}) -> FilesystemPermission and `filesystem`
+        # ({kind,routes}) -> a deepagents backend once the UI schema is reconciled.
+        if config.get("skills"):
+            kwargs["skills"] = list(config["skills"])
         return create_deep_agent(**kwargs)
 
     from langchain.agents import create_agent
