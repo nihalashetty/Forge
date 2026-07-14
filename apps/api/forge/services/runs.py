@@ -409,7 +409,19 @@ class RunService:
                 log.exception("run %s failed", run.id)
                 await self._finalize_error(session, run, tracer, str(e))
                 finalized = True
-                yield {"event": "error", "data": {"message": _client_error(public, run.id, str(e))}}
+                # Graceful fallback: the workflow's on_error.message reached ONLY the text-channel
+                # path (run_to_completion) before; the streaming surface (Playground / embed / API)
+                # got a raw error. Deliver the configured fallback here too so end users on the
+                # surfaces they actually see get the operator's message instead of a stack error.
+                on_err = (wf.executable or {}).get("on_error") or {}
+                fallback = on_err.get("message")
+                if fallback:
+                    done_err: dict[str, Any] = {"status": "error", "answer": fallback, "error_handled": True}
+                    if not public:
+                        done_err["escalate"] = bool(on_err.get("escalate"))
+                    yield {"event": "done", "data": done_err}
+                else:
+                    yield {"event": "error", "data": {"message": _client_error(public, run.id, str(e))}}
             finally:
                 if display_token is not None:
                     reset_tool_display_names(display_token)

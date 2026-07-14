@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from forge.deps import CurrentUser, current_tenant_id, get_session, require_role
 from forge.schemas.dto import ProjectCountsOut, ProjectCreate, ProjectOut, ProjectUpdate
 from forge.services.projects import ProjectService
+from forge.services.versions import safe_snapshot
 
 router = APIRouter(prefix="/v1/projects", tags=["projects"])
 
@@ -24,12 +25,14 @@ async def create_project(
     body: ProjectCreate,
     session: AsyncSession = Depends(get_session),
     tenant_id: str = Depends(current_tenant_id),
-    _: CurrentUser = Depends(require_role("admin")),
+    user: CurrentUser = Depends(require_role("admin")),
 ):
-    return await ProjectService.create(
+    project = await ProjectService.create(
         session, tenant_id, name=body.name, slug=body.slug,
         description=body.description, config=body.config,
     )
+    await safe_snapshot(session, "project", project, author=user)
+    return project
 
 
 @router.get("/{project_id}", response_model=ProjectOut)
@@ -61,12 +64,14 @@ async def update_project(
     body: ProjectUpdate,
     session: AsyncSession = Depends(get_session),
     tenant_id: str = Depends(current_tenant_id),
-    _: CurrentUser = Depends(require_role("admin")),
+    user: CurrentUser = Depends(require_role("admin")),
 ):
     project = await ProjectService.get(session, tenant_id, project_id)
     if project is None:
         raise HTTPException(404, "Project not found")
-    return await ProjectService.update(session, project, name=body.name, description=body.description, config=body.config)
+    project = await ProjectService.update(session, project, name=body.name, description=body.description, config=body.config)
+    await safe_snapshot(session, "project", project, author=user)
+    return project
 
 
 @router.delete("/{project_id}", status_code=204)

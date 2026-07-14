@@ -9,6 +9,7 @@ from forge.deps import CurrentUser, current_tenant_id, get_session, require_role
 from forge.schemas.contracts import validate_against_id
 from forge.schemas.dto import AuthProviderCreate, AuthProviderOut, AuthProviderUpdate, AuthTestIn
 from forge.services.auth_providers import AuthProviderService
+from forge.services.versions import safe_snapshot
 
 router = APIRouter(prefix="/v1/projects/{project_id}/auth-providers", tags=["auth-providers"])
 
@@ -20,14 +21,16 @@ async def list_aps(project_id: str, session: AsyncSession = Depends(get_session)
 
 @router.post("", response_model=AuthProviderOut, status_code=201)
 async def create_ap(project_id: str, body: AuthProviderCreate, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id),
-                    _: CurrentUser = Depends(require_role("editor"))):
+                    user: CurrentUser = Depends(require_role("editor"))):
     cfg = {**body.config, "name": body.name, "kind": body.kind}
     if body.credentials_ref:
         cfg["credentials_ref"] = body.credentials_ref
     errors = validate_against_id(cfg, "forge/auth_provider")
     if errors:
         raise HTTPException(422, detail={"errors": errors})
-    return await AuthProviderService.create(session, tenant_id, project_id, name=body.name, kind=body.kind, config=body.config, credentials_ref=body.credentials_ref)
+    ap = await AuthProviderService.create(session, tenant_id, project_id, name=body.name, kind=body.kind, config=body.config, credentials_ref=body.credentials_ref)
+    await safe_snapshot(session, "auth_provider", ap, author=user)
+    return ap
 
 
 @router.get("/{ap_id}", response_model=AuthProviderOut)
@@ -40,7 +43,7 @@ async def get_ap(project_id: str, ap_id: str, session: AsyncSession = Depends(ge
 
 @router.patch("/{ap_id}", response_model=AuthProviderOut)
 async def update_ap(project_id: str, ap_id: str, body: AuthProviderUpdate, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id),
-                    _: CurrentUser = Depends(require_role("editor"))):
+                    user: CurrentUser = Depends(require_role("editor"))):
     ap = await AuthProviderService.get(session, tenant_id, ap_id)
     if ap is None:
         raise HTTPException(404, "Auth provider not found")
@@ -51,7 +54,9 @@ async def update_ap(project_id: str, ap_id: str, body: AuthProviderUpdate, sessi
         errors = validate_against_id(cfg, "forge/auth_provider")
         if errors:
             raise HTTPException(422, detail={"errors": errors})
-    return await AuthProviderService.update(session, ap, name=body.name, kind=body.kind, config=body.config, credentials_ref=body.credentials_ref)
+    ap = await AuthProviderService.update(session, ap, name=body.name, kind=body.kind, config=body.config, credentials_ref=body.credentials_ref)
+    await safe_snapshot(session, "auth_provider", ap, author=user)
+    return ap
 
 
 @router.delete("/{ap_id}", status_code=204)
