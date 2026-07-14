@@ -7,6 +7,39 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Feature-bounty fixes (correctness, governance, and DX)
+- **Entity version history** (new): every save of a workflow/agent/tool/component/auth-provider/
+  knowledge-source/project snapshots to `entity_versions`; view + restore in the console; retention
+  pruned to a configurable `version_history_limit`.
+- **Engine correctness:** Loop nodes no longer crash past ~8 iterations (run `recursion_limit` is
+  set); many previously-ignored node/middleware options now work (Join reducer, parallel
+  isolation/ordering/timeout, tenant-budget USD cap + per-run token scope, guardrail
+  apply_to/redact/flag, model_retry retry_on, subworkflow input/output mapping, Transform jq, LLM
+  `{{state}}` templating, agent-node dynamic prompt/model); validation now errors on undeclared
+  state-key writes + branches-without-condition.
+- **RAG grounding:** default relevance floor calibrated to the local embedder (0.18 → 0.6),
+  thresholds the true cosine in hybrid mode + a rerank floor (so off-topic → "I don't know"),
+  chunk citations, per-page crawl provenance (+robots/limits), MMR, resumable batched ingest.
+- **Isolation/privacy:** per-user long-term memory scope; response-cache keyed by tenant/user/auth;
+  Postgres RLS actually wired (per-transaction tenant GUC); MCP `stdio` gated + external-MCP SSRF
+  screening; tool-I/O trace redaction on by default in production.
+- **Reliability:** webhook + `/run` idempotency; scheduler on by default with an atomic
+  double-fire-safe claim; HITL TOCTOU + chained-interrupt + timeout fixes; outbound channel retry
+  with delivery status; run cancellation; transient-only tool retries.
+- **Observability:** OTel export fixed (wall-clock times + real span hierarchy); cost accounting
+  handles prompt-cache tiers + dated/unlisted models; retriever/embedding spans; evals gain
+  concurrency, persisted history + regression gate, more scorers, robust judge.
+- **Platform/governance:** per-project RBAC + scoped revocable API keys; auth rate-limiting,
+  refresh rotation, logout, password-reset/verify, optional TOTP MFA; project budgets +
+  allowed-models enforcement; scheduled retention purge; audit pagination/export + secret.read;
+  fail-closed public rate limiter; extended hardening guard; workspace management; worker DLQ.
+- **MCP:** exposed-server rate-limited + per-project tool allow-list; expose a whole workflow as
+  an MCP tool (`mcp_expose_workflow`).
+- **Semantic caching** wired as an agent middleware (was built but unreachable).
+- **Console:** Settings redesigned with a section sidebar (incl. a model-pricing editor); a
+  restrained de-colored palette; version-history drawer; canvas unsaved-changes guard + undo/redo
+  + copy-paste; Playground Stop + real thread reset; Deep Agent config panel.
+
 ### Added
 - Project developer meta: `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, this
   changelog, and GitHub issue/PR templates.
