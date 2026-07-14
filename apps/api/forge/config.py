@@ -70,7 +70,8 @@ class Settings(BaseSettings):
     # _as_str_list. Keeps a stray bracket/space from an interpolated default from crashing boot.
     @field_validator(
         "jwt_secret_previous", "cors_origins", "egress_allow_hosts", "egress_deny_hosts",
-        "egress_allow_private_hosts", "trusted_proxies", "trusted_hosts", mode="before",
+        "egress_allow_private_hosts", "trusted_proxies", "trusted_hosts",
+        "mcp_stdio_allowed_commands", mode="before",
     )
     @classmethod
     def _parse_str_lists(cls, v: object) -> list[str]:
@@ -167,6 +168,12 @@ class Settings(BaseSettings):
     # Set true to run code tools in production despite the lack of OS isolation (you accept
     # the in-process RCE/DoS risk - e.g. a trusted single-tenant deployment).
     allow_unsandboxed_code_tools: bool = False
+    # External MCP servers reached via the `stdio` transport launch a LOCAL PROCESS
+    # (command + args) - i.e. arbitrary command execution on the API host, like an
+    # unsandboxed code tool. OFF by default; enable only on a trusted single-tenant install.
+    # Optionally restrict to an allow-list of executables (empty = any command when enabled).
+    enable_mcp_stdio: bool = False
+    mcp_stdio_allowed_commands: Annotated[list[str], NoDecode] = []
     # Prune the assistant's ~19 tools to the relevant subset per turn (cuts tool-schema
     # tokens). Opt-in: the selection itself is an extra model call, so it's a tradeoff.
     assistant_tool_selector: bool = False
@@ -368,6 +375,11 @@ class Settings(BaseSettings):
             warns.append("auth_required is false - unauthenticated requests act as the workspace owner.")
         if self.enable_code_tools:
             warns.append("Code tools are enabled and run unsandboxed (RestrictedPython only).")
+        if self.enable_mcp_stdio:
+            warns.append(
+                "MCP stdio transport is enabled - external MCP clients can launch local processes "
+                "(arbitrary command execution). Restrict FORGE_MCP_STDIO_ALLOWED_COMMANDS."
+            )
         if self.environment.lower() not in (*self._DEV_ENVIRONMENTS, "production", "prod", "staging"):
             warns.append(f"Unrecognized FORGE_ENVIRONMENT={self.environment!r} - treated as security-enforced.")
         return warns
