@@ -3,9 +3,11 @@
 Every save of a versionable entity (workflow / agent / tool / component / auth provider /
 knowledge source / project settings) captures an immutable `EntityVersion` snapshot of its
 restorable fields, so a user can inspect the history and roll back a bad edit. Retention is
-pruned to `settings.version_history_limit` per entity (default 5), overridable per-tenant via
-`tenant.settings["version_history_limit"]` and exposed in the console Settings > Versioning
-panel - framework-configurable, since Forge is meant to be embedded in any application.
+pruned to a limit resolved in precedence order: the entity's `project.config
+["version_history_limit"]` (what the console Settings > Versioning panel writes), then a
+`tenant.settings["version_history_limit"]` override, then the global
+`settings.version_history_limit` (default 5) - framework-configurable, since Forge is meant
+to be embedded in any application.
 
 Kept generic (a field-spec registry per entity type) so a new versionable entity is one line,
 and defensive (snapshotting must NEVER break the underlying save - `safe_snapshot` swallows).
@@ -53,13 +55,18 @@ def versioned_types() -> list[str]:
     return list(_SPEC.keys())
 
 
-def _limit_for(tenant_settings: dict | None) -> int:
-    """Retention limit: per-tenant override, else the global default. <=0 means keep all."""
-    override = (tenant_settings or {}).get("version_history_limit")
-    try:
-        return int(override) if override is not None else int(settings.version_history_limit)
-    except (TypeError, ValueError):
-        return int(settings.version_history_limit)
+def _limit_for(tenant_settings: dict | None, project_config: dict | None = None) -> int:
+    """Retention limit, in precedence order: the PROJECT's own config (what the console
+    Settings > Versioning screen writes into project.config.version_history_limit), then a
+    per-tenant override, then the global default. <=0 means keep all."""
+    for src in (project_config, tenant_settings):
+        val = (src or {}).get("version_history_limit")
+        if val is not None:
+            try:
+                return int(val)
+            except (TypeError, ValueError):
+                pass
+    return int(settings.version_history_limit)
 
 
 def serialize(entity_type: str, obj) -> dict:
@@ -108,12 +115,21 @@ class VersionService:
         )
         session.add(ev)
         await session.flush()
-        await VersionService._prune(session, tenant_id, entity_type, entity_id, tenant_settings)
+        # Resolve the per-project retention override (console Settings > Versioning writes it to
+        # project.config); falls back to tenant settings then the global default in _limit_for.
+        project_config = None
+        if project_id:
+            proj = (await session.execute(
+                select(Project).where(Project.tenant_id == tenant_id, Project.id == project_id)
+            )).scalar_one_or_none()
+            project_config = proj.config if proj else None
+        await VersionService._prune(session, tenant_id, entity_type, entity_id, tenant_settings, project_config)
         return ev
 
     @staticmethod
-    async def _prune(session, tenant_id: str, entity_type: str, entity_id: str, tenant_settings: dict | None) -> None:
-        limit = _limit_for(tenant_settings)
+    async def _prune(session, tenant_id: str, entity_type: str, entity_id: str,
+                     tenant_settings: dict | None, project_config: dict | None = None) -> None:
+        limit = _limit_for(tenant_settings, project_config)
         if limit <= 0:
             return  # keep-all
         rows = (
