@@ -227,12 +227,14 @@ class Settings(BaseSettings):
     # Per-field clip so a large body/response can't bloat the spans table. 0 = no cap.
     trace_tool_io_max_chars: int = 20000
 
-    # In-process scheduler for `schedule` triggers (fires due schedules once a minute).
-    # OFF by default: with more than one replica each would fire every schedule (duplicate
-    # runs). Enable it on EXACTLY ONE instance (set FORGE_SCHEDULER_LEADER=true there), or
-    # run a dedicated single scheduler/worker. `enable_scheduler` is the master switch;
-    # `scheduler_leader` lets you ship the same image everywhere and elect one leader by env.
-    enable_scheduler: bool = False
+    # In-process scheduler for `schedule` / `app_event` triggers (fires due ones once a minute).
+    # ON by default so a published schedule actually fires out of the box (the manual documents
+    # this; off-by-default silently no-op'd every schedule). Dispatch now claims each due trigger
+    # atomically (re-check + stamp last_fired_at in one txn) before running it, so an accidental
+    # multi-leader setup can't double-fire. For multi-replica prod, still elect ONE leader:
+    # `scheduler_leader` lets you ship the same image everywhere and set FORGE_SCHEDULER_LEADER
+    # =false on the non-leaders. Set FORGE_ENABLE_SCHEDULER=false to disable entirely.
+    enable_scheduler: bool = True
     scheduler_leader: bool = True
 
     # Seed demo data (projects/tools/auth) on first run. Off => start from an empty

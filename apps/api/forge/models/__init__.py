@@ -7,6 +7,7 @@ from forge.models.entities import (
     Channel,
     Component,
     Dataset,
+    EntityVersion,
     HandoffRequest,
     KbSource,
     McpClient,
@@ -30,4 +31,5 @@ __all__ = [
     "Tenant", "User", "Project", "Workflow", "Thread", "Run", "Trace", "Span",
     "Tool", "AuthProvider", "Secret", "McpClient", "Agent", "KbSource", "QaPair",
     "AuditLog", "Trigger", "Channel", "Component", "HandoffRequest", "Dataset", "ModelPrice", "Memory",
+    "EntityVersion",
 ]

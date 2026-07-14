@@ -375,6 +375,28 @@ class AuditLog(PkTimestamp, Base):
     meta: Mapped[dict] = mapped_column("metadata", JSON, default=dict)
 
 
+class EntityVersion(PkTimestamp, Base):
+    """Immutable point-in-time snapshot of a versionable entity's config, captured on each
+    save so a user can view history and restore a prior version. Generic across entity types
+    (workflow|agent|tool|component|auth_provider|kb_source|project) - the `snapshot` JSON holds
+    the entity's restorable fields. Retention is pruned to the configured version_history_limit
+    per (entity_type, entity_id). See forge.services.versions."""
+
+    __tablename__ = "entity_versions"
+    __table_args__ = (
+        UniqueConstraint("entity_type", "entity_id", "version_no", name="uq_entity_version"),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(36), index=True)
+    project_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    entity_type: Mapped[str] = mapped_column(String(40), index=True)
+    entity_id: Mapped[str] = mapped_column(String(36), index=True)
+    version_no: Mapped[int] = mapped_column(Integer, default=1)
+    label: Mapped[str | None] = mapped_column(String(300), nullable=True)  # entity name at snapshot time / note
+    snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    author_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    author_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+
+
 class Span(PkTimestamp, Base):
     __tablename__ = "spans"
     tenant_id: Mapped[str] = mapped_column(String(36), index=True)

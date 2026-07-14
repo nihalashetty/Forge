@@ -18,6 +18,7 @@ from sqlalchemy import or_, select
 
 from forge.config import settings
 from forge.db.base import SessionLocal
+from forge.db.scoping import set_current_tenant
 from forge.engine.compiler import compile_workflow
 from forge.models import Run, Thread, Trace, Workflow
 from forge.services.runtime import build_compile_context
@@ -166,6 +167,7 @@ class RunService:
         self, session, *, tenant_id: str, project_id: str, workflow_id: str, input: dict,
         thread_id: str | None = None, end_user: dict | None = None, source: str = "playground",
     ) -> Run:
+        set_current_tenant(tenant_id)  # bind tenant for the Postgres RLS GUC (no-op on SQLite)
         # Enforce the tenant's daily spend ceiling on EVERY run-creation path - webhook / email /
         # Teams / app_event / MCP / playground - not just the embed widget (audit M2). create_run
         # is the single run factory, so this is the universal floor. The embed path additionally
@@ -246,6 +248,7 @@ class RunService:
         self, *, run_id: str, tenant_id: str, project_id: str | None = None, public: bool = False,
         run_context: dict | None = None, resume: bool = False, resume_value: Any = None,
     ) -> AsyncIterator[dict]:
+        set_current_tenant(tenant_id)  # bind tenant for the Postgres RLS GUC (no-op on SQLite)
         async with SessionLocal() as session:
             where = [Run.tenant_id == tenant_id, Run.id == run_id]
             if project_id is not None:
@@ -419,6 +422,7 @@ class RunService:
     async def run_to_completion(self, *, run_id: str, tenant_id: str, project_id: str | None = None, run_context: dict | None = None) -> dict:
         """Compile + run a created run to completion without SSE (used by the trigger
         dispatcher: webhook / schedule / email / chat). Returns the final answer."""
+        set_current_tenant(tenant_id)  # bind tenant for the Postgres RLS GUC (no-op on SQLite)
         async with SessionLocal() as session:
             where = [Run.tenant_id == tenant_id, Run.id == run_id]
             if project_id is not None:
@@ -511,6 +515,7 @@ class RunService:
         """Resume an interrupted run (HITL) with `Command(resume=value)` on its thread."""
         from langgraph.types import Command
 
+        set_current_tenant(tenant_id)  # bind tenant for the Postgres RLS GUC (no-op on SQLite)
         async with SessionLocal() as session:
             where = [Run.tenant_id == tenant_id, Run.id == run_id]
             if project_id is not None:

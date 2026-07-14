@@ -85,6 +85,11 @@ async def get_current_user(request: Request) -> CurrentUser:
 
 
 def current_tenant_id(user: CurrentUser = Depends(get_current_user)) -> str:
+    # Bind the tenant for this request so the Postgres RLS GUC listener (forge.db.base) sets
+    # app.current_tenant on every transaction that follows in the route body. No-op on SQLite.
+    from forge.db.scoping import set_current_tenant
+
+    set_current_tenant(user.tenant_id)
     return user.tenant_id
 
 

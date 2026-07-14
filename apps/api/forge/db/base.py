@@ -50,6 +50,28 @@ engine = create_async_engine(
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
 
+# --- Postgres Row-Level Security wiring --------------------------------------------------
+# infra/postgres_rls.sql policies filter on current_setting('app.current_tenant'). Nothing set
+# that GUC before, so applying the (FORCE) RLS policies returned ZERO rows and broke the app.
+# Set it per-transaction from the request-scoped tenant contextvar (forge.db.scoping) via
+# set_config(..., is_local=true) so it auto-resets at commit/rollback. Postgres-only: SQLite
+# (dev/test) has no RLS, so this listener isn't attached there and the suite is unaffected.
+# Defensive: a failure to set the GUC must never break the transaction.
+if not _is_sqlite:
+    from sqlalchemy import event, text
+
+    @event.listens_for(engine.sync_engine, "begin")
+    def _apply_tenant_guc(conn):  # pragma: no cover - only exercised against Postgres
+        try:
+            from forge.db.scoping import current_tenant
+
+            tid = current_tenant()
+            if tid:
+                conn.execute(text("SELECT set_config('app.current_tenant', :tid, true)"), {"tid": str(tid)})
+        except Exception:  # noqa: BLE001 - RLS GUC is best-effort; never break the txn
+            pass
+
+
 async def init_db() -> None:
     # Import models so they register on Base.metadata before create_all.
     from forge import models  # noqa: F401

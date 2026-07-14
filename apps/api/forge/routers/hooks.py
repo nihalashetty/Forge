@@ -17,10 +17,29 @@ from forge.secrets.store import SecretStore
 from forge.services.dispatch import dispatch_trigger
 from forge.services.runs import RunService
 from forge.services.triggers import TriggerService
-from forge.util.ratelimit import rate_limiter
+from forge.util.ratelimit import idempotency, rate_limiter
 from forge.util.tasks import spawn
 
 router = APIRouter(prefix="/v1/hooks", tags=["hooks"])
+
+# Delivery-id headers common providers send for at-least-once retries; used to dedupe so a
+# provider re-delivery doesn't double-run the workflow (duplicate side effects). A trigger may
+# name its own via config.dedupe_header, or opt into body-hash dedupe via config.dedupe_body.
+_DELIVERY_HEADERS = ("X-GitHub-Delivery", "X-Request-Id", "Idempotency-Key", "X-Delivery-Id", "X-Event-Id")
+
+
+def _dedupe_key(trigger, request: Request, raw: bytes) -> str | None:
+    cfg = trigger.config or {}
+    names = [cfg["dedupe_header"]] if cfg.get("dedupe_header") else list(_DELIVERY_HEADERS)
+    for name in names:
+        if not name:
+            continue
+        v = request.headers.get(name) or request.headers.get(name.lower())
+        if v:
+            return v.strip()
+    if cfg.get("dedupe_body"):
+        return hashlib.sha256(raw).hexdigest()
+    return None
 
 
 async def _verify_signature(trigger, body: bytes, signature: str | None) -> bool:
@@ -59,6 +78,15 @@ async def inbound_webhook(
     sig = request.headers.get("x-forge-signature") or request.headers.get("X-Hub-Signature-256")
     if not await _verify_signature(trigger, raw, sig):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid signature")
+
+    # Idempotency: dedupe an at-least-once redelivery (same delivery id / configured key) so the
+    # workflow doesn't run twice. Claim the key BEFORE dispatch so concurrent duplicates collapse.
+    dedupe = _dedupe_key(trigger, request, raw)
+    if dedupe:
+        ik = f"hook:{trigger.id}:{dedupe}"
+        if idempotency.get(ik) is not None:
+            return {"accepted": True, "trigger": trigger.id, "deduplicated": True}
+        idempotency.put(ik, {"accepted": True})
 
     try:
         payload = await request.json()

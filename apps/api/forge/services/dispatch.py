@@ -42,8 +42,12 @@ async def _find_channel_thread(s, tenant_id: str, workflow_id: str, conversation
     return row.id if row else None
 
 
-async def dispatch_trigger(run_service: RunService, trigger: Trigger, payload) -> dict:
-    """Create a run for `trigger` from `payload` and run it to completion."""
+async def dispatch_trigger(run_service: RunService, trigger: Trigger, payload, *, stamp: bool = True) -> dict:
+    """Create a run for `trigger` from `payload` and run it to completion.
+
+    `stamp` controls whether last_fired_at is written here. The scheduler already claims a
+    schedule (re-check + stamp in one txn) before calling this, so it passes stamp=False to
+    avoid a redundant second write; the webhook/inbound paths keep the default True."""
     run_input = TriggerService.build_input(trigger, payload)
     async with SessionLocal() as s:
         run = await run_service.create_run(
@@ -52,11 +56,12 @@ async def dispatch_trigger(run_service: RunService, trigger: Trigger, payload) -
             source=_TRIGGER_SOURCE.get(trigger.kind, trigger.kind or "webhook"),
         )
         run_id = run.id
-        # stamp last_fired_at on the trigger
-        t = await s.get(Trigger, trigger.id)
-        if t is not None:
-            t.last_fired_at = datetime.utcnow()
-            await s.commit()
+        # stamp last_fired_at on the trigger (unless the caller already claimed it)
+        if stamp:
+            t = await s.get(Trigger, trigger.id)
+            if t is not None:
+                t.last_fired_at = datetime.utcnow()
+                await s.commit()
     # Offload to the worker queue when configured (webhook/schedule need no synchronous
     # reply); otherwise run inline. Either way per-tenant concurrency is bounded (audit P1).
     from forge.queue import enqueue_run
@@ -102,13 +107,24 @@ async def dispatch_message(
 
 
 async def run_due_schedules(run_service: RunService) -> int:
-    """Fire every schedule trigger that is due. Returns how many fired."""
+    """Fire every schedule trigger that is due. Returns how many fired.
+
+    Each due trigger is CLAIMED atomically before running - re-fetch, re-check due, and stamp
+    last_fired_at in one transaction - so a second scheduler tick or replica that also saw it
+    due finds it already claimed and skips it (no duplicate scheduled runs). Mirrors the
+    app_event poller's claim (audit F9); schedules previously stamped only inside dispatch."""
     async with SessionLocal() as s:
         due = await TriggerService.due_schedule_triggers(s)
     fired = 0
     for trig in due:
+        async with SessionLocal() as s:
+            t = await s.get(Trigger, trig.id)
+            if t is None or not TriggerService.is_due(t):
+                continue  # already claimed by a concurrent tick / no longer due
+            t.last_fired_at = datetime.utcnow()
+            await s.commit()
         try:
-            await dispatch_trigger(run_service, trig, None)
+            await dispatch_trigger(run_service, trig, None, stamp=False)
             fired += 1
         except Exception:  # noqa: BLE001 - one bad schedule must not stop the rest
             log.exception("schedule trigger %s failed", trig.id)
@@ -200,9 +216,17 @@ async def _poll_app_event(run_service: RunService, trig) -> int:
         async with SessionLocal() as s:
             t = await s.get(Trigger, trig.id)
             if t is not None:
-                cur = set((t.meta or {}).get("seen", []))
-                cur.update(new_keys)
-                t.meta = {**(t.meta or {}), "seen": list(cur)[-1000:]}  # cap dedupe memory
+                # Keep `seen` as an ORDERED list (oldest -> newest) so capping to the most-recent
+                # 1000 retains recent keys. The prior code stored a set and sliced list(set)[-1000:],
+                # whose arbitrary order could evict just-seen keys and re-fire already-dispatched
+                # items once the cap was exceeded.
+                seen_list = list((t.meta or {}).get("seen", []))
+                have = set(seen_list)
+                for k in new_keys:
+                    if k not in have:
+                        seen_list.append(k)
+                        have.add(k)
+                t.meta = {**(t.meta or {}), "seen": seen_list[-1000:]}
                 await s.commit()
 
     count = 0
