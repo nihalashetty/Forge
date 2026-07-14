@@ -16,6 +16,7 @@ from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,6 +32,14 @@ from forge.util.ssrf import guarded_request
 router = APIRouter(tags=["oauth"])
 
 _PREFIX = "/v1/projects/{project_id}/auth-providers/{ap_id}/oauth"
+
+
+class OAuthStartIn(BaseModel):
+    # Per-user connect (finding i): the end-user context whose token this connect establishes.
+    # Only the dims named in the provider's `per_user_context_keys` are carried through the
+    # (signed) state to the callback, which then stores the bundle under the SAME per-user
+    # secret name that resolve/refresh read. Omit for a shared, single-account provider.
+    context: dict | None = None
 
 
 def _redirect_uri(cfg: dict) -> str:
@@ -55,6 +64,7 @@ async def _load(session, tenant_id: str, project_id: str, ap_id: str) -> AuthPro
 @router.post(_PREFIX + "/start")
 async def oauth_start(
     project_id: str, ap_id: str,
+    body: OAuthStartIn | None = None,
     session: AsyncSession = Depends(get_session),
     tenant_id: str = Depends(current_tenant_id),
     _: CurrentUser = Depends(require_role("editor")),
@@ -70,7 +80,16 @@ async def oauth_start(
     # browser; for a PUBLIC client (no client_secret) store the verifier server-side instead.
     verifier = _secrets.token_urlsafe(64)
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
-    state = create_state_token({"tid": tenant_id, "pid": project_id, "ap": ap_id, "cv": verifier})
+    state_claims = {"tid": tenant_id, "pid": project_id, "ap": ap_id, "cv": verifier}
+    # Per-user connect: carry ONLY the dims that key this provider's per-user bundle, so the
+    # callback stores the token under the same per-user name resolve/refresh look up. Absent (or
+    # a non-per-user provider) => the default single-account name, preserving prior behavior.
+    per_user = cfg.get("per_user_context_keys") or []
+    ctx = (body.context if body else None) or {}
+    user_ctx = {k: ctx[k] for k in per_user if k in ctx}
+    if user_ctx:
+        state_claims["ctx"] = user_ctx
+    state = create_state_token(state_claims)
     q = {
         "response_type": "code",
         "client_id": str(client_id),
@@ -138,7 +157,12 @@ async def oauth_callback(
         "scope": body.get("scope", cfg.get("scope")),
         "expires_at": (_t.time() + int(body["expires_in"])) if body.get("expires_in") else None,
     }
-    await AuthResolver()._store_bundle(tenant_id, project_id, ap_id, bundle)
+    # Store under the SAME (possibly per-user) secret name resolve/refresh read. The end-user
+    # context was carried through the signed state from /start; without it (shared account) this
+    # is the default name. Previously the connect always wrote the default name, so a per-user
+    # provider's token was stored where resolve never looked (finding i / item 5).
+    bundle_name = AuthResolver.bundle_secret_name(ap_id, claims.get("ctx"), cfg.get("per_user_context_keys"))
+    await AuthResolver()._store_bundle(tenant_id, project_id, ap_id, bundle, name=bundle_name)
     return HTMLResponse("<h3>✅ Connected</h3><p>You can close this window and return to Forge.</p>")
 
 

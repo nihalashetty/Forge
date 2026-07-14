@@ -99,3 +99,29 @@ async def test_oauth_not_connected_raises():
     import pytest
     with pytest.raises((KeyError, Exception)):
         await AuthResolver().resolve(tenant_id="t_none", project_id="p_none", provider_id="apx", provider=_ap("apx", "t_none", "p_none"), force=True)
+
+
+async def test_per_user_connect_bundle_is_resolvable():
+    """Item 5: the connect callback now stores the bundle under the SAME per-user secret name
+    that resolve/refresh read. Before the fix it wrote the default name, so a per-user provider's
+    token was invisible to resolve. This exercises the connect-time name -> resolve round trip."""
+    import pytest
+
+    cfg = {**_CFG, "per_user_context_keys": ["end_user.id"]}
+    ap = AuthProvider(id="ap_pu", tenant_id="t_pu", project_id="p_pu", name="idp",
+                      kind="oauth2_authorization_code", config=cfg)
+    ctx = {"end_user.id": "alice"}
+    # The per-user name the callback computes must differ from the default single-account name.
+    name = AuthResolver.bundle_secret_name("ap_pu", ctx, cfg["per_user_context_keys"])
+    assert name != AuthResolver.bundle_secret_name("ap_pu")
+    async with SessionLocal() as s:
+        await SecretStore().write(s, tenant_id="t_pu", project_id="p_pu", name=name,
+                                  value={"access_token": "ALICE", "expires_at": time.time() + 3600}, kind="oauth")
+    # Alice's context resolves to her token...
+    r = await AuthResolver().resolve(tenant_id="t_pu", project_id="p_pu", provider_id="ap_pu",
+                                     provider=ap, context=ctx, force=True)
+    assert r.headers["Authorization"] == "Bearer ALICE"
+    # ...a different end-user's context does not (proving the bundle is genuinely per-user).
+    with pytest.raises(KeyError):
+        await AuthResolver().resolve(tenant_id="t_pu", project_id="p_pu", provider_id="ap_pu",
+                                     provider=ap, context={"end_user.id": "bob"}, force=True)
