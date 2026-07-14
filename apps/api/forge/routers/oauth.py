@@ -8,6 +8,9 @@ and stores them as a secret. The AuthResolver then auto-refreshes on expiry.
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import secrets as _secrets
 from html import escape
 from urllib.parse import urlencode
 
@@ -61,12 +64,20 @@ async def oauth_start(
     client_id = await SecretStore().read_ref(tenant_id=tenant_id, project_id=project_id, ref=cfg["client_id_ref"]) if cfg.get("client_id_ref") else None
     if not client_id:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "client_id secret not configured")
-    state = create_state_token({"tid": tenant_id, "pid": project_id, "ap": ap_id})
+    # PKCE (finding i): bind the authorization code to a per-request verifier so an intercepted
+    # code can't be redeemed without it. The verifier rides in the SIGNED state (tamper-proof)
+    # and is echoed back to us in the callback. NOTE: the signed state is readable by the
+    # browser; for a PUBLIC client (no client_secret) store the verifier server-side instead.
+    verifier = _secrets.token_urlsafe(64)
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
+    state = create_state_token({"tid": tenant_id, "pid": project_id, "ap": ap_id, "cv": verifier})
     q = {
         "response_type": "code",
         "client_id": str(client_id),
         "redirect_uri": _redirect_uri(cfg),
         "state": state,
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
     }
     if cfg.get("scope"):
         q["scope"] = cfg["scope"]
@@ -102,6 +113,8 @@ async def oauth_callback(
         "redirect_uri": _redirect_uri(cfg),
         "client_id": str(client_id) if client_id else None,
         "client_secret": str(client_secret) if client_secret else None,
+        # PKCE proof matching the code_challenge sent at /start (finding i).
+        "code_verifier": claims.get("cv"),
     }
     # Fetch the token through the SSRF guard (validates the host pre-connect AND re-validates
     # any redirect hop, with httpx's cross-origin credential stripping) rather than a raw POST

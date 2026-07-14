@@ -111,6 +111,24 @@ async def _reaper_loop() -> None:
             log.exception("reaper tick failed")
 
 
+async def _retention_loop() -> None:
+    """Purge traces/spans/runs past each project's retention horizon and audit logs past the
+    workspace horizon, on a timer (finding e). Leader-only (like the reaper) so a multi-replica
+    deployment purges once. No-op unless a retention window is configured."""
+    from forge.services.retention import RetentionService
+
+    log = logging.getLogger("forge.retention")
+    interval = max(60, int(settings.retention_interval_seconds or 3600))
+    while True:
+        try:
+            await asyncio.sleep(interval)
+            await RetentionService.purge_expired()
+        except asyncio.CancelledError:
+            break
+        except Exception:  # noqa: BLE001 - keep the retention loop alive across failures
+            log.exception("retention tick failed")
+
+
 async def _scheduler_loop(app: FastAPI) -> None:
     """Fire due `schedule` triggers once a minute. Single-worker in-process scheduler;
     for multi-worker prod, move to arq/Redis (FORGE_REDIS_URL) so it runs once globally."""
@@ -180,6 +198,9 @@ async def lifespan(app: FastAPI):
     # The reaper is safe to run everywhere (idempotent), but one instance is enough.
     if settings.scheduler_leader:
         bg_tasks.append(asyncio.create_task(_reaper_loop(), name="forge-reaper"))
+    # Data-retention purge (leader-only): ages out traces/spans/runs + audit logs (finding e).
+    if settings.enable_retention and settings.scheduler_leader:
+        bg_tasks.append(asyncio.create_task(_retention_loop(), name="forge-retention"))
     yield
     for t in bg_tasks:
         t.cancel()
@@ -220,12 +241,19 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    # Coarse per-IP request ceiling (api_rate_limit_per_minute) as a blunt DoS guard;
+    # complements the per-surface limits. Health/SSE exempt (finding a).
+    if settings.enable_global_rate_limit:
+        from forge.util.ratelimit import GlobalRateLimitMiddleware
+
+        app.add_middleware(GlobalRateLimitMiddleware)
     # Audit all successful mutations (pure ASGI; safe with SSE streams).
     from forge.audit_middleware import AuditMiddleware
 
     app.add_middleware(AuditMiddleware)
     for r in (
-        health.router, auth.router, auth.team_router, audit.router, oauth.router, hooks.router,
+        health.router, auth.router, auth.team_router, auth.workspace_router, auth.apikeys_router,
+        audit.router, oauth.router, hooks.router,
         nodes.router, projects.router, workflows.router, runs.router, project_run.router,
         tools.router, components.router, embed.router, embed_public.router, auth_providers.router, secrets.router, agents.router,
         knowledge.router, knowledge.qa_router, traces.router, conversations.router, assistant.router, stats.router,

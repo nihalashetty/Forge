@@ -22,7 +22,14 @@ from forge.db.base import SessionLocal
 from forge.models import AuthProvider
 from forge.secrets.store import SecretStore
 from forge.util.http import shared_async_client
+from forge.util.locks import KeyedLocks
 from forge.util.ssrf import guarded_request
+
+# Serialize a provider's (per-user) OAuth refresh so concurrent resolves don't each POST the
+# one-time refresh_token and clobber the rotated bundle - the loser would then hold a token the
+# IdP has already invalidated (finding i). In-process (single worker); a distributed lock is
+# needed for multi-worker, same as the rest of util.locks.
+_oauth_refresh_locks = KeyedLocks()
 
 
 @dataclass
@@ -82,6 +89,16 @@ class AuthResolver:
         if not force and (cached := self._cache.get(key)) and not cached.expired:
             return cached
 
+        # Audit the secret resolution for this tool-auth (finding g). Logged once per real
+        # resolution (not on cache hits). This is the primary on-behalf-of secret-consumption
+        # path; the exhaustive choke point is SecretStore.read_ref - see the note in that file.
+        from forge.services.audit import AuditService
+
+        await AuditService.log(
+            tenant_id=tenant_id, action="secret.read", project_id=project_id,
+            resource_type="auth_provider", resource_id=provider_id, meta={"kind": provider.kind},
+        )
+
         async def read(ref: str | None) -> Any:
             if not ref:
                 return None
@@ -119,7 +136,7 @@ class AuthResolver:
         elif kind == "oauth2_client_credentials":
             resolved = await self._oauth2(cfg, read, client)
         elif kind == "oauth2_authorization_code":
-            resolved = await self._oauth2_auth_code(provider, cfg, read, tenant_id, project_id, client)
+            resolved = await self._oauth2_auth_code(provider, cfg, read, tenant_id, project_id, client, context)
         elif kind == "csrf_session":
             resolved = await self._csrf_session(cfg, {"cred": creds, "ctx": context}, client, default_ttl)
         elif kind == "custom_script":  # pragma: no cover - advanced/audited
@@ -151,35 +168,63 @@ class AuthResolver:
         return ResolvedAuth(headers={"Authorization": f"Bearer {token}"}, expires_at=time.monotonic() + ttl)
 
     @staticmethod
-    def bundle_secret_name(provider_id: str) -> str:
-        return f"oauth_token__{provider_id}"
+    def _per_user_suffix(context: dict | None, per_user_keys: list[str] | None) -> str:
+        """A stable short hash of the per-user context dims, so each end-user's OAuth bundle is
+        stored under its own secret name when the provider is configured per-user (finding i)."""
+        if not per_user_keys:
+            return ""
+        dims = "|".join(f"{k}={(context or {}).get(k)}" for k in sorted(per_user_keys))
+        return "__u" + hashlib.sha256(dims.encode()).hexdigest()[:12]
 
-    async def _store_bundle(self, tenant_id: str, project_id: str, provider_id: str, bundle: dict) -> None:
+    @staticmethod
+    def bundle_secret_name(provider_id: str, context: dict | None = None,
+                           per_user_keys: list[str] | None = None) -> str:
+        # Default (no per_user_keys) preserves the original single-account name.
+        return f"oauth_token__{provider_id}" + AuthResolver._per_user_suffix(context, per_user_keys)
+
+    async def _store_bundle(self, tenant_id: str, project_id: str, provider_id: str, bundle: dict,
+                            *, name: str | None = None) -> None:
         async with self._sf() as session:
             await self.secrets.write(
                 session, tenant_id=tenant_id, project_id=project_id,
-                name=self.bundle_secret_name(provider_id), value=bundle, kind="oauth",
+                name=name or self.bundle_secret_name(provider_id), value=bundle, kind="oauth",
             )
 
     async def _oauth2_auth_code(
-        self, provider, cfg: dict, read, tenant_id: str, project_id: str, client: httpx.AsyncClient | None
+        self, provider, cfg: dict, read, tenant_id: str, project_id: str,
+        client: httpx.AsyncClient | None, context: dict | None = None
     ) -> ResolvedAuth:
-        bundle_ref = cfg.get("token_bundle_ref") or f"secret://proj/{self.bundle_secret_name(provider.id)}"
+        # Per-user bundle name when the provider keys tokens per end-user (finding i).
+        per_user = cfg.get("per_user_context_keys")
+        bundle_name = self.bundle_secret_name(provider.id, context, per_user)
+        bundle_ref = cfg.get("token_bundle_ref") or f"secret://proj/{bundle_name}"
         bundle = await read(bundle_ref)
         if not isinstance(bundle, dict) or not bundle.get("access_token"):
             raise KeyError(f"OAuth provider {provider.id!r} is not connected - run the connect flow first")
         now = time.time()
         expires_at = bundle.get("expires_at")
         if expires_at and now >= (float(expires_at) - 60) and bundle.get("refresh_token"):
-            bundle = await self._refresh_oauth(provider, cfg, read, bundle, tenant_id, project_id, client)
-            expires_at = bundle.get("expires_at")
+            # Serialize refresh per (tenant, provider, per-user bundle) so concurrent resolves
+            # don't race the one-time refresh_token; re-read inside the lock in case a peer
+            # already refreshed it.
+            lock = await _oauth_refresh_locks.acquire_cm(f"{tenant_id}:{provider.id}:{bundle_name}")
+            async with lock:
+                fresh = await read(bundle_ref)
+                if isinstance(fresh, dict) and fresh.get("access_token"):
+                    bundle = fresh
+                    expires_at = bundle.get("expires_at")
+                if expires_at and time.time() >= (float(expires_at) - 60) and bundle.get("refresh_token"):
+                    bundle = await self._refresh_oauth(provider, cfg, read, bundle, tenant_id,
+                                                       project_id, client, bundle_name=bundle_name)
+                    expires_at = bundle.get("expires_at")
         header = cfg.get("header_name", "Authorization")
         prefix = cfg.get("prefix", "Bearer ")
         ttl_left = (float(expires_at) - now) if expires_at else None
         cache_exp = time.monotonic() + max(0.0, ttl_left - 60) if ttl_left and ttl_left > 0 else None
         return ResolvedAuth(headers={header: prefix + str(bundle["access_token"])}, expires_at=cache_exp)
 
-    async def _refresh_oauth(self, provider, cfg: dict, read, bundle: dict, tenant_id, project_id, client) -> dict:
+    async def _refresh_oauth(self, provider, cfg: dict, read, bundle: dict, tenant_id, project_id,
+                             client, *, bundle_name: str | None = None) -> dict:
         data = {
             "grant_type": "refresh_token",
             "refresh_token": bundle["refresh_token"],
@@ -199,7 +244,7 @@ class AuthResolver:
             new["refresh_token"] = body["refresh_token"]
         if body.get("expires_in"):
             new["expires_at"] = time.time() + int(body["expires_in"])
-        await self._store_bundle(tenant_id, project_id, provider.id, new)
+        await self._store_bundle(tenant_id, project_id, provider.id, new, name=bundle_name)
         return new
 
     async def _csrf_session(self, cfg: dict, vars: dict, client: httpx.AsyncClient | None, default_ttl: int) -> ResolvedAuth:

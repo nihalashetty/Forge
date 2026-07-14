@@ -29,8 +29,11 @@ from forge.models import (
     Tool,
     Trace,
     Trigger,
+    User,
     Workflow,
 )
+from forge.models.entities import ProjectMember
+from forge.services.auth import ROLES
 
 # Sidebar badge counts. Keys match `countKey` in apps/web/lib/data.ts (PROJECT_NAV); the
 # sidebar reads these instead of fetching six full lists just to call `.length`.
@@ -172,6 +175,7 @@ class ProjectService:
             Dataset,
             Memory,
             HandoffRequest,
+            ProjectMember,
         ]
         for model in scoped_models:
             await session.execute(
@@ -182,3 +186,60 @@ class ProjectService:
             )
         await session.delete(project)
         await session.commit()
+
+    # --- per-project membership / RBAC (finding h) ---
+    @staticmethod
+    async def list_members(session: AsyncSession, tenant_id: str, project_id: str) -> list[ProjectMember]:
+        rows = await session.execute(
+            select(ProjectMember).where(
+                ProjectMember.tenant_id == tenant_id, ProjectMember.project_id == project_id
+            )
+        )
+        return list(rows.scalars())
+
+    @staticmethod
+    async def set_member(
+        session: AsyncSession, *, tenant_id: str, project_id: str, user_id: str, role: str
+    ) -> ProjectMember:
+        """Grant/update a user's per-project role. The user must belong to this workspace."""
+        if role not in ROLES:
+            raise ValueError(f"unknown role {role!r}")
+        user = await session.get(User, user_id)
+        if user is None or user.tenant_id != tenant_id:
+            raise ValueError("user not found in this workspace")
+        existing = (
+            await session.execute(
+                select(ProjectMember).where(
+                    ProjectMember.tenant_id == tenant_id,
+                    ProjectMember.project_id == project_id,
+                    ProjectMember.user_id == user_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is None:
+            existing = ProjectMember(tenant_id=tenant_id, project_id=project_id, user_id=user_id, role=role)
+            session.add(existing)
+        else:
+            existing.role = role
+        await session.commit()
+        await session.refresh(existing)
+        return existing
+
+    @staticmethod
+    async def remove_member(
+        session: AsyncSession, *, tenant_id: str, project_id: str, user_id: str
+    ) -> bool:
+        existing = (
+            await session.execute(
+                select(ProjectMember).where(
+                    ProjectMember.tenant_id == tenant_id,
+                    ProjectMember.project_id == project_id,
+                    ProjectMember.user_id == user_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is None:
+            return False
+        await session.delete(existing)
+        await session.commit()
+        return True

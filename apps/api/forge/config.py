@@ -26,6 +26,9 @@ REPO_ROOT = _HERE.parents[3] if len(_HERE.parents) > 3 else API_ROOT
 _DEFAULT_SCHEMAS_DIR = REPO_ROOT / "packages" / "schemas"
 _DEFAULT_DATA_DIR = API_ROOT / ".data"
 
+# Minimum length for a non-empty FORGE_SERVICE_API_TOKEN (enforced by the production guard).
+_MIN_SERVICE_TOKEN_LEN = 24
+
 
 def _as_str_list(v: object) -> list[str]:
     """Parse a list-of-strings setting from env leniently: a JSON array (["a","b"]), a
@@ -277,6 +280,15 @@ class Settings(BaseSettings):
     # live in tenant.settings (max_runs_per_minute / max_runs_per_day). ---
     run_rate_limit_per_minute: int = 60
     api_rate_limit_per_minute: int = 240
+    # Ceiling on the UNAUTHENTICATED auth endpoints (login/register/refresh/accept-invite) -
+    # brute-force / credential-stuffing guard (audit: login had no throttle). This is the STRICT
+    # per-EMAIL rate (per-account guard); the per-IP bucket is 10x looser (stuffing/DoS across
+    # many accounts). 0 = unlimited.
+    auth_rate_limit_per_minute: int = 10
+    # Wire api_rate_limit_per_minute as a global per-IP request ceiling (ASGI middleware).
+    # Health/readiness/metrics and SSE stream paths are exempt. Set false to disable the
+    # global guard (per-surface limits - runs/embed/auth/tools - still apply).
+    enable_global_rate_limit: bool = True
     # Projected per-run cost (USD) reserved against the daily cost cap while a run is in flight,
     # so N concurrent runs can't each pass a stale "already-spent" check and blow past the cap.
     # 0 = disabled (admit on completed-cost only, prior behavior). Per-tenant override:
@@ -304,6 +316,22 @@ class Settings(BaseSettings):
     # by thread in Python. Bounds the query regardless of retention; raise it for projects
     # with very deep history at the cost of a wider scan.
     conversation_scan_limit: int = 2000
+
+    # --- Data retention (scheduled purge; leader-only, wired into the reaper loop). Traces/
+    # spans/runs are purged per-project by project.config.tracing.retention_days; audit logs by
+    # audit_log_retention_days. 0 anywhere = keep forever (no purge). ---
+    enable_retention: bool = True
+    retention_interval_seconds: int = 3600  # how often the purge sweep runs
+    audit_log_retention_days: int = 0       # workspace-wide audit-log floor; 0 = keep forever
+    # Fallback trace/span/run retention (days) for projects that don't set
+    # tracing.retention_days in their config. 0 = keep forever.
+    default_trace_retention_days: int = 0
+
+    # Best-effort worker count (mirror your gunicorn/uvicorn --workers). Only used so the
+    # startup guard can WARN when >1 worker runs WITHOUT Redis - in-process rate-limit /
+    # idempotency / token-revocation state is per-worker and won't be shared. Also read from
+    # the conventional $WEB_CONCURRENCY env var.
+    web_concurrency: int = 1
 
     # Reverse-proxy IPs whose X-Forwarded-For we trust for client-IP derivation. Empty =>
     # trust none (use the socket peer). Set to your LB/ingress IPs in production so clients
@@ -371,7 +399,33 @@ class Settings(BaseSettings):
                 "FORGE_ENABLE_CODE_TOOLS is on but code execution is not OS-isolated. Disable it, "
                 "or set FORGE_ALLOW_UNSANDBOXED_CODE_TOOLS=true to explicitly accept the RCE/DoS risk."
             )
+        # A Host-header allow-list must be set outside dev (empty => TrustedHostMiddleware is
+        # not even added, so Host/absolute-URI spoofing is unmitigated - audit S6/host attacks).
+        if not self.trusted_hosts:
+            problems.append("FORGE_TRUSTED_HOSTS must list the API's public hostname(s) outside dev.")
+        # Public URLs are embedded in OAuth redirect URIs and emailed invite/reset links; they
+        # MUST be https in production so tokens/codes never traverse cleartext.
+        for name, url in (("FORGE_PUBLIC_BASE_URL", self.public_base_url),
+                          ("FORGE_PUBLIC_CONSOLE_URL", self.public_console_url)):
+            if not url.lower().startswith("https://"):
+                problems.append(f"{name} must be an https:// URL outside dev (got {url!r}).")
+        # A short service token is brute-forceable; if enabled at all it must be long+random.
+        if self.service_api_token and len(self.service_api_token) < _MIN_SERVICE_TOKEN_LEN:
+            problems.append(
+                f"FORGE_SERVICE_API_TOKEN is set but shorter than {_MIN_SERVICE_TOKEN_LEN} chars - "
+                "use a long random secret or leave it empty to disable server-to-server auth."
+            )
         return problems
+
+    def _multi_worker_without_redis(self) -> bool:
+        import os
+
+        workers = self.web_concurrency
+        try:
+            workers = max(workers, int(os.getenv("WEB_CONCURRENCY", "0") or 0))
+        except ValueError:
+            pass
+        return workers > 1 and not self.redis_url
 
     def startup_warnings(self) -> list[str]:
         """Non-fatal but dangerous configuration, logged loudly at startup regardless of
@@ -392,6 +446,12 @@ class Settings(BaseSettings):
             )
         if self.environment.lower() not in (*self._DEV_ENVIRONMENTS, "production", "prod", "staging"):
             warns.append(f"Unrecognized FORGE_ENVIRONMENT={self.environment!r} - treated as security-enforced.")
+        if self._multi_worker_without_redis():
+            warns.append(
+                "Multiple workers configured without FORGE_REDIS_URL - rate limits, idempotency, "
+                "and token revocation are in-process (per-worker) and won't be shared/enforced "
+                "globally. Set FORGE_REDIS_URL for multi-worker deployments."
+            )
         return warns
 
 

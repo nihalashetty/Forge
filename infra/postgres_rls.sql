@@ -4,6 +4,9 @@
 -- makes that a DB-level guarantee: even a query that forgets the filter returns only the
 -- current tenant's rows. Apply this AFTER `alembic upgrade head` on a Postgres database.
 --
+-- NOTE: the platform-hardening tables (api_keys, project_members, user_security) are new -
+-- create their Alembic migration before applying this file.
+--
 -- Runtime: the application must set the tenant for each connection/transaction, e.g.
 --   SET LOCAL app.current_tenant = '<tenant-uuid>';
 -- (run it at the start of each request's DB transaction). With no setting, policies match
@@ -15,7 +18,8 @@ BEGIN
   FOREACH t IN ARRAY ARRAY[
     'users','projects','workflows','tools','agents','auth_providers','secrets',
     'kb_sources','qa_pairs','mcp_clients','threads','runs','traces','spans',
-    'audit_logs','triggers','channels','handoff_requests','datasets','memories'
+    'triggers','channels','handoff_requests','datasets','memories',
+    'api_keys','project_members','user_security'
   ]
   LOOP
     EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY;', t);
@@ -27,3 +31,20 @@ BEGIN
     $f$, t);
   END LOOP;
 END $$;
+
+-- audit_logs: tenant-isolated AND append-only (finding g). SELECT/INSERT/DELETE are permitted
+-- (DELETE only serves the time-based retention purge in services/retention.py); there is
+-- deliberately NO "FOR UPDATE" policy, so under FORCE RLS an UPDATE matches no policy and is
+-- denied - existing audit records are immutable and can never be silently rewritten.
+ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE audit_logs FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON audit_logs;
+DROP POLICY IF EXISTS audit_select ON audit_logs;
+DROP POLICY IF EXISTS audit_insert ON audit_logs;
+DROP POLICY IF EXISTS audit_delete ON audit_logs;
+CREATE POLICY audit_select ON audit_logs FOR SELECT
+  USING (tenant_id = current_setting('app.current_tenant', true));
+CREATE POLICY audit_insert ON audit_logs FOR INSERT
+  WITH CHECK (tenant_id = current_setting('app.current_tenant', true));
+CREATE POLICY audit_delete ON audit_logs FOR DELETE
+  USING (tenant_id = current_setting('app.current_tenant', true));
