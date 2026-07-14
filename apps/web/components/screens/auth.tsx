@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Icon } from "../icons";
 import { Field, Modal, StatusPill, Tile, Toggle } from "../primitives";
+import { VersionHistory } from "../version-history";
 import { api, AuthProviderT, Tool } from "@/lib/api";
 
 const KIND_LABEL: Record<string, string> = {
@@ -69,7 +70,7 @@ export function AuthProvidersScreen({ project }: { project: any }) {
             const on = selId === p.id;
             return (
               <button key={p.id} onClick={() => setSelId(p.id)} className="col" style={{ width: "100%", textAlign: "left", padding: "11px 12px", borderRadius: 9, marginBottom: 4, border: "1px solid " + (on ? "var(--accent)" : "transparent"), background: on ? "var(--accent-glow)" : "transparent", cursor: "pointer", gap: 4 }}>
-                <div className="row spread"><span className="mono-sm" style={{ fontWeight: 700, color: "var(--fg-0)" }}>{p.name}</span><StatusPill status="untested" /></div>
+                <div className="row spread"><span className="mono-sm" style={{ fontWeight: 700, color: "var(--fg-0)" }}>{p.name}</span><StatusPill status={(() => { const lt = (p.config as any)?._last_test; return lt ? (lt.ok ? "pass" : "fail") : "untested"; })()} /></div>
                 <div className="row spread">
                   <div className="row gap2" style={{ fontSize: 11, color: "var(--fg-2)" }}><span>{KIND_LABEL[p.kind] || p.kind}</span><span>· {toolCount[p.id] || 0} tools</span></div>
                   <span
@@ -158,8 +159,19 @@ function ProviderDetail({ project, provider, onSaved }: { project: any; provider
     } catch { /* */ } finally { setSaving(false); }
   }
   async function runTest() {
-    const r = await api.testAuthProvider(project.id, provider.id, {});
-    setTest(r);
+    try {
+      const r = await api.testAuthProvider(project.id, provider.id, {});
+      setTest(r);
+      // Persist a lightweight pass/fail marker (merged into the last-saved config, not the
+      // in-progress edits) so the list StatusPill reflects the real result - mirrors how
+      // tools store _last_test. Best-effort: the test result still shows regardless.
+      try {
+        await api.updateAuthProvider(project.id, provider.id, { config: { ...(provider.config || {}), _last_test: { ok: !!r?.ok, at: Date.now() } } });
+        onSaved();
+      } catch { /* marker is best-effort */ }
+    } catch (e: any) {
+      setTest({ ok: false, error: e?.message || String(e) });
+    }
   }
 
   // csrf_session uses extract/inject arrays; surface the first CSRF rule for editing.
@@ -181,6 +193,7 @@ function ProviderDetail({ project, provider, onSaved }: { project: any; provider
           <div><div className="t-display mono" style={{ fontSize: 18 }}>{provider.name}</div><div className="fg-2 t-caption">{KIND_LABEL[kind] || kind} · ttl {cfg.cache_ttl_seconds || 1800}s</div></div>
         </div>
         <div className="row gap2">
+          <VersionHistory entityType="auth_provider" entityId={provider.id} entityLabel={provider.name} onRestored={onSaved} />
           <button className="btn btn-secondary" onClick={runTest}><Icon name="validate" size={15} />Test connection</button>
           <button className="btn btn-primary" onClick={save} disabled={saving}><Icon name="save" size={15} />{saving ? "Saving…" : saved ? "Saved ✓" : "Save"}</button>
         </div>
@@ -259,7 +272,7 @@ function ProviderDetail({ project, provider, onSaved }: { project: any; provider
           <Field key={cf.path} label={cf.label} help={cf.help}>
             <div className="row gap2">
               <input className="input mono" type={reveal ? "text" : "password"} value={get([cf.path])} onChange={(e) => setPath([cf.path], e.target.value)} style={{ flex: 1 }} placeholder="secret://proj/…" />
-              <button className="iconbtn" style={{ border: "1px solid var(--line-strong)" }} onClick={() => setReveal((r) => !r)}><Icon name={reveal ? "eye" : "eye"} size={15} /></button>
+              <button className="iconbtn" style={{ border: "1px solid var(--line-strong)" }} title={reveal ? "Hide" : "Reveal"} onClick={() => setReveal((r) => !r)}><Icon name={reveal ? "eyeoff" : "eye"} size={15} /></button>
             </div>
           </Field>
         ))}
@@ -299,7 +312,7 @@ function OAuthConnect({ project, provider }: { project: any; provider: AuthProvi
         <button className="btn btn-primary btn-sm" onClick={connect}><Icon name="external" size={13} />{status?.connected ? "Reconnect" : "Connect"}</button>
       </div>
       {status?.scope && <div className="fg-2 t-caption" style={{ marginTop: 6 }}>scope: {status.scope}</div>}
-      {err && <div className="t-caption" style={{ color: "var(--danger, #d33)", marginTop: 6 }}>{err}</div>}
+      {err && <div className="t-caption" style={{ color: "var(--err)", marginTop: 6 }}>{err}</div>}
       <div className="fg-2 t-caption" style={{ marginTop: 6 }}>Save the provider, set the client_id/secret secrets, then Connect. A popup completes the grant; tokens auto-refresh.</div>
     </div>
   );

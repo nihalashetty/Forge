@@ -32,6 +32,8 @@ export function PlaygroundScreen({ project }: { project: any }) {
   // One backend thread per chat session: the checkpointer holds the conversation, so
   // each turn sends ONLY the new message (no full-transcript replay).
   const threadRef = useRef<string | null>(null);
+  // Aborts the in-flight SSE stream when the user hits Stop.
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     if (!project?.id) return;
@@ -75,6 +77,8 @@ export function PlaygroundScreen({ project }: { project: any }) {
       threadRef.current = run.thread_id;
       let interrupted = false;
       const url = api.runStreamUrl(project.id, wf.id, run.id);
+      const controller = new AbortController();
+      abortRef.current = controller;
       await openSSE(url, (f) => {
         if (f.event === "messages" && f.data?.content) {
           acc.addText(f.data.content);
@@ -95,7 +99,7 @@ export function PlaygroundScreen({ project }: { project: any }) {
         } else if (f.event === "error") {
           finalAnswer = `⚠ ${f.data?.message || "run failed"}`;
         }
-      });
+      }, { signal: controller.signal });
       if (interrupted) {
         // Preserve anything streamed before the pause (audit M4) - mirror the finalize commit.
         if (acc.hasComponents() || acc.text.trim()) {
@@ -107,8 +111,10 @@ export function PlaygroundScreen({ project }: { project: any }) {
         return; // approval card takes over
       }
     } catch (e: any) {
-      finalAnswer = `⚠ ${e.message || e}`;
+      // A user-initiated Stop aborts the fetch - commit whatever streamed, no error banner.
+      if (e?.name !== "AbortError") finalAnswer = `⚠ ${e.message || e}`;
     } finally {
+      abortRef.current = null;
       setStreaming("");
       setRunning(false);
       setLiveParts([]);
@@ -162,6 +168,18 @@ export function PlaygroundScreen({ project }: { project: any }) {
     }
   }
 
+  // Abort the in-flight SSE run. The stream reader rejects with AbortError, which send()
+  // treats as a graceful stop (partial output is committed, no error banner).
+  function stop() {
+    abortRef.current?.abort();
+  }
+  // Reset clears the UI AND starts a fresh conversation thread, so the next message has no
+  // server-side history (nulling threadRef) - not just a visual clear.
+  function reset() {
+    threadRef.current = null;
+    setMsgs([]); setSteps([]); setMeter(null); setStreaming(""); setLiveParts([]); setPendingInterrupt(null);
+  }
+
   function handleComponentAction(inst: ComponentInstance, action: string, fields: Record<string, string>) {
     const def = (inst.actions || []).find((a: any) => a.id === action) || {};
     let msg = (def as any).message || (def as any).label || action;
@@ -182,7 +200,7 @@ export function PlaygroundScreen({ project }: { project: any }) {
       {/* header */}
       <div className="row spread" style={{ padding: "12px 20px", borderBottom: "1px solid var(--line)", flex: "none" }}>
         <div className="row gap2">
-          <Tile icon="playground" color="var(--io-json)" size={30} />
+          <Tile icon="playground" color="var(--accent)" size={30} />
           <div>
             <div className="t-h2">Playground</div>
             {wfs.length > 1 ? (
@@ -213,7 +231,7 @@ export function PlaygroundScreen({ project }: { project: any }) {
             title="Optional end_user object to test identity - sent to the run as end_user. In production the integrator's backend supplies this."
             className="input mono" style={{ width: 230, height: 26, fontSize: 11, borderColor: actingAsValid ? undefined : "var(--err)" }} />
           <span className="chip chip-mono"><Icon name="knowledge" size={12} />grounded</span>
-          <button className="btn btn-ghost btn-sm" onClick={() => { setMsgs([]); setSteps([]); setMeter(null); }} disabled={running}>
+          <button className="btn btn-ghost btn-sm" onClick={reset} disabled={running}>
             <Icon name="refresh" size={14} />Reset
           </button>
         </div>
@@ -279,9 +297,15 @@ export function PlaygroundScreen({ project }: { project: any }) {
                 <input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()}
                   placeholder="Message the workflow…" disabled={!wf || running}
                   style={{ flex: 1, minWidth: 0, border: "none", background: "none", outline: "none", fontSize: 14, color: "var(--fg-0)", fontFamily: "var(--font-ui)" }} />
-                <button className="btn btn-primary" onClick={() => send()} disabled={!wf || running}>
-                  <Icon name={running ? "refresh" : "play"} size={15} style={running ? { animation: "spin 1s linear infinite" } : {}} />{running ? "Running" : "Run"}
-                </button>
+                {running ? (
+                  <button className="btn btn-secondary" onClick={stop} title="Stop the run">
+                    <Icon name="stop" size={15} />Stop
+                  </button>
+                ) : (
+                  <button className="btn btn-primary" onClick={() => send()} disabled={!wf}>
+                    <Icon name="play" size={15} />Run
+                  </button>
+                )}
               </div>
               <div className="fg-2 t-caption" style={{ textAlign: "center", marginTop: 7 }}>Runs against the active workflow · interrupts surface for approval</div>
             </div>
@@ -329,7 +353,7 @@ function MessageBlock({ role, content, streaming, parts, compDefs, onAction }: {
   if (user) {
     return (
       <div className="row" style={{ gap: 9, alignItems: "flex-start", flexDirection: "row-reverse" }}>
-        <Tile icon="user" color="var(--signal)" size={28} />
+        <Tile icon="user" color="var(--fg-2)" size={28} />
         <div style={{ maxWidth: 560, padding: "10px 13px", borderRadius: 12, borderTopRightRadius: 3, fontSize: 14, lineHeight: "21px", whiteSpace: "pre-wrap", overflowWrap: "anywhere", wordBreak: "break-word", background: "var(--accent)", color: "var(--fg-on-accent)" }}>
           {content}
         </div>

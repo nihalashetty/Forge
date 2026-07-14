@@ -1,8 +1,11 @@
 "use client";
-/* Settings: project config (model, budgets, features) + secrets (write-only). */
-import { useCallback, useEffect, useState } from "react";
+/* Settings: project config, split into a secondary-nav of focused sections
+   (General · Members · API Keys · Model Pricing · Budgets · Knowledge · Versioning ·
+   Observability · Advanced). Config-backed sections share one Save; Members, API Keys,
+   Model Pricing and Secrets manage their own persistence. */
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Icon } from "../icons";
-import { Field, Modal, Segmented, StatusPill, Tile, Toggle } from "../primitives";
+import { EmptyState, Field, Modal, Segmented, Toggle } from "../primitives";
 import { api, AuditEntry, clearTokens, InviteResult, MeResult, Secret, TeamMember } from "@/lib/api";
 import { MODELS } from "@/lib/data";
 
@@ -11,15 +14,306 @@ const ROLES = ["owner", "admin", "editor", "viewer"];
 // Project default embedder when rag_defaults.embedding_model is unset. Matches the backend
 // default (embeddings._DEFAULT_FASTEMBED) and the project.json schema default.
 const DEFAULT_EMBEDDING_MODEL = "fastembed:BAAI/bge-small-en-v1.5";
-
-// Retrieval-mode + reranker defaults. Mirror the project.json rag_defaults schema and the
-// backend defaults (services.knowledge._DEFAULT_CHILD_CHUNK_SIZE, rerank.DEFAULT_RERANKER).
 const DEFAULT_CHILD_CHUNK_SIZE = 300;
 const DEFAULT_RERANKER_MODEL = "Xenova/ms-marco-MiniLM-L-6-v2";
 const RERANKER_OPTIONS = [
   { value: "Xenova/ms-marco-MiniLM-L-6-v2", label: "MiniLM-L6 · small, CPU-fast (default)" },
   { value: "BAAI/bge-reranker-base", label: "bge-reranker-base · heavier, more accurate" },
 ];
+
+type SectionId =
+  | "general" | "members" | "apikeys" | "pricing" | "budgets"
+  | "knowledge" | "versioning" | "observability" | "advanced";
+
+const SECTIONS: { id: SectionId; label: string; icon: string; savesConfig?: boolean }[] = [
+  { id: "general", label: "General", icon: "sliders", savesConfig: true },
+  { id: "members", label: "Members & Roles", icon: "user" },
+  { id: "apikeys", label: "API Keys", icon: "secret" },
+  { id: "pricing", label: "Model Pricing", icon: "coins" },
+  { id: "budgets", label: "Budgets & Quotas", icon: "bolt", savesConfig: true },
+  { id: "knowledge", label: "Knowledge & Embeddings", icon: "knowledge", savesConfig: true },
+  { id: "versioning", label: "Versioning", icon: "clock", savesConfig: true },
+  { id: "observability", label: "Observability & Retention", icon: "traces", savesConfig: true },
+  { id: "advanced", label: "Advanced", icon: "settings", savesConfig: true },
+];
+
+export function SettingsScreen({ project }: { project: any }) {
+  const [section, setSection] = useState<SectionId>("general");
+  const [config, setConfig] = useState<Record<string, any>>({});
+  const [meta, setMeta] = useState<{ name: string; description: string }>({ name: "", description: "" });
+  const [secrets, setSecrets] = useState<Secret[]>([]);
+  const [save, setSave] = useState<"idle" | "saving" | "saved">("idle");
+  const [open, setOpen] = useState(false);
+  const [secForm, setSecForm] = useState({ name: "", value: "", kind: "api_key" });
+  const [pkeys, setPkeys] = useState<Record<string, string>>({});
+  const [keySave, setKeySave] = useState<"idle" | "saving" | "saved">("idle");
+
+  const reloadSecrets = useCallback(() => { if (project?.id) api.listSecrets(project.id).then(setSecrets).catch(() => {}); }, [project?.id]);
+  useEffect(() => {
+    if (!project?.id) return;
+    api.getProject(project.id).then((p) => {
+      setConfig(p.config || {});
+      setMeta({ name: p.name || "", description: p.description || "" });
+    }).catch(() => {});
+    reloadSecrets();
+  }, [project?.id, reloadSecrets]);
+
+  const setCfg = (patch: Record<string, any>) => setConfig((c) => ({ ...c, ...patch }));
+  const features = config.features || {};
+  const budgets = config.budgets || {};
+  const rag = config.rag_defaults || {};
+  const versioning = config.versioning || {};
+  const observability = config.observability || {};
+  const scheduler = config.scheduler || {};
+  const embeddingModel = rag.embedding_model || DEFAULT_EMBEDDING_MODEL;
+  const setRag = (patch: Record<string, any>) => setCfg({ rag_defaults: { ...rag, ...patch } });
+
+  async function persist() {
+    setSave("saving");
+    try {
+      await api.updateProject(project.id, { name: meta.name || undefined, description: meta.description, config });
+      setSave("saved"); setTimeout(() => setSave("idle"), 1400);
+    } catch { setSave("idle"); }
+  }
+  async function addSecret() {
+    if (!secForm.name.trim()) return;
+    await api.createSecret(project.id, { name: secForm.name, value: secForm.value, kind: secForm.kind });
+    setOpen(false); setSecForm({ name: "", value: "", kind: "api_key" }); reloadSecrets();
+  }
+  async function removeSecret(name: string) {
+    let used: { type: string; label: string }[] = [];
+    try { used = (await api.secretUsage(project.id, name)).references; } catch { /* fall back to a plain confirm */ }
+    const detail = used.length
+      ? `\n\nIn use by ${used.length}:\n` + used.map((r) => `• ${r.label} - ${r.type.replace(/_/g, " ")}`).join("\n") + `\n\nDeleting will break these.`
+      : "";
+    if (!window.confirm(`Delete secret "${name}"?${detail}`)) return;
+    await api.deleteSecret(project.id, name, true); reloadSecrets();
+  }
+  async function saveKeys() {
+    setKeySave("saving");
+    const pc = { ...(config.provider_credentials || {}) };
+    for (const [prov, val] of Object.entries(pkeys)) {
+      if (!val.trim()) continue;
+      const name = `${prov}_key`;
+      await api.createSecret(project.id, { name, value: val, kind: "api_key" });
+      pc[prov] = `secret://proj/${name}`;
+    }
+    const newConfig = { ...config, provider_credentials: pc };
+    setConfig(newConfig);
+    await api.updateProject(project.id, { config: newConfig });
+    setPkeys({}); reloadSecrets();
+    setKeySave("saved"); setTimeout(() => setKeySave("idle"), 1400);
+  }
+
+  const PROVIDERS: [string, string][] = [["openai", "OpenAI"], ["anthropic", "Anthropic"], ["google_genai", "Google"]];
+  const pcreds = config.provider_credentials || {};
+  const activeMeta = SECTIONS.find((s) => s.id === section)!;
+
+  return (
+    <div className="col" style={{ flex: 1, minHeight: 0 }}>
+      <div className="row" style={{ flex: 1, minHeight: 0, alignItems: "stretch" }}>
+        {/* secondary nav */}
+        <nav className="scroll-y" style={{ width: 224, flex: "none", borderRight: "1px solid var(--line)", background: "var(--bg-1)", padding: 10 }}>
+          <div className="t-micro" style={{ padding: "6px 8px 8px" }}>Settings</div>
+          {SECTIONS.map((s) => {
+            const on = section === s.id;
+            return (
+              <button key={s.id} onClick={() => setSection(s.id)} className={"sidenav-item" + (on ? " active" : "")}
+                style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", height: 34, padding: "0 10px", marginBottom: 1, borderRadius: 7, border: "none", cursor: "pointer", textAlign: "left", color: on ? "var(--accent)" : "var(--fg-1)", fontSize: 13, fontWeight: on ? 600 : 500, fontFamily: "var(--font-ui)" }}>
+                <Icon name={s.icon} size={16} style={{ flex: "none" }} />
+                <span className="grow truncate">{s.label}</span>
+              </button>
+            );
+          })}
+        </nav>
+
+        {/* content */}
+        <div className="scroll-y grow" style={{ minWidth: 0 }}>
+          <div className="fade-up" style={{ maxWidth: 720, margin: "0 auto", padding: "24px 28px" }}>
+            <div className="row spread" style={{ marginBottom: 18 }}>
+              <div className="t-display">{activeMeta.label}</div>
+              {activeMeta.savesConfig && (
+                <button className="btn btn-primary btn-sm" onClick={persist} disabled={save === "saving"}>
+                  <Icon name={save === "saved" ? "check" : "save"} size={14} />{save === "saving" ? "Saving…" : save === "saved" ? "Saved" : "Save"}
+                </button>
+              )}
+            </div>
+
+            {section === "general" && (
+              <>
+                <Card title="Project">
+                  <Field label="Name"><input className="input" value={meta.name} onChange={(e) => setMeta((m) => ({ ...m, name: e.target.value }))} placeholder="Project name" /></Field>
+                  <Field label="Description" help="Shown on the dashboard and in the project header."><textarea className="textarea" rows={2} value={meta.description} onChange={(e) => setMeta((m) => ({ ...m, description: e.target.value }))} /></Field>
+                </Card>
+                <Card title="Default model">
+                  <Field label="Default model" help="Used by new agents and single model-call nodes unless they override it.">
+                    <select className="select" value={config.default_model || ""} onChange={(e) => setCfg({ default_model: e.target.value })}>
+                      <option value="fake:echo">fake:echo (offline)</option>
+                      {MODELS.map((m) => <option key={m.id} value={m.id}>{m.name} · {m.provider}</option>)}
+                    </select>
+                  </Field>
+                </Card>
+              </>
+            )}
+
+            {section === "members" && <TeamCard />}
+
+            {section === "apikeys" && (
+              <>
+                <Card title="Model providers" action={<button className="btn btn-primary btn-sm" onClick={saveKeys} disabled={keySave === "saving"}><Icon name={keySave === "saved" ? "check" : "save"} size={14} />{keySave === "saving" ? "Saving…" : keySave === "saved" ? "Saved" : "Save keys"}</button>}>
+                  <div className="field-help" style={{ marginTop: 0, marginBottom: 6 }}>Keys are encrypted (Fernet), bound to this project&apos;s models, and never returned. They fall back to the server&apos;s env var if unset.</div>
+                  {PROVIDERS.map(([prov, label]) => {
+                    const configured = !!pcreds[prov];
+                    return (
+                      <div key={prov} className="row gap2" style={{ padding: "7px 0" }}>
+                        <div style={{ width: 120, flex: "none" }} className="row gap2">
+                          <Icon name="n_llm" size={15} style={{ color: configured ? "var(--ok)" : "var(--fg-2)" }} />
+                          <span className="t-body-sm" style={{ fontWeight: 600 }}>{label}</span>
+                        </div>
+                        <input className="input mono" type="password" style={{ flex: 1 }}
+                          placeholder={configured ? "•••• configured - re-enter to replace" : "sk-…"}
+                          value={pkeys[prov] || ""} onChange={(e) => setPkeys((k) => ({ ...k, [prov]: e.target.value }))} />
+                        {configured && <span className="pill pill-ok" style={{ height: 18 }}><span className="dot" />set</span>}
+                      </div>
+                    );
+                  })}
+                </Card>
+                <Card title="Secrets" action={<button className="btn btn-secondary btn-sm" onClick={() => setOpen(true)}><Icon name="plus" size={14} />Add secret</button>}>
+                  <div className="field-help" style={{ marginTop: 0, marginBottom: 8 }}>Write-only - values are encrypted (Fernet) and never returned. Reference as <span className="mono-sm">secret://proj/&lt;name&gt;</span>.</div>
+                  {secrets.map((s) => (
+                    <div key={s.id} className="row spread" style={{ padding: "8px 0", borderTop: "1px solid var(--line)" }}>
+                      <div className="row gap2"><Icon name="secret" size={15} style={{ color: "var(--fg-2)" }} /><span className="mono-sm">{s.name}</span><span className="typechip">{s.kind}</span></div>
+                      <div className="row gap2"><span className="mono-sm fg-2">••••••</span><span className="t-caption fg-2">v{s.version}</span><span className="iconbtn" role="button" title="Delete secret" onClick={() => removeSecret(s.name)}><Icon name="trash" size={13} /></span></div>
+                    </div>
+                  ))}
+                  {secrets.length === 0 && <div className="fg-2 t-caption">No secrets yet.</div>}
+                </Card>
+              </>
+            )}
+
+            {section === "pricing" && <PricingCard />}
+
+            {section === "budgets" && (
+              <Card title="Budgets & quotas">
+                <div className="field-help" style={{ marginTop: 0, marginBottom: 10 }}>Hard limits on model spend. A run is stopped if it would exceed the per-run cap; the monthly cap gates new runs once reached.</div>
+                <div className="row gap3 wrap">
+                  <Field label="Max $ / run"><input className="input mono" type="number" min={0} step={0.01} value={budgets.max_usd_per_run ?? ""} onChange={(e) => setCfg({ budgets: { ...budgets, max_usd_per_run: parseFloat(e.target.value) || undefined } })} /></Field>
+                  <Field label="Monthly $ cap"><input className="input mono" type="number" min={0} step={1} value={budgets.monthly_usd_cap ?? ""} onChange={(e) => setCfg({ budgets: { ...budgets, monthly_usd_cap: parseFloat(e.target.value) || undefined } })} /></Field>
+                </div>
+                <Field label="Max tokens / run" help="Optional cap on total tokens for a single run."><input className="input mono" type="number" min={0} step={1000} value={budgets.max_tokens_per_run ?? ""} onChange={(e) => setCfg({ budgets: { ...budgets, max_tokens_per_run: parseInt(e.target.value, 10) || undefined } })} /></Field>
+              </Card>
+            )}
+
+            {section === "knowledge" && (
+              <Card title="Knowledge & embeddings">
+                <Field label="Embedding model" help="Used to embed knowledge sources and search queries. Applies to the whole project - you can't mix embedders across files. Changing it changes the vector dimension, so re-embed existing sources afterward (the Knowledge tab flags mismatches).">
+                  <select className="select" value={embeddingModel} onChange={(e) => setRag({ embedding_model: e.target.value })}>
+                    <optgroup label="Local · open-source · free (offline)">
+                      <option value={DEFAULT_EMBEDDING_MODEL}>bge-small · local, free (384-dim)</option>
+                      <option value="fastembed:BAAI/bge-base-en-v1.5">bge-base · local, free (768-dim)</option>
+                    </optgroup>
+                    <optgroup label="OpenAI · billed per token (ingest + every query)">
+                      <option value="openai:text-embedding-3-small">OpenAI 3-small · billed (1536-dim)</option>
+                      <option value="openai:text-embedding-3-large">OpenAI 3-large · billed (3072-dim)</option>
+                    </optgroup>
+                  </select>
+                </Field>
+                {embeddingModel.startsWith("openai:") && (
+                  <div className="field-help" style={{ marginTop: 0 }}>
+                    {pcreds.openai
+                      ? "OpenAI key configured under API Keys. Embeddings are billed per token at ingest and on every search."
+                      : "⚠ No OpenAI key set — add one under API Keys, or embeddings fall back to the local model."}
+                  </div>
+                )}
+                <Field label="Retrieval mode" help="How chunks are matched vs. handed to the agent. Chunk: search and return the same chunks. Parent/child: embed small child chunks for precise matching but feed the agent the larger parent passage for context. Changing this requires re-ingesting existing sources.">
+                  <Segmented
+                    options={[{ value: "chunk", label: "Chunk" }, { value: "parent_child", label: "Parent / child" }]}
+                    value={rag.retrieval_mode || "chunk"}
+                    onChange={(v) => setRag({ retrieval_mode: v })}
+                  />
+                </Field>
+                {rag.retrieval_mode === "parent_child" && (
+                  <Field label="Child chunk size" help="Size (chars) of the small child chunks that get embedded in parent/child mode. The parent window uses the chunk size set per source. Smaller children = more precise matches.">
+                    <input className="input mono" type="number" placeholder={String(DEFAULT_CHILD_CHUNK_SIZE)}
+                      value={rag.child_chunk_size ?? ""}
+                      onChange={(e) => setRag({ child_chunk_size: parseInt(e.target.value, 10) || undefined })} />
+                  </Field>
+                )}
+                <Field label="Reranker model" help="Local cross-encoder used when a retrieval node (or the search debugger) has rerank on. Runs offline on CPU, no API cost. Ignored unless rerank is enabled.">
+                  <select className="select" value={rag.reranker_model || DEFAULT_RERANKER_MODEL} onChange={(e) => setRag({ reranker_model: e.target.value })}>
+                    {RERANKER_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  </select>
+                </Field>
+              </Card>
+            )}
+
+            {section === "versioning" && (
+              <Card title="Version history">
+                <div className="field-help" style={{ marginTop: 0, marginBottom: 10 }}>Every save/publish of a workflow, agent, tool, component, or auth provider captures a version you can inspect and restore from the editor&apos;s History panel.</div>
+                <Field label="Versions kept per entity" help="Older versions beyond this count are pruned. Leave blank to keep all.">
+                  <input className="input mono" type="number" min={1} step={1} style={{ width: 140 }} placeholder="unlimited"
+                    value={config.version_history_limit ?? ""}
+                    onChange={(e) => setCfg({ version_history_limit: parseInt(e.target.value, 10) || undefined })} />
+                </Field>
+                <label className="row spread" style={{ padding: "8px 0" }}>
+                  <div><div className="t-body-sm" style={{ fontWeight: 600 }}>Snapshot on publish</div><div className="field-help" style={{ marginTop: 0 }}>Capture a labeled version each time a workflow is published.</div></div>
+                  <Toggle on={versioning.snapshot_on_publish !== false} onChange={(v) => setCfg({ versioning: { ...versioning, snapshot_on_publish: v } })} />
+                </label>
+              </Card>
+            )}
+
+            {section === "observability" && (
+              <>
+                <Card title="Trace redaction">
+                  <label className="row spread" style={{ padding: "8px 0" }}>
+                    <div><div className="t-body-sm" style={{ fontWeight: 600 }}>Redact PII in traces</div><div className="field-help" style={{ marginTop: 0 }}>Mask emails, phone numbers, and card-like values in stored span inputs/outputs.</div></div>
+                    <Toggle on={!!observability.redact_pii} onChange={(v) => setCfg({ observability: { ...observability, redact_pii: v } })} />
+                  </label>
+                  <label className="row spread" style={{ padding: "8px 0" }}>
+                    <div><div className="t-body-sm" style={{ fontWeight: 600 }}>Store message bodies</div><div className="field-help" style={{ marginTop: 0 }}>Persist full user/assistant text on traces. Turn off to keep only metrics (tokens, latency, cost).</div></div>
+                    <Toggle on={observability.store_message_bodies !== false} onChange={(v) => setCfg({ observability: { ...observability, store_message_bodies: v } })} />
+                  </label>
+                </Card>
+                <Card title="Retention">
+                  <Field label="Trace retention (days)" help="Traces and conversations older than this are eligible for purge. Leave blank to keep indefinitely.">
+                    <input className="input mono" type="number" min={1} step={1} style={{ width: 140 }} placeholder="keep all"
+                      value={observability.retention_days ?? ""}
+                      onChange={(e) => setCfg({ observability: { ...observability, retention_days: parseInt(e.target.value, 10) || undefined } })} />
+                  </Field>
+                  <label className="row spread" style={{ padding: "8px 0" }}>
+                    <div><div className="t-body-sm" style={{ fontWeight: 600 }}>Scheduled cleanup</div><div className="field-help" style={{ marginTop: 0 }}>Run a periodic job to purge data past the retention window.</div></div>
+                    <Toggle on={!!scheduler.cleanup_enabled} onChange={(v) => setCfg({ scheduler: { ...scheduler, cleanup_enabled: v } })} />
+                  </label>
+                </Card>
+              </>
+            )}
+
+            {section === "advanced" && (
+              <>
+                <Card title="Feature flags">
+                  {[["code_nodes", "Code nodes", "Allow sandboxed code execution"], ["remote_sandbox", "Remote sandbox", "Use E2B/Modal/Daytona for code"], ["advanced_scripts", "Advanced scripts", "RestrictedPython custom auth scripts"]].map(([k, label, desc]) => (
+                    <label key={k} className="row spread" style={{ padding: "8px 0" }}>
+                      <div><div className="t-body-sm" style={{ fontWeight: 600 }}>{label}</div><div className="field-help" style={{ marginTop: 0 }}>{desc}</div></div>
+                      <Toggle on={!!features[k]} onChange={(v) => setCfg({ features: { ...features, [k]: v } })} />
+                    </label>
+                  ))}
+                </Card>
+                <AuditCard project={project} />
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <Modal open={open} onClose={() => setOpen(false)} title="Add secret" width={460}
+        footer={<><button className="btn btn-ghost" onClick={() => setOpen(false)}>Cancel</button><button className="btn btn-primary" onClick={addSecret}>Save secret</button></>}>
+        <Field label="Name"><input className="input mono" value={secForm.name} onChange={(e) => setSecForm((f) => ({ ...f, name: e.target.value }))} placeholder="openai_key" /></Field>
+        <Field label="Value" help="Encrypted at rest; never shown again."><input className="input mono" type="password" value={secForm.value} onChange={(e) => setSecForm((f) => ({ ...f, value: e.target.value }))} /></Field>
+        <Field label="Kind"><input className="input" value={secForm.kind} onChange={(e) => setSecForm((f) => ({ ...f, kind: e.target.value }))} /></Field>
+      </Modal>
+    </div>
+  );
+}
 
 function TeamCard() {
   const [me, setMe] = useState<MeResult | null>(null);
@@ -84,16 +378,16 @@ function TeamCard() {
               </button>
             </div>
             <div className="field-help" style={{ marginTop: 8, marginBottom: 0 }}>
-              They’ll get an email with a secure link to set their own password and join the workspace.
+              They&apos;ll get an email with a secure link to set their own password and join the workspace.
             </div>
           </div>
           {result && (
             <div className="card" style={{ padding: 10, marginBottom: 12, background: "var(--bg-2)" }}>
               {result.email_sent ? (
-                <div className="t-body-sm"><Icon name="check" size={13} style={{ color: "var(--ok, #2a8)" }} /> Invitation emailed to <b>{result.email}</b>. They’ll set their own password from the link.</div>
+                <div className="t-body-sm"><Icon name="check" size={13} style={{ color: "var(--ok)" }} /> Invitation emailed to <b>{result.email}</b>. They&apos;ll set their own password from the link.</div>
               ) : (
                 <>
-                  <div className="t-body-sm" style={{ marginBottom: 6 }}>Invite created for <b>{result.email}</b>. Email isn’t configured on this server, so share this link - it lets them set their password and join:</div>
+                  <div className="t-body-sm" style={{ marginBottom: 6 }}>Invite created for <b>{result.email}</b>. Email isn&apos;t configured on this server, so share this link - it lets them set their password and join:</div>
                   <div className="row gap2">
                     <input className="input mono" readOnly value={result.invite_url || ""} style={{ flex: 1, fontSize: 12 }} onFocus={(e) => e.currentTarget.select()} />
                     <button className="btn btn-secondary btn-sm" onClick={copyInvite}><Icon name={copied ? "check" : "copy"} size={13} />{copied ? "Copied" : "Copy"}</button>
@@ -115,186 +409,87 @@ function TeamCard() {
           ))}
         </>
       )}
-      {msg && <div className="t-caption" style={{ color: "var(--danger, #d33)", marginTop: 8 }}>{msg}</div>}
+      {msg && <div className="t-caption" style={{ color: "var(--err)", marginTop: 8 }}>{msg}</div>}
     </Card>
   );
 }
 
-export function SettingsScreen({ project }: { project: any }) {
-  const [config, setConfig] = useState<Record<string, any>>({});
-  const [secrets, setSecrets] = useState<Secret[]>([]);
+/* Model pricing editor - per-1M input/output token rates used to cost runs. Backed by
+   GET/PUT /v1/pricing. Rows come from the known model catalog merged with any custom
+   models already priced on the server. */
+function PricingCard() {
+  const [pricing, setPricing] = useState<Record<string, { input_per_1m: number; output_per_1m: number }>>({});
+  const [draft, setDraft] = useState<Record<string, { input_per_1m: string; output_per_1m: string }>>({});
+  const [loaded, setLoaded] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
   const [save, setSave] = useState<"idle" | "saving" | "saved">("idle");
-  const [open, setOpen] = useState(false);
-  const [secForm, setSecForm] = useState({ name: "", value: "", kind: "api_key" });
-  const [pkeys, setPkeys] = useState<Record<string, string>>({});
-  const [keySave, setKeySave] = useState<"idle" | "saving" | "saved">("idle");
 
-  const reloadSecrets = useCallback(() => { if (project?.id) api.listSecrets(project.id).then(setSecrets).catch(() => {}); }, [project?.id]);
-  useEffect(() => {
-    if (!project?.id) return;
-    api.getProject(project.id).then((p) => setConfig(p.config || {})).catch(() => {});
-    reloadSecrets();
-  }, [project?.id, reloadSecrets]);
+  const reload = useCallback(() => {
+    api.listPricing().then((p) => { setPricing(p || {}); setLoaded(true); }).catch((e) => { setErr(String(e?.message || e)); setLoaded(true); });
+  }, []);
+  useEffect(() => { reload(); }, [reload]);
 
-  const setCfg = (patch: Record<string, any>) => setConfig((c) => ({ ...c, ...patch }));
-  const features = config.features || {};
-  const budgets = config.budgets || {};
-  const rag = config.rag_defaults || {};
-  const embeddingModel = rag.embedding_model || DEFAULT_EMBEDDING_MODEL;
-  const setRag = (patch: Record<string, any>) => setCfg({ rag_defaults: { ...rag, ...patch } });
+  // Show every catalog model (minus the offline fake) plus any extra priced models.
+  const rows = useMemo(() => {
+    const ids = new Set<string>([...MODELS.filter((m) => m.id !== "fake:echo").map((m) => m.id), ...Object.keys(pricing)]);
+    return Array.from(ids).sort();
+  }, [pricing]);
 
-  async function persist() {
+  const val = (model: string, key: "input_per_1m" | "output_per_1m"): string => {
+    const d = draft[model];
+    if (d && d[key] !== undefined) return d[key];
+    const p = pricing[model];
+    return p && p[key] != null ? String(p[key]) : "";
+  };
+  const edit = (model: string, key: "input_per_1m" | "output_per_1m", v: string) =>
+    setDraft((d) => ({ ...d, [model]: { input_per_1m: val(model, "input_per_1m"), output_per_1m: val(model, "output_per_1m"), [key]: v } }));
+
+  async function saveAll() {
     setSave("saving");
-    await api.updateProject(project.id, { config });
-    setSave("saved"); setTimeout(() => setSave("idle"), 1400);
-  }
-  async function addSecret() {
-    if (!secForm.name.trim()) return;
-    await api.createSecret(project.id, { name: secForm.name, value: secForm.value, kind: secForm.kind });
-    setOpen(false); setSecForm({ name: "", value: "", kind: "api_key" }); reloadSecrets();
-  }
-  async function removeSecret(name: string) {
-    let used: { type: string; label: string }[] = [];
-    try { used = (await api.secretUsage(project.id, name)).references; } catch { /* fall back to a plain confirm */ }
-    const detail = used.length
-      ? `\n\nIn use by ${used.length}:\n` + used.map((r) => `• ${r.label} - ${r.type.replace(/_/g, " ")}`).join("\n") + `\n\nDeleting will break these.`
-      : "";
-    if (!window.confirm(`Delete secret “${name}”?${detail}`)) return;
-    await api.deleteSecret(project.id, name, true); reloadSecrets();
+    try {
+      for (const [model, d] of Object.entries(draft)) {
+        const input_per_1m = parseFloat(d.input_per_1m);
+        const output_per_1m = parseFloat(d.output_per_1m);
+        if (Number.isNaN(input_per_1m) && Number.isNaN(output_per_1m)) continue;
+        await api.setPricing(model, { input_per_1m: input_per_1m || 0, output_per_1m: output_per_1m || 0 });
+      }
+      setDraft({});
+      reload();
+      setSave("saved"); setTimeout(() => setSave("idle"), 1400);
+    } catch (e) { setErr(String((e as any)?.message || e)); setSave("idle"); }
   }
 
-  async function saveKeys() {
-    setKeySave("saving");
-    const pc = { ...(config.provider_credentials || {}) };
-    for (const [prov, val] of Object.entries(pkeys)) {
-      if (!val.trim()) continue;
-      const name = `${prov}_key`;
-      await api.createSecret(project.id, { name, value: val, kind: "api_key" });
-      pc[prov] = `secret://proj/${name}`;
-    }
-    const newConfig = { ...config, provider_credentials: pc };
-    setConfig(newConfig);
-    await api.updateProject(project.id, { config: newConfig });
-    setPkeys({}); reloadSecrets();
-    setKeySave("saved"); setTimeout(() => setKeySave("idle"), 1400);
-  }
-
-  const PROVIDERS: [string, string][] = [["openai", "OpenAI"], ["anthropic", "Anthropic"], ["google_genai", "Google"]];
-  const pcreds = config.provider_credentials || {};
+  const dirty = Object.keys(draft).length > 0;
 
   return (
-    <div className="scroll-y" style={{ flex: 1, padding: "24px 28px" }}>
-      <div className="fade-up" style={{ maxWidth: 880, margin: "0 auto" }}>
-        <div className="row spread" style={{ marginBottom: 18 }}>
-          <div className="t-display">Settings</div>
-          <button className="btn btn-primary btn-sm" onClick={persist} disabled={save === "saving"}><Icon name={save === "saved" ? "check" : "save"} size={14} />{save === "saving" ? "Saving…" : save === "saved" ? "Saved" : "Save"}</button>
-        </div>
-
-        <TeamCard />
-
-        <Card title="Model & budgets">
-          <Field label="Default model">
-            <select className="select" value={config.default_model || ""} onChange={(e) => setCfg({ default_model: e.target.value })}>
-              <option value="fake:echo">fake:echo (offline)</option>
-              {MODELS.map((m) => <option key={m.id} value={m.id}>{m.name} · {m.provider}</option>)}
-            </select>
-          </Field>
-          <div className="row gap3">
-            <Field label="Max $/run"><input className="input mono" type="number" value={budgets.max_usd_per_run ?? ""} onChange={(e) => setCfg({ budgets: { ...budgets, max_usd_per_run: parseFloat(e.target.value) || undefined } })} /></Field>
-            <Field label="Monthly $ cap"><input className="input mono" type="number" value={budgets.monthly_usd_cap ?? ""} onChange={(e) => setCfg({ budgets: { ...budgets, monthly_usd_cap: parseFloat(e.target.value) || undefined } })} /></Field>
-          </div>
-        </Card>
-
-        <Card title="Knowledge & embeddings">
-          <Field label="Embedding model" help="Used to embed knowledge sources and search queries. Applies to the whole project - you can't mix embedders across files. Changing it changes the vector dimension, so re-embed existing sources afterward (the Knowledge tab flags mismatches).">
-            <select className="select" value={embeddingModel} onChange={(e) => setRag({ embedding_model: e.target.value })}>
-              <optgroup label="Local · open-source · free (offline)">
-                <option value={DEFAULT_EMBEDDING_MODEL}>bge-small · local, free (384-dim)</option>
-                <option value="fastembed:BAAI/bge-base-en-v1.5">bge-base · local, free (768-dim)</option>
-              </optgroup>
-              <optgroup label="OpenAI · billed per token (ingest + every query)">
-                <option value="openai:text-embedding-3-small">OpenAI 3-small · billed (1536-dim)</option>
-                <option value="openai:text-embedding-3-large">OpenAI 3-large · billed (3072-dim)</option>
-              </optgroup>
-            </select>
-          </Field>
-          {embeddingModel.startsWith("openai:") && (
-            <div className="field-help" style={{ marginTop: 0 }}>
-              {pcreds.openai
-                ? "OpenAI key configured below. Embeddings are billed per token at ingest and on every search."
-                : "⚠ No OpenAI key set — add one under Model providers below, or embeddings fall back to the local model."}
-            </div>
-          )}
-          <Field label="Retrieval mode" help="How chunks are matched vs. handed to the agent. Chunk: search and return the same chunks. Parent/child: embed small child chunks for precise matching but feed the agent the larger parent passage for context. Changing this requires re-ingesting existing sources.">
-            <Segmented
-              options={[{ value: "chunk", label: "Chunk" }, { value: "parent_child", label: "Parent / child" }]}
-              value={rag.retrieval_mode || "chunk"}
-              onChange={(v) => setRag({ retrieval_mode: v })}
-            />
-          </Field>
-          {rag.retrieval_mode === "parent_child" && (
-            <Field label="Child chunk size" help="Size (chars) of the small child chunks that get embedded in parent/child mode. The parent window uses the chunk size set per source. Smaller children = more precise matches.">
-              <input className="input mono" type="number" placeholder={String(DEFAULT_CHILD_CHUNK_SIZE)}
-                value={rag.child_chunk_size ?? ""}
-                onChange={(e) => setRag({ child_chunk_size: parseInt(e.target.value, 10) || undefined })} />
-            </Field>
-          )}
-          <Field label="Reranker model" help="Local cross-encoder used when a retrieval node (or the search debugger) has rerank on. Runs offline on CPU, no API cost. Ignored unless rerank is enabled.">
-            <select className="select" value={rag.reranker_model || DEFAULT_RERANKER_MODEL} onChange={(e) => setRag({ reranker_model: e.target.value })}>
-              {RERANKER_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-            </select>
-          </Field>
-        </Card>
-
-        <Card title="Model providers" action={<button className="btn btn-primary btn-sm" onClick={saveKeys} disabled={keySave === "saving"}><Icon name={keySave === "saved" ? "check" : "save"} size={14} />{keySave === "saving" ? "Saving…" : keySave === "saved" ? "Saved" : "Save keys"}</button>}>
-          <div className="field-help" style={{ marginTop: 0, marginBottom: 6 }}>Keys are encrypted (Fernet), bound to this project's models, and never returned. They fall back to the server's env var if unset.</div>
-          {PROVIDERS.map(([prov, label]) => {
-            const configured = !!pcreds[prov];
-            return (
-              <div key={prov} className="row gap2" style={{ padding: "7px 0" }}>
-                <div style={{ width: 120, flex: "none" }} className="row gap2">
-                  <Icon name="n_llm" size={15} style={{ color: configured ? "var(--ok)" : "var(--fg-2)" }} />
-                  <span className="t-body-sm" style={{ fontWeight: 600 }}>{label}</span>
-                </div>
-                <input className="input mono" type="password" style={{ flex: 1 }}
-                  placeholder={configured ? "•••• configured - re-enter to replace" : "sk-…"}
-                  value={pkeys[prov] || ""} onChange={(e) => setPkeys((k) => ({ ...k, [prov]: e.target.value }))} />
-                {configured && <span className="pill pill-ok" style={{ height: 18 }}><span className="dot" />set</span>}
-              </div>
-            );
-          })}
-        </Card>
-
-        <Card title="Feature flags">
-          {[["code_nodes", "Code nodes", "Allow sandboxed code execution"], ["remote_sandbox", "Remote sandbox", "Use E2B/Modal/Daytona for code"], ["advanced_scripts", "Advanced scripts", "RestrictedPython custom auth scripts"]].map(([k, label, desc]) => (
-            <label key={k} className="row spread" style={{ padding: "8px 0" }}>
-              <div><div className="t-body-sm" style={{ fontWeight: 600 }}>{label}</div><div className="field-help" style={{ marginTop: 0 }}>{desc}</div></div>
-              <Toggle on={!!features[k]} onChange={(v) => setCfg({ features: { ...features, [k]: v } })} />
-            </label>
-          ))}
-        </Card>
-
-        <Card title="Secrets" action={<button className="btn btn-secondary btn-sm" onClick={() => setOpen(true)}><Icon name="plus" size={14} />Add secret</button>}>
-          <div className="field-help" style={{ marginTop: 0, marginBottom: 8 }}>Write-only - values are encrypted (Fernet) and never returned. Reference as <span className="mono-sm">secret://proj/&lt;name&gt;</span>.</div>
-          {secrets.map((s) => (
-            <div key={s.id} className="row spread" style={{ padding: "8px 0", borderTop: "1px solid var(--line)" }}>
-              <div className="row gap2"><Icon name="secret" size={15} style={{ color: "var(--fg-2)" }} /><span className="mono-sm">{s.name}</span><span className="typechip">{s.kind}</span></div>
-              <div className="row gap2"><span className="mono-sm fg-2">••••••</span><span className="t-caption fg-2">v{s.version}</span><span className="iconbtn" role="button" title="Delete secret" onClick={() => removeSecret(s.name)}><Icon name="trash" size={13} /></span></div>
-            </div>
-          ))}
-          {secrets.length === 0 && <div className="fg-2 t-caption">No secrets yet.</div>}
-        </Card>
-
-        <AuditCard project={project} />
-      </div>
-
-      <Modal open={open} onClose={() => setOpen(false)} title="Add secret" width={460}
-        footer={<><button className="btn btn-ghost" onClick={() => setOpen(false)}>Cancel</button><button className="btn btn-primary" onClick={addSecret}>Save secret</button></>}>
-        <Field label="Name"><input className="input mono" value={secForm.name} onChange={(e) => setSecForm((f) => ({ ...f, name: e.target.value }))} placeholder="openai_key" /></Field>
-        <Field label="Value" help="Encrypted at rest; never shown again."><input className="input mono" type="password" value={secForm.value} onChange={(e) => setSecForm((f) => ({ ...f, value: e.target.value }))} /></Field>
-        <Field label="Kind"><input className="input" value={secForm.kind} onChange={(e) => setSecForm((f) => ({ ...f, kind: e.target.value }))} /></Field>
-      </Modal>
-    </div>
+    <Card title="Model pricing" action={<button className="btn btn-primary btn-sm" onClick={saveAll} disabled={!dirty || save === "saving"}><Icon name={save === "saved" ? "check" : "save"} size={14} />{save === "saving" ? "Saving…" : save === "saved" ? "Saved" : "Save pricing"}</button>}>
+      <div className="field-help" style={{ marginTop: 0, marginBottom: 10 }}>Rates in USD per 1M tokens. Used to compute run cost in Traces and to enforce budgets.</div>
+      {err && <div className="card" style={{ padding: 10, color: "var(--err)", marginBottom: 10 }}>{err}</div>}
+      {!loaded ? (
+        <div className="fg-2 t-caption">Loading pricing…</div>
+      ) : rows.length === 0 ? (
+        <EmptyState icon="coins" title="No models to price" sub="Add a model to the catalog to set its rates." />
+      ) : (
+        <table className="tbl tbl-dense">
+          <thead><tr><th>Model</th><th style={{ textAlign: "right" }}>Input $/1M</th><th style={{ textAlign: "right" }}>Output $/1M</th></tr></thead>
+          <tbody>
+            {rows.map((model) => (
+              <tr key={model}>
+                <td><span className="mono-sm">{model}</span></td>
+                <td style={{ textAlign: "right" }}>
+                  <input className="input mono" type="number" min={0} step={0.01} style={{ width: 110, textAlign: "right", display: "inline-block" }}
+                    value={val(model, "input_per_1m")} placeholder="—" onChange={(e) => edit(model, "input_per_1m", e.target.value)} />
+                </td>
+                <td style={{ textAlign: "right" }}>
+                  <input className="input mono" type="number" min={0} step={0.01} style={{ width: 110, textAlign: "right", display: "inline-block" }}
+                    value={val(model, "output_per_1m")} placeholder="—" onChange={(e) => edit(model, "output_per_1m", e.target.value)} />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </Card>
   );
 }
 

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Icon } from "../icons";
 import { StatusPill, Tile } from "../primitives";
 import { AgentConfig } from "../canvas/AgentConfig";
+import { VersionHistory } from "../version-history";
 import { api, Agent, ComponentT, McpClientT, Tool } from "@/lib/api";
 
 const NEW_AGENT_CONFIG = { flavor: "agent", model: "openai:gpt-4o-mini", system_prompt: "", tools: [], components: [], middleware: [] };
@@ -98,6 +99,7 @@ export function AgentConfigScreen({ project, agentId, onBack }: { project: any; 
   const [folders, setFolders] = useState<string[]>([]);
   const [kinds, setKinds] = useState<string[]>([]);
   const [save, setSave] = useState<"idle" | "saving" | "saved">("idle");
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     if (project?.id) api.listTools(project.id).then(setTools).catch(() => {});
@@ -106,7 +108,7 @@ export function AgentConfigScreen({ project, agentId, onBack }: { project: any; 
     if (project?.id) api.listFolders(project.id).then(setFolders).catch(() => {});
     if (project?.id) api.listQaKinds(project.id).then(setKinds).catch(() => {});
     if (project?.id && agentId) api.getAgent(project.id, agentId).then((a) => { setAgent(a); setConfig(a.config || NEW_AGENT_CONFIG); setName(a.name); }).catch(() => {});
-  }, [project?.id, agentId]);
+  }, [project?.id, agentId, reloadKey]);
 
   async function persist() {
     if (!agent) return;
@@ -129,9 +131,12 @@ export function AgentConfigScreen({ project, agentId, onBack }: { project: any; 
             </span>
           )}
         </div>
-        <button className="btn btn-primary btn-sm" onClick={persist} disabled={save === "saving"}>
-          <Icon name={save === "saved" ? "check" : "save"} size={14} />{save === "saving" ? "Saving…" : save === "saved" ? "Saved" : "Save"}
-        </button>
+        <div className="row gap2">
+          <VersionHistory entityType="agent" entityId={agent?.id} entityLabel={name} onRestored={() => setReloadKey((k) => k + 1)} />
+          <button className="btn btn-primary btn-sm" onClick={persist} disabled={save === "saving"}>
+            <Icon name={save === "saved" ? "check" : "save"} size={14} />{save === "saving" ? "Saving…" : save === "saved" ? "Saved" : "Save"}
+          </button>
+        </div>
       </div>
       <div className="row" style={{ flex: 1, minHeight: 0, alignItems: "stretch" }}>
         <div className="scroll-y grow" style={{ padding: 24 }}>

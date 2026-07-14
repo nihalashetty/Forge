@@ -34,7 +34,7 @@ function Collapse({ title, sub, defaultOpen = false, children }: { title: string
 function FrameRow({ event, children }: { event: string; children: ReactNode }) {
   return (
     <div className="row gap2" style={{ alignItems: "baseline", padding: "5px 0", borderTop: "1px solid var(--line)" }}>
-      <span className="mono-sm" style={{ minWidth: 92, flex: "none", color: "var(--io-tool)" }}>{event}</span>
+      <span className="mono-sm" style={{ minWidth: 92, flex: "none", color: "var(--fg-2)" }}>{event}</span>
       <span className="t-caption fg-1">{children}</span>
     </div>
   );
@@ -247,7 +247,7 @@ export function ConnectScreen({ project }: { project: any }) {
           <div className="t-h3" style={{ marginBottom: 10 }}>Exposed tools ({tools.filter((t) => t.enabled).length})</div>
           <div className="col gap2">
             {tools.map((t) => (
-              <div key={t.id} className="row gap2"><Icon name="tools" size={14} style={{ color: "var(--io-tool)" }} /><span className="mono-sm">{t.name}</span><span className="typechip">{t.kind}</span>{!t.enabled && <span className="pill pill-muted" style={{ height: 16 }}>disabled</span>}</div>
+              <div key={t.id} className="row gap2"><Icon name="tools" size={14} style={{ color: "var(--fg-2)" }} /><span className="mono-sm">{t.name}</span><span className="typechip">{t.kind}</span>{!t.enabled && <span className="pill pill-muted" style={{ height: 16 }}>disabled</span>}</div>
             ))}
             {tools.length === 0 && <div className="fg-2 t-caption">No tools to expose yet - add some on the Tools screen.</div>}
           </div>

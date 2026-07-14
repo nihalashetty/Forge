@@ -11,11 +11,6 @@ import { fmtUSD } from "@/lib/data";
 // pulls a project's entire history in one shot.
 const PAGE = 20;
 
-const KIND_COLOR: Record<string, string> = {
-  llm: "var(--accent)", tool: "var(--io-tool)", chain: "var(--io-json)", node: "var(--io-control)",
-  agent: "var(--accent)", retriever: "var(--io-vector)", subagent: "var(--signal)",
-};
-
 // Friendly labels for the raw run source.
 const SOURCE_LABEL: Record<string, string> = {
   playground: "Playground", api: "API", embed: "Embed", assistant: "Forge Assistant",
@@ -113,7 +108,7 @@ export function TracesScreen({ project }: { project: any }) {
           <div className="row gap1">
             {[["", "All"], ["success", "Success"], ["error", "Error"]].map(([v, label]) => (
               <button key={v} onClick={() => setStatus(v)} className="t-caption"
-                style={{ flex: 1, padding: "5px 0", borderRadius: 6, cursor: "pointer", border: "1px solid var(--line)", background: status === v ? "var(--bg-3)" : "transparent", color: status === v ? "var(--fg)" : "var(--fg-2)" }}>
+                style={{ flex: 1, padding: "5px 0", borderRadius: 6, cursor: "pointer", border: "1px solid var(--line)", background: status === v ? "var(--bg-3)" : "transparent", color: status === v ? "var(--fg-0)" : "var(--fg-2)" }}>
                 {label}
               </button>
             ))}
@@ -184,7 +179,7 @@ function ConversationView({ project, detail }: { project: any; detail: Conversat
         <div key={turn.trace_id} style={{ marginBottom: 14 }}>
           {turn.user_message && (
             <div className="row" style={{ justifyContent: "flex-end", marginBottom: 8 }}>
-              <div style={{ maxWidth: "78%", background: "var(--accent)", color: "#fff", padding: "9px 13px", borderRadius: "12px 12px 3px 12px", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{turn.user_message}</div>
+              <div style={{ maxWidth: "78%", background: "var(--accent)", color: "var(--fg-on-accent)", padding: "9px 13px", borderRadius: "12px 12px 3px 12px", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{turn.user_message}</div>
             </div>
           )}
           <AITurn turn={turn} open={openTurn === turn.trace_id} spans={traces[turn.trace_id]?.spans} onToggle={() => toggle(turn.trace_id)} />
@@ -213,7 +208,7 @@ function AITurn({ turn, open, spans, onToggle }: { turn: Turn; open: boolean; sp
             </span>
           </div>
         </button>
-        {turn.error && <div className="mono-sm" style={{ color: "var(--err, var(--fg))", padding: "6px 4px", wordBreak: "break-word" }}>{turn.error}</div>}
+        {turn.error && <div className="mono-sm" style={{ color: "var(--err)", padding: "6px 4px", wordBreak: "break-word" }}>{turn.error}</div>}
         {open && (spans ? <div style={{ marginTop: 8 }}><SpanWaterfall spans={spans} /></div> : <div className="fg-2 t-caption" style={{ padding: "10px 4px" }}>Loading trace…</div>)}
       </div>
     </div>
@@ -257,13 +252,13 @@ function SpanWaterfall({ spans }: { spans: Span[] }) {
                 <div className="row gap2">
                   {expandable
                     ? <Icon name="chevright" size={13} style={{ color: "var(--fg-2)", flex: "none", transform: isOpen ? "rotate(90deg)" : "none", transition: "transform .12s" }} />
-                    : <span style={{ width: 8, height: 8, borderRadius: 2, background: KIND_COLOR[s.kind] || "var(--fg-2)", flex: "none" }} />}
+                    : <span style={{ width: 8, height: 8, borderRadius: 2, background: s.error ? "var(--err)" : "var(--fg-2)", flex: "none" }} />}
                   <span className="t-body-sm truncate">{s.name}</span>
                 </div>
                 <div className="t-caption fg-2 mono" style={{ marginLeft: 16 }}>{s.kind}{s.model ? ` · ${s.model}` : ""}</div>
               </div>
               <div className="grow" style={{ minWidth: 0, display: "flex", alignItems: "center" }}>
-                <div style={{ height: 8, borderRadius: 4, background: KIND_COLOR[s.kind] || "var(--fg-2)", width: `${Math.max(3, (s.latency_ms / maxLatency) * 100)}%`, opacity: 0.75 }} />
+                <div style={{ height: 8, borderRadius: 4, background: s.error ? "var(--err)" : "var(--fg-2)", width: `${Math.max(3, (s.latency_ms / maxLatency) * 100)}%`, opacity: 0.75 }} />
                 <span className="mono-sm fg-2" style={{ marginLeft: 8 }}>{s.latency_ms}ms</span>
               </div>
               <div className="col" style={{ alignItems: "flex-end", width: 120, flex: "none" }}>
@@ -321,7 +316,7 @@ function SpanDetail({ span }: { span: Span }) {
         <div style={{ marginTop: 14 }}>
           <div className="row gap2" style={{ marginBottom: 4 }}>
             <span className="t-caption fg-2" style={{ textTransform: "uppercase", letterSpacing: 0.4 }}>Response</span>
-            {out.status != null && <span className="pill" style={{ background: out.status >= 400 ? "var(--err-bg, var(--bg-2))" : undefined, color: out.status >= 400 ? "var(--err, var(--fg))" : undefined }}>{out.status}</span>}
+            {out.status != null && <span className={out.status >= 400 ? "pill pill-err" : "pill"} style={{ height: 18 }}>{out.status}</span>}
             {out.latency_ms != null && <span className="mono-sm fg-2">{out.latency_ms}ms</span>}
           </div>
           {out.final_url && out.final_url !== inp?.url && <div className="mono-sm fg-2" style={{ wordBreak: "break-all", marginBottom: 4 }}>→ {out.final_url}</div>}
@@ -332,7 +327,7 @@ function SpanDetail({ span }: { span: Span }) {
         <Row label="Output" value={out} />
       )}
 
-      {span.error && <div style={{ marginTop: 12 }}><div className="t-caption" style={{ color: "var(--err, var(--fg))", textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 2 }}>Error</div><Code value={span.error} /></div>}
+      {span.error && <div style={{ marginTop: 12 }}><div className="t-caption" style={{ color: "var(--err)", textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 2 }}>Error</div><Code value={span.error} /></div>}
     </div>
   );
 }

@@ -4,6 +4,7 @@ import * as jmespath from "jmespath";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Icon } from "../icons";
 import { Field, Modal, Segmented, StatusPill, Tabs, Tile, TokenMeter, Toggle } from "../primitives";
+import { VersionHistory } from "../version-history";
 import { api, AuthProviderT, Tool, ToolTestResult } from "@/lib/api";
 import { KIND_ICON, KIND_LABEL } from "@/lib/data";
 
@@ -39,6 +40,21 @@ export function ToolsScreen({ project, onOpen }: { project: any; onOpen: (t: Too
     try { await api.deleteTool(project.id, t.id); } catch { reload(); }
   }
 
+  async function duplicate(e: React.MouseEvent, t: Tool) {
+    e.stopPropagation();
+    try {
+      const cfg = { ...((t.config as any) || {}) };
+      delete cfg._last_test; // start the copy untested
+      await api.createTool(project.id, { name: `${t.name}_copy`, kind: t.kind, config: cfg, auth_provider_id: t.auth_provider_id || undefined });
+      reload();
+    } catch (e2: any) { setErr(String(e2?.message || e2)); }
+  }
+
+  async function toggleEnabled(t: Tool) {
+    setTools((prev) => prev.map((x) => (x.id === t.id ? { ...x, enabled: !x.enabled } : x))); // optimistic
+    try { await api.updateTool(project.id, t.id, { enabled: !t.enabled }); } catch { reload(); }
+  }
+
   return (
     <div className="scroll-y" style={{ flex: 1, padding: "22px 28px" }}>
       <div className="fade-up" style={{ maxWidth: 1120, margin: "0 auto" }}>
@@ -55,12 +71,12 @@ export function ToolsScreen({ project, onOpen }: { project: any; onOpen: (t: Too
         {err && <div className="card" style={{ padding: 14, color: "var(--err)", marginBottom: 12 }}>{err}</div>}
 
         {tools.length === 0 && !err && (
-          <div className="card col center" style={{ padding: 44, gap: 8 }}><Tile icon="tools" color="var(--io-tool)" size={48} glow /><div className="t-h2">No tools yet</div><div className="fg-1">Create one, or ask the Forge Assistant to build it.</div></div>
+          <div className="card col center" style={{ padding: 44, gap: 8 }}><Tile icon="tools" color="var(--accent)" size={48} glow /><div className="t-h2">No tools yet</div><div className="fg-1">Create one, or ask the Forge Assistant to build it.</div></div>
         )}
 
         {view === "grid" ? (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(300px,1fr))", gap: 14 }}>
-            {tools.map((t) => <ToolCard key={t.id} t={t} onOpen={() => onOpen(t)} onDelete={(e) => del(e, t)} />)}
+            {tools.map((t) => <ToolCard key={t.id} t={t} onOpen={() => onOpen(t)} onDelete={(e) => del(e, t)} onDuplicate={(e) => duplicate(e, t)} onToggle={() => toggleEnabled(t)} />)}
           </div>
         ) : (
           <div className="card" style={{ overflow: "hidden" }}>
@@ -71,13 +87,19 @@ export function ToolsScreen({ project, onOpen }: { project: any; onOpen: (t: Too
                   const lt = (t.config as any)?._last_test;
                   return (
                     <tr key={t.id} className="row" style={{ cursor: "pointer" }} onClick={() => onOpen(t)}>
-                      <td><div className="row gap2"><Icon name={KIND_ICON[t.kind] || "k_rest"} size={15} style={{ color: "var(--io-tool)" }} /><span className="mono-sm" style={{ fontWeight: 600 }}>{t.name}</span></div></td>
+                      <td><div className="row gap2"><Icon name={KIND_ICON[t.kind] || "k_rest"} size={15} style={{ color: "var(--accent)" }} /><span className="mono-sm" style={{ fontWeight: 600 }}>{t.name}</span></div></td>
                       <td><span className="chip chip-mono">{KIND_LABEL[t.kind] || t.kind}</span></td>
                       <td>{t.auth_provider_id ? <span className="chip chip-mono"><Icon name="auth" size={12} />{t.auth_provider_id.slice(0, 8)}</span> : <span className="fg-2">-</span>}</td>
                       <td>{lt ? <TokenMeter compact raw={lt.raw_tokens} projected={lt.projected_tokens} animateKey={t.id} /> : <span className="fg-2">-</span>}</td>
                       <td><StatusPill status={t.last_tested || "untested"} /></td>
                       <td style={{ textAlign: "right" }}><span className="mono-sm fg-2">v{t.version}</span></td>
-                      <td style={{ textAlign: "right" }}><button className="iconbtn" title="Delete tool" onClick={(e) => { e.stopPropagation(); del(e, t); }}><Icon name="trash" size={14} /></button></td>
+                      <td style={{ textAlign: "right" }}>
+                        <div className="row gap1" style={{ justifyContent: "flex-end" }}>
+                          <Toggle on={t.enabled} onChange={() => toggleEnabled(t)} />
+                          <button className="iconbtn" title="Duplicate tool" onClick={(e) => duplicate(e, t)}><Icon name="copy" size={14} /></button>
+                          <button className="iconbtn" title="Delete tool" onClick={(e) => { e.stopPropagation(); del(e, t); }}><Icon name="trash" size={14} /></button>
+                        </div>
+                      </td>
                     </tr>
                   );
                 })}
@@ -92,14 +114,19 @@ export function ToolsScreen({ project, onOpen }: { project: any; onOpen: (t: Too
   );
 }
 
-function ToolCard({ t, onOpen, onDelete }: { t: Tool; onOpen: () => void; onDelete: (e: React.MouseEvent) => void }) {
+function ToolCard({ t, onOpen, onDelete, onDuplicate, onToggle }: { t: Tool; onOpen: () => void; onDelete: (e: React.MouseEvent) => void; onDuplicate: (e: React.MouseEvent) => void; onToggle: () => void }) {
   const proj = (t.config as any)?.response?.projection_jmespath || (t.config as any)?.response?.projection;
   const lt = (t.config as any)?._last_test;
   return (
-    <div className="card card-hover" style={{ padding: 15 }} onClick={onOpen}>
+    <div className="card card-hover" style={{ padding: 15, opacity: t.enabled ? 1 : 0.6 }} onClick={onOpen}>
       <div className="row spread" style={{ marginBottom: 10 }}>
-        <div className="row gap2"><Tile icon={KIND_ICON[t.kind] || "k_rest"} color="var(--io-tool)" size={34} /><span className="chip chip-mono">{KIND_LABEL[t.kind] || t.kind}</span></div>
-        <div className="row gap2"><StatusPill status={t.last_tested || "untested"} /><button className="iconbtn" title="Delete tool" onClick={onDelete}><Icon name="trash" size={14} /></button></div>
+        <div className="row gap2"><Tile icon={KIND_ICON[t.kind] || "k_rest"} color="var(--accent)" size={34} /><span className="chip chip-mono">{KIND_LABEL[t.kind] || t.kind}</span></div>
+        <div className="row gap2" style={{ alignItems: "center" }}>
+          <StatusPill status={t.last_tested || "untested"} />
+          <Toggle on={t.enabled} onChange={onToggle} />
+          <button className="iconbtn" title="Duplicate tool" onClick={onDuplicate}><Icon name="copy" size={14} /></button>
+          <button className="iconbtn" title="Delete tool" onClick={onDelete}><Icon name="trash" size={14} /></button>
+        </div>
       </div>
       <div className="mono" style={{ fontWeight: 600, fontSize: 13.5, color: "var(--fg-0)" }}>{t.name}</div>
       <div className="fg-2 t-caption" style={{ marginTop: 3, height: 32, overflow: "hidden" }}>{(t.config as any)?.description || "No description."}</div>
@@ -174,6 +201,7 @@ export function ToolBuilderScreen({ project, toolId, onBack }: { project: any; t
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [result, setResult] = useState<ToolTestResult | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     if (project?.id && toolId) api.getTool(project.id, toolId).then((t) => {
@@ -186,7 +214,7 @@ export function ToolBuilderScreen({ project, toolId, onBack }: { project: any; t
       }
     }).catch(() => setTool(null));
     if (project?.id) api.listAuthProviders(project.id).then(setProviders).catch(() => {});
-  }, [project?.id, toolId]);
+  }, [project?.id, toolId, reloadKey]);
 
   if (!tool || !draft) return <div className="col center" style={{ flex: 1, color: "var(--fg-2)" }}>Loading tool…</div>;
 
@@ -212,13 +240,14 @@ export function ToolBuilderScreen({ project, toolId, onBack }: { project: any; t
       <div className="row spread" style={{ padding: "14px 22px", borderBottom: "1px solid var(--line)", flex: "none" }}>
         <div className="row gap3">
           <button className="iconbtn" onClick={onBack}><Icon name="chevleft" size={18} /></button>
-          <Tile icon={KIND_ICON[tool.kind] || "k_rest"} color="var(--io-tool)" size={40} glow />
+          <Tile icon={KIND_ICON[tool.kind] || "k_rest"} color="var(--accent)" size={40} glow />
           <div>
             <div className="row gap2"><span className="t-display mono" style={{ fontSize: 18 }}>{tool.name}</span><span className="chip chip-mono">{KIND_LABEL[tool.kind] || tool.kind}</span><StatusPill status={tool.last_tested || "untested"} /></div>
             <div className="fg-2 t-caption" style={{ marginTop: 2 }}>{draft.description || "No description."}</div>
           </div>
         </div>
         <div className="row gap2">
+          <VersionHistory entityType="tool" entityId={tool.id} entityLabel={tool.name} onRestored={() => setReloadKey((k) => k + 1)} />
           <button className="btn btn-primary" onClick={save} disabled={saving}><Icon name="save" size={15} />{saving ? "Saving…" : saved ? "Saved ✓" : `Save v${tool.version + 1}`}</button>
         </div>
       </div>
@@ -336,7 +365,7 @@ export function ToolBuilderScreen({ project, toolId, onBack }: { project: any; t
                   </>
                 ) : (
                   <div className="card" style={{ padding: 14, background: "var(--bg-3)" }}>
-                    <div className="row gap2"><Icon name="k_builtin" size={16} style={{ color: "var(--io-tool)" }} /><span className="mono-sm">builtin · {draft.builtin}</span></div>
+                    <div className="row gap2"><Icon name="k_builtin" size={16} style={{ color: "var(--accent)" }} /><span className="mono-sm">builtin · {draft.builtin}</span></div>
                     <div className="fg-2 t-caption" style={{ marginTop: 6 }}>Builtins run in-process with no network. Test it on the right.</div>
                   </div>
                 )}
@@ -589,9 +618,9 @@ function LiveResponse({ project, tool, draft, llmFields, result, setResult }: { 
 
         {/* redirect banner - the API redirected; show where (and whether we followed) */}
         {tested && result!.redirect && (
-          <div className="card" style={{ padding: 12, marginBottom: 14, borderColor: "var(--io-tool)" }}>
+          <div className="card" style={{ padding: 12, marginBottom: 14, borderColor: "var(--accent)" }}>
             <div className="row gap2" style={{ marginBottom: 4 }}>
-              <Icon name="auth" size={15} style={{ color: "var(--io-tool)" }} />
+              <Icon name="auth" size={15} style={{ color: "var(--accent)" }} />
               <span style={{ fontSize: 12.5, fontWeight: 600 }}>
                 {result!.redirect!.followed ? "Followed redirect" : `Redirect (${result!.redirect!.status}) - not followed`}
               </span>

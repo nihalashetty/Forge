@@ -419,6 +419,13 @@ export const api = {
   listPricing: () => json<Record<string, { input_per_1m: number; output_per_1m: number }>>("/v1/pricing"),
   setPricing: (model: string, body: { input_per_1m: number; output_per_1m: number }) =>
     json<any>(`/v1/pricing/${encodeURIComponent(model)}`, { method: "PUT", body: JSON.stringify(body) }),
+  // version history (workflow | agent | tool | component | auth_provider | kb_source | project)
+  listVersions: (entityType: EntityType, entityId: string) =>
+    json<EntityVersion[]>(`/v1/versions/${entityType}/${entityId}`),
+  getVersion: (entityType: EntityType, entityId: string, versionNo: number) =>
+    json<EntityVersion & { snapshot: Record<string, any> }>(`/v1/versions/${entityType}/${entityId}/${versionNo}`),
+  restoreVersion: (entityType: EntityType, entityId: string, versionNo: number) =>
+    json<{ ok?: boolean; version_no?: number }>(`/v1/versions/${entityType}/${entityId}/restore`, { method: "POST", body: JSON.stringify({ version_no: versionNo }) }),
   inviteMember: (body: { email: string; role?: string; password?: string }) =>
     json<InviteResult>("/v1/team/members", { method: "POST", body: JSON.stringify(body) }),
   updateMember: (uid: string, body: { role?: string; status?: string }) =>
@@ -466,6 +473,9 @@ export interface EvalReport { summary: { total: number; passed: number; pass_rat
 export type EvalRunResult = EvalReport | { error: string };
 export interface Handoff { id: string; run_id: string; workflow_id?: string | null; customer?: string | null; customer_message?: string | null; reason?: string | null; status: string; at?: string | null; }
 export interface EmbedSettings { enabled: boolean; allowed_origins: string[]; workflow_id?: string | null; publishable_key?: string | null; embed_src?: string | null; }
+
+export type EntityType = "workflow" | "agent" | "tool" | "component" | "auth_provider" | "kb_source" | "project";
+export interface EntityVersion { id: string; version_no: number; label?: string | null; author_email?: string | null; created_at?: string | null; }
 
 export interface MeResult { id: string; email: string | null; role: string; tenant_id: string; is_fallback: boolean; }
 export interface AuthResult { access_token: string; refresh_token: string; user: { id: string; email: string; role: string }; }

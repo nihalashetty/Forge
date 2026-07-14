@@ -232,8 +232,8 @@ function Files({ project }: { project: any }) {
   return (
     <div className="col" style={{ gap: 12 }}>
       {health?.needs_reembed && (
-        <div className="card row spread" style={{ padding: "10px 14px", background: "var(--signal-glow)", borderColor: "transparent" }}>
-          <div className="row gap2" style={{ minWidth: 0 }}><Icon name="bolt" size={15} style={{ color: "var(--signal)" }} />
+        <div className="card row spread" style={{ padding: "10px 14px", background: "var(--warn-bg)", borderColor: "transparent" }}>
+          <div className="row gap2" style={{ minWidth: 0 }}><Icon name="bolt" size={15} style={{ color: "var(--warn)" }} />
             <span className="t-body-sm">{health.mismatched.length} source(s) were embedded with a different model than the current one ({health.current_model}) - they won&apos;t appear in search until re-embedded.</span>
           </div>
           <button className="btn btn-secondary btn-sm" style={{ flex: "none" }} onClick={async () => { for (const m of health.mismatched) await reingest(m.id); }}><Icon name="refresh" size={13} />Re-embed all</button>
@@ -374,7 +374,7 @@ function Files({ project }: { project: any }) {
             onChange={(v) => setForm((f) => ({ ...f, chunkStrategy: v }))}
           />
         </Field>
-        {addErr && <div className="t-caption" style={{ color: "var(--danger, #c00)", marginTop: 4 }}>⚠ {addErr}</div>}
+        {addErr && <div className="t-caption" style={{ color: "var(--err)", marginTop: 4 }}>⚠ {addErr}</div>}
       </Modal>
 
       <Modal open={rechunkOpen} onClose={() => setRechunkOpen(false)} width={520}
@@ -396,7 +396,7 @@ function Files({ project }: { project: any }) {
             <Field label="Overlap (chars)" help="Characters shared between adjacent chunks."><input className="input" type="number" min={0} step={20} value={rechunkForm.overlap} onChange={(e) => setRechunkForm((f) => ({ ...f, overlap: Number(e.target.value) }))} /></Field>
           </div>
         </div>
-        {rechunkErr && <div className="t-caption" style={{ color: "var(--danger, #c00)", marginTop: 8 }}>⚠ {rechunkErr}</div>}
+        {rechunkErr && <div className="t-caption" style={{ color: "var(--err)", marginTop: 8 }}>⚠ {rechunkErr}</div>}
       </Modal>
     </div>
     </div>
@@ -591,7 +591,7 @@ function SearchDebugger({ project }: { project: any }) {
           <div key={i} className="card" style={{ padding: 12 }}>
             <div className="row spread" style={{ marginBottom: 4 }}>
               <span className="t-caption fg-2 mono">{h.source_id?.slice(0, 12) || "-"}</span>
-              <span className="chip chip-mono" style={{ color: "var(--signal)" }}>score {h.score.toFixed(3)}</span>
+              <span className="chip chip-mono">score {h.score.toFixed(3)}</span>
             </div>
             <div className="t-body-sm" style={{ whiteSpace: "pre-wrap" }}>{h.text}</div>
           </div>
