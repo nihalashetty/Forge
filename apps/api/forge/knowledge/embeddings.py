@@ -14,6 +14,8 @@ import math
 import os
 from typing import Protocol
 
+from forge.tracing.tracer import embedding_span
+
 log = logging.getLogger("forge.embeddings")
 
 
@@ -56,6 +58,12 @@ _DEFAULT_MAX_TOKENS = 512  # conservative fallback for an unmapped model
 _CHARS_PER_TOKEN = 4  # rough English average; used only to derive a safe char budget from tokens
 
 
+def _est_tokens(texts: list[str]) -> int:
+    """Rough input-token estimate for pricing an embedding span (chars / ~4). Embedders don't
+    return token counts, so this drives the span's cost via pricing; latency is always exact."""
+    return sum(len(t or "") for t in texts) // _CHARS_PER_TOKEN
+
+
 def _max_input_chars(model_name: str) -> int:
     return _MODEL_MAX_TOKENS.get(model_name, _DEFAULT_MAX_TOKENS) * _CHARS_PER_TOKEN
 
@@ -95,10 +103,12 @@ class _LCEmbedder:
     # Async variants keep network embed calls off the event loop's back (the sync
     # ones block the loop - and the SSE stream - for the whole round trip).
     async def aembed(self, texts: list[str]) -> list[list[float]]:
-        return await self._e.aembed_documents(texts)
+        with embedding_span(self.name, n_texts=len(texts), input_tokens=_est_tokens(texts)):
+            return await self._e.aembed_documents(texts)
 
     async def aembed_query(self, text: str) -> list[float]:
-        return await self._e.aembed_query(text)
+        with embedding_span(self.name, n_texts=1, input_tokens=_est_tokens([text])):
+            return await self._e.aembed_query(text)
 
 
 class _FastEmbedEmbedder:
@@ -137,12 +147,14 @@ class _FastEmbedEmbedder:
     async def aembed(self, texts: list[str]) -> list[list[float]]:
         import asyncio
 
-        return await asyncio.to_thread(self.embed, texts)
+        with embedding_span(self.name, n_texts=len(texts), input_tokens=_est_tokens(texts)):
+            return await asyncio.to_thread(self.embed, texts)
 
     async def aembed_query(self, text: str) -> list[float]:
         import asyncio
 
-        return await asyncio.to_thread(self.embed_query, text)
+        with embedding_span(self.name, n_texts=1, input_tokens=_est_tokens([text])):
+            return await asyncio.to_thread(self.embed_query, text)
 
 
 # Provider embedder instances are expensive to construct (~1s measured on Windows:
