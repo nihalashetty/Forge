@@ -36,6 +36,11 @@ class SpanRecord:
     kind: str  # llm|tool|chain|retriever|agent|node
     start: float
     end: float | None = None
+    # Wall-clock (unix epoch seconds) start/end, for ABSOLUTE timestamps: OTel export and
+    # accurate waterfall positioning. `start`/`end` stay MONOTONIC (correct for latency_ms and
+    # immune to clock adjustments); these carry real time so exported spans don't land at ~1970.
+    start_wall: float = 0.0
+    end_wall: float | None = None
     model: str | None = None
     input_tokens: int = 0
     output_tokens: int = 0
@@ -54,17 +59,23 @@ class SpanRecord:
         return int((self.end - self.start) * 1000)
 
 
-def _usage(response: Any) -> tuple[int, int]:
+def _usage(response: Any) -> tuple[int, int, int, int]:
+    """(input, output, cache_read, cache_creation) tokens. Cache tiers come from
+    usage_metadata.input_token_details (Anthropic/OpenAI prompt caching) so cost accounting
+    can bill cache reads/writes at their discounted/premium rates instead of full input."""
     try:
         msg = response.generations[0][0].message
         um = getattr(msg, "usage_metadata", None)
         if um:
-            return int(um.get("input_tokens", 0)), int(um.get("output_tokens", 0))
+            details = um.get("input_token_details") or {}
+            cache_read = int(details.get("cache_read", 0) or 0)
+            cache_creation = int(details.get("cache_creation", 0) or 0)
+            return int(um.get("input_tokens", 0)), int(um.get("output_tokens", 0)), cache_read, cache_creation
     except Exception:  # noqa: BLE001
         pass
     lo = getattr(response, "llm_output", None) or {}
     usage = lo.get("token_usage") or lo.get("usage") or {}
-    return int(usage.get("prompt_tokens", 0)), int(usage.get("completion_tokens", 0))
+    return int(usage.get("prompt_tokens", 0)), int(usage.get("completion_tokens", 0)), 0, 0
 
 
 class ForgeTracer(BaseCallbackHandler):
@@ -84,7 +95,7 @@ class ForgeTracer(BaseCallbackHandler):
         model = attrs.pop("model", None)
         self.spans[sid] = SpanRecord(
             id=sid, parent_id=str(parent) if parent else None, name=name, kind=kind,
-            start=time.monotonic(), model=model, attributes=attrs,
+            start=time.monotonic(), start_wall=time.time(), model=model, attributes=attrs,
         )
         self._order.append(sid)
 
@@ -93,6 +104,7 @@ class ForgeTracer(BaseCallbackHandler):
         if not sp:
             return
         sp.end = time.monotonic()
+        sp.end_wall = time.time()
         for k, v in fields.items():
             setattr(sp, k, v)
 
@@ -106,10 +118,13 @@ class ForgeTracer(BaseCallbackHandler):
         self._open(run_id, parent_run_id, f"model · {model}" if model else "model", "llm", model=model)
 
     def on_llm_end(self, response, *, run_id, **kw):
-        in_tok, out_tok = _usage(response)
+        in_tok, out_tok, cache_read, cache_creation = _usage(response)
         sp = self.spans.get(str(run_id))
         model = sp.model if sp else None
-        self._close(run_id, input_tokens=in_tok, output_tokens=out_tok, cost_usd=price(model, in_tok, out_tok))
+        self._close(
+            run_id, input_tokens=in_tok, output_tokens=out_tok,
+            cost_usd=price(model, in_tok, out_tok, cache_read_tokens=cache_read, cache_creation_tokens=cache_creation),
+        )
 
     def on_llm_error(self, error, *, run_id, **kw):
         self._close(run_id, error=str(error))
