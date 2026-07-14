@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta
@@ -33,6 +34,65 @@ from forge.util.serialize import (
 )
 
 log = logging.getLogger("forge.runs")
+
+# Settings wanted (config.py is owned by a parallel agent; module constants used for now):
+#   FORGE_HITL_APPROVAL_TIMEOUT_SECONDS (int, default 0 = never expire) - how long an
+#     interrupted run may wait for a human approval before the reaper fails it + closes the
+#     handoff with a fallback channel message (audit C).
+#   FORGE_RUN_WALL_CLOCK_TIMEOUT_SECONDS (int, default 0 = unlimited) - hard per-run wall-clock
+#     budget for graph execution, checked cooperatively between stream frames (audit H).
+HITL_APPROVAL_TIMEOUT_SECONDS = 0
+RUN_WALL_CLOCK_TIMEOUT_SECONDS = 0
+
+
+class _RunControl:
+    """Process-wide cooperative-cancellation registry (audit H).
+
+    A live run loop calls begin()/end() to register itself; cancel_run() signals it via an Event
+    the loop polls between frames AND (best-effort) cancels the driving asyncio task so a run
+    wedged inside one long frame (e.g. a hung model call) is still interrupted. Entries exist only
+    while a loop is running, so nothing leaks: a queued (not-yet-running) run is canceled directly
+    in the DB by the endpoint. In-process only (the inline execution path); a multi-worker
+    deployment would additionally rely on the DB status + reaper."""
+
+    def __init__(self) -> None:
+        self._events: dict[str, asyncio.Event] = {}
+        self._tasks: dict[str, asyncio.Task] = {}
+
+    def begin(self, run_id: str) -> asyncio.Event:
+        ev = asyncio.Event()
+        self._events[run_id] = ev
+        try:
+            task = asyncio.current_task()
+        except RuntimeError:
+            task = None
+        if task is not None:
+            self._tasks[run_id] = task
+        return ev
+
+    def end(self, run_id: str) -> None:
+        self._events.pop(run_id, None)
+        self._tasks.pop(run_id, None)
+
+    def is_running(self, run_id: str) -> bool:
+        return run_id in self._events
+
+    def request_cancel(self, run_id: str, *, hard: bool = True) -> bool:
+        """Signal a running loop to stop. Returns True if a live loop was signaled (else the run
+        isn't running in THIS process - the caller should fall back to the DB status)."""
+        ev = self._events.get(run_id)
+        signaled = ev is not None
+        if ev is not None:
+            ev.set()
+        if hard:
+            t = self._tasks.get(run_id)
+            if t is not None and not t.done():
+                t.cancel()
+                signaled = True
+        return signaled
+
+
+run_control = _RunControl()
 
 
 def _client_error(public: bool, run_id: str, detail: str) -> str:
@@ -328,6 +388,15 @@ class RunService:
                     # Resume a HITL interrupt with Command(resume=...); a fresh run feeds its input.
                     from langgraph.types import Command
 
+                    # Cooperative cancellation + wall-clock timeout (audit H): register this loop
+                    # so a cancel request can signal it, and poll the flag / deadline between
+                    # frames. A hard asyncio task-cancel (from request_cancel) is the backstop for
+                    # a run wedged inside a single long frame - it propagates to the `finally`,
+                    # which marks the run canceled.
+                    cancel_ev = run_control.begin(run.id)
+                    wall_clock = RUN_WALL_CLOCK_TIMEOUT_SECONDS
+                    started_monotonic = time.monotonic()
+                    canceled = timed_out = False
                     driver = Command(resume=resume_value) if resume else run.input
                     async for ns, mode, chunk in graph.astream(
                         driver, config,
@@ -335,6 +404,12 @@ class RunService:
                         subgraphs=True,
                         durability=settings.run_durability,
                     ):
+                        if cancel_ev.is_set():
+                            canceled = True
+                            break
+                        if wall_clock and (time.monotonic() - started_monotonic) > wall_clock:
+                            timed_out = True
+                            break
                         if mode == "tasks" and isinstance(chunk, dict):
                             # node_start / node_error expose internal workflow node names (and error
                             # detail) - operator-only, never to an anonymous embed end user (H5).
@@ -369,6 +444,23 @@ class RunService:
                         yield {"event": mode, "data": data}
 
                     snapshot = await graph.aget_state(config)
+                    # Cooperative stop hit between frames: finalize with the right terminal state
+                    # and emit a closing frame, then stop (the tenant slot frees as we exit).
+                    if canceled or timed_out:
+                        if canceled:
+                            await self._finalize(session, run, tracer, snapshot, status="canceled")
+                            finalized = True
+                            yield {"event": "done", "data": {
+                                "status": "canceled",
+                                "answer": _last_ai_text(getattr(snapshot, "values", {}) or {}),
+                                "canceled": True,
+                            }}
+                        else:
+                            detail = f"run exceeded the wall-clock timeout ({wall_clock}s)"
+                            await self._finalize_error(session, run, tracer, detail, snapshot=snapshot)
+                            finalized = True
+                            yield {"event": "error", "data": {"message": _client_error(public, run.id, detail)}}
+                        return
                     interrupted = bool(getattr(snapshot, "next", ())) and any(
                         getattr(t, "interrupts", None) for t in getattr(snapshot, "tasks", [])
                     )
@@ -423,11 +515,14 @@ class RunService:
                 else:
                     yield {"event": "error", "data": {"message": _client_error(public, run.id, str(e))}}
             finally:
+                run_control.end(run_id)
                 if display_token is not None:
                     reset_tool_display_names(display_token)
                 # Client disconnect / cancellation propagates here without `finalized` set -
                 # mark the otherwise-stranded run canceled in a fresh, shielded session so it
-                # never sticks at status="running" forever (audit F1).
+                # never sticks at status="running" forever (audit F1). This also covers a HARD
+                # task-cancel (operator cancel of a run wedged in one long frame): CancelledError
+                # bypasses the `except Exception` above and lands here with finalized=False.
                 if not finalized:
                     await self._mark_unfinished(run_id, tenant_id, status="canceled")
 
@@ -472,12 +567,32 @@ class RunService:
                     # (webhook/schedule/email/Teams/evals) - ainvoke discards custom-stream items
                     # entirely (audit H1).
                     components: list = []
+                    # Cooperative cancel + wall-clock timeout on the non-SSE path too (audit H).
+                    cancel_ev = run_control.begin(run.id)
+                    wall_clock = RUN_WALL_CLOCK_TIMEOUT_SECONDS
+                    started_monotonic = time.monotonic()
+                    canceled = timed_out = False
                     async for _ns, _mode, _chunk in graph.astream(
                         run.input, config, stream_mode=["custom"], subgraphs=True, durability=settings.run_durability,
                     ):
+                        if cancel_ev.is_set():
+                            canceled = True
+                            break
+                        if wall_clock and (time.monotonic() - started_monotonic) > wall_clock:
+                            timed_out = True
+                            break
                         if _mode == "custom" and isinstance(_chunk, dict) and _chunk.get("channel") == "component":
                             components.append(_chunk.get("payload"))
                     snapshot = await graph.aget_state(config)
+                    if canceled or timed_out:
+                        detail = "run canceled by operator" if canceled else f"run exceeded the wall-clock timeout ({wall_clock}s)"
+                        if canceled:
+                            await self._finalize(session, run, tracer, snapshot, status="canceled")
+                        else:
+                            await self._finalize_error(session, run, tracer, detail, snapshot=snapshot)
+                        return {"run_id": run.id, "status": run.status, "interrupted": False,
+                                "answer": "", "components": components,
+                                "canceled": canceled, "error": None if canceled else detail}
                     interrupted = bool(getattr(snapshot, "next", ())) and any(
                         getattr(t, "interrupts", None) for t in getattr(snapshot, "tasks", [])
                     )
@@ -522,6 +637,8 @@ class RunService:
                     "answer": fallback or "", "error_handled": bool(fallback),
                     "escalate": bool(on_err.get("escalate")),
                 }
+            finally:
+                run_control.end(run_id)
 
     async def resume(self, *, run_id: str, tenant_id: str, value, project_id: str | None = None, run_context: dict | None = None, public: bool = False) -> dict:
         """Resume an interrupted run (HITL) with `Command(resume=value)` on its thread."""
@@ -565,14 +682,21 @@ class RunService:
                         session, run, tracer, snapshot,
                         status="interrupted" if interrupted else "done",
                     )
+                # Interrupt payloads for a RE-interrupt (chained HITL), so the handoff reply path
+                # can open a fresh handoff for the next step + surface the next ack (audit B).
+                interrupts = [
+                    jsonable(getattr(t, "interrupts", None))
+                    for t in getattr(snapshot, "tasks", [])
+                    if getattr(t, "interrupts", None)
+                ] if interrupted else []
                 if public:
                     # Public embed: expose ONLY the final assistant message, not the full
                     # transcript (which includes tool-result / internal messages) (audit H5).
                     # Keep the single-element `messages` shape the widget already consumes.
                     answer = _last_ai_text(out or {})
                     pub_msgs = [{"type": "ai", "content": answer}] if answer else []
-                    return {"status": run.status, "messages": pub_msgs, "interrupted": interrupted}
-                return {"status": run.status, "messages": jsonable((out or {}).get("messages", [])), "interrupted": interrupted}
+                    return {"status": run.status, "messages": pub_msgs, "interrupted": interrupted, "interrupts": interrupts}
+                return {"status": run.status, "messages": jsonable((out or {}).get("messages", [])), "interrupted": interrupted, "interrupts": interrupts}
             except ConcurrencyLimitExceeded as e:
                 return {"error": e.message, "status": "busy"}
             except Exception as e:  # noqa: BLE001
@@ -581,6 +705,37 @@ class RunService:
                 # Redact internal error detail on the public embed surface (audit M6); the stream
                 # path already does this via _client_error, the resume path did not.
                 return {"error": _client_error(public, run.id, str(e))}
+
+    async def cancel_run(self, *, run_id: str, tenant_id: str, project_id: str | None = None) -> dict:
+        """Cooperatively cancel a run (audit H): mark it canceled, signal any live loop in this
+        process to stop (+ hard task-cancel backstop), free the tenant-concurrency slot (it frees
+        as the signaled loop exits), and close any open handoff. A terminal run is a no-op."""
+        set_current_tenant(tenant_id)
+        async with SessionLocal() as session:
+            where = [Run.tenant_id == tenant_id, Run.id == run_id]
+            if project_id is not None:
+                where.append(Run.project_id == project_id)
+            run = (await session.execute(select(Run).where(*where))).scalar_one_or_none()
+            if run is None:
+                return {"ok": False, "error": "run not found", "status": None}
+            if run.status in ("done", "error", "canceled"):
+                return {"ok": False, "status": run.status, "detail": f"run already {run.status}"}
+            prev = run.status
+            # Signal a live loop first so its own finalize converges on 'canceled'. For a queued /
+            # interrupted run (no live loop) the DB write below is the authoritative stop.
+            signaled = run_control.request_cancel(run_id, hard=True)
+            run.status = "canceled"
+            run.error = run.error or "run canceled by operator"
+            run.ended_at = datetime.utcnow()
+            await session.commit()
+            # Close any open handoff for this run (an interrupted run may have one waiting).
+            try:
+                from forge.services.handoff import HandoffService
+
+                await HandoffService.close_for_run(session, run_id, tenant_id, reason="run canceled")
+            except Exception:  # noqa: BLE001 - handoff close is best-effort
+                log.debug("cancel_run: handoff close failed for %s", run_id, exc_info=True)
+            return {"ok": True, "status": "canceled", "previous_status": prev, "signaled": signaled}
 
     async def _write_trace(self, session, run: Run, tracer: ForgeTracer, *, status: str, values: dict | None = None):
         """Persist a Trace + its Span rows from the tracer. Shared by the success,
@@ -720,18 +875,33 @@ class RunService:
             log.exception("failed to mark run %s as %s", run_id, status)
 
     @staticmethod
-    async def reap_stale_runs(*, queued_max_age_s: int = 900, running_max_age_s: int = 3600) -> int:
+    async def reap_stale_runs(
+        *, queued_max_age_s: int = 900, running_max_age_s: int = 3600,
+        hitl_timeout_s: int | None = None,
+    ) -> int:
         """Mark runs stuck in non-terminal states as error so they never linger forever
         (audit F3): a `queued` run that was created but never streamed/driven, or a
         `running` run whose driver died (crash, missed disconnect, killed worker). Called
-        periodically from the app lifespan. Returns the number reaped."""
+        periodically from the app lifespan. Returns the number reaped.
+
+        Also expires `interrupted` runs awaiting a human approval for longer than
+        `hitl_timeout_s` (audit C): the run is failed and its handoff closed with a fallback
+        channel message so the customer isn't left hanging. `hitl_timeout_s` defaults to the
+        HITL_APPROVAL_TIMEOUT_SECONDS module constant; 0/None disables HITL expiry (unchanged
+        behavior). NOTE: this static reaper has no checkpointer, so it uses the fail+close
+        branch; resuming with a configured default decision would need the live checkpointer."""
+        hitl_timeout_s = HITL_APPROVAL_TIMEOUT_SECONDS if hitl_timeout_s is None else hitl_timeout_s
+        hitl_on = bool(hitl_timeout_s and hitl_timeout_s > 0)
         now = datetime.utcnow()
         q_cut = now - timedelta(seconds=queued_max_age_s)
         r_cut = now - timedelta(seconds=running_max_age_s)
+        hitl_cut = now - timedelta(seconds=hitl_timeout_s) if hitl_on else None
         reaped = 0
+        expired_hitl: list[tuple[str, str, str]] = []  # (run_id, tenant_id, workflow_id)
         async with SessionLocal() as s:
+            statuses = ["queued", "running"] + (["interrupted"] if hitl_on else [])
             rows = (
-                await s.execute(select(Run).where(Run.status.in_(("queued", "running"))))
+                await s.execute(select(Run).where(Run.status.in_(statuses)))
             ).scalars().all()
             for run in rows:
                 if run.status == "queued" and (run.created_at or now) < q_cut:
@@ -744,8 +914,52 @@ class RunService:
                     run.error = "run exceeded maximum duration and was reaped"
                     run.ended_at = now
                     reaped += 1
+                elif run.status == "interrupted" and hitl_cut is not None:
+                    # ended_at is stamped at each pause (_finalize), so it's the time the run last
+                    # went to await input - the right anchor for the approval deadline.
+                    paused_at = run.ended_at or run.started_at or run.created_at or now
+                    if paused_at < hitl_cut:
+                        run.status = "error"
+                        run.error = f"HITL approval timed out after {hitl_timeout_s}s (no human reply)"
+                        run.ended_at = now
+                        reaped += 1
+                        expired_hitl.append((run.id, run.tenant_id, run.workflow_id))
             if reaped:
                 await s.commit()
+            # Best-effort: close the handoff + push the workflow's fallback message so the
+            # customer isn't left hanging on an abandoned approval.
+            for run_id, tenant_id, workflow_id in expired_hitl:
+                try:
+                    await RunService._notify_hitl_timeout(s, run_id, tenant_id, workflow_id)
+                except Exception:  # noqa: BLE001 - one bad notify must not stop the reaper
+                    log.exception("HITL timeout notify failed for run %s", run_id)
         if reaped:
-            log.info("reaped %d stale run(s)", reaped)
+            log.info("reaped %d stale run(s) (%d HITL timeouts)", reaped, len(expired_hitl))
         return reaped
+
+    @staticmethod
+    async def _notify_hitl_timeout(session, run_id: str, tenant_id: str, workflow_id: str) -> None:
+        """On HITL expiry: push the workflow's on_error fallback over the originating channel,
+        then close the open handoff(s) for the run (audit C)."""
+        from forge.models import Channel, HandoffRequest
+        from forge.services.handoff import HandoffService, _channel_reply_context, _deliver
+
+        wf = (await session.execute(select(Workflow).where(Workflow.id == workflow_id))).scalar_one_or_none()
+        on_err = ((wf.executable if wf else {}) or {}).get("on_error") or {}
+        fallback = on_err.get("message") or (
+            "We weren't able to reach a team member in time. Please reply and we'll follow up."
+        )
+        rows = list((await session.execute(
+            select(HandoffRequest).where(
+                HandoffRequest.tenant_id == tenant_id, HandoffRequest.run_id == run_id,
+                HandoffRequest.status.in_(("open", "answering")),
+            )
+        )).scalars())
+        for h in rows:
+            if not h.channel_id:
+                continue
+            ch = (await session.execute(select(Channel).where(Channel.id == h.channel_id))).scalar_one_or_none()
+            reply_ctx = _channel_reply_context(h.reply_context)
+            if ch is not None and reply_ctx:
+                await _deliver(ch, reply_ctx, fallback)
+        await HandoffService.close_for_run(session, run_id, tenant_id, reason="HITL approval timed out")

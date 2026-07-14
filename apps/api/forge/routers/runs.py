@@ -149,3 +149,20 @@ async def resume_run(
     rc: dict | None = Depends(run_context),
 ):
     return await run_service.resume(run_id=run_id, tenant_id=tenant_id, value=body.value, project_id=project_id, run_context=rc)
+
+
+@router.post("/{run_id}/cancel")
+async def cancel_run(
+    project_id: str,
+    workflow_id: str,
+    run_id: str,
+    tenant_id: str = Depends(current_tenant_id),
+    run_service: RunService = Depends(get_run_service),
+    _: CurrentUser = Depends(get_current_user),
+):
+    """Cancel a run: mark it canceled and cooperatively stop it (frees the tenant-concurrency
+    slot). A terminal run (done/error/canceled) returns ok=False with its current status."""
+    result = await run_service.cancel_run(run_id=run_id, tenant_id=tenant_id, project_id=project_id)
+    if result.get("error") == "run not found":
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "run not found")
+    return result

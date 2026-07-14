@@ -16,6 +16,7 @@
           "pii": "safety", "guardrail_regex": "safety", "openai_moderation": "safety",
           "tool_retry": "reliability", "model_retry": "reliability", "model_fallback": "reliability",
           "model_call_limit": "cost", "tool_call_limit": "cost", "tenant_budget": "cost", "llm_tool_selector": "cost",
+          "semantic_cache": "cost",
           "human_in_the_loop": "human",
           "anthropic_prompt_caching": "provider",
           "tool_emulator": "testing",
@@ -189,6 +190,16 @@
         "on_exceed": { "type": "string", "enum": ["end", "error"], "default": "end" }
       },
       "x-ui": { "help": "Stop the run when accumulated cost/tokens exceed the cap (before_model)." }
+    },
+    "semantic_cache": {
+      "type": "object",
+      "properties": {
+        "threshold": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.95, "description": "Minimum cosine similarity for a cached answer to be reused. High by design - a wrong cache hit is worse than a miss." },
+        "ttl": { "type": "integer", "default": 3600, "description": "Seconds a cached answer stays valid." },
+        "scope": { "type": "string", "default": "default", "description": "Cache partition (e.g. per-locale/per-tenant-segment); questions only match within the same scope." },
+        "min_question_chars": { "type": "integer", "default": 8, "description": "Skip caching for questions shorter than this (too generic to key on)." }
+      },
+      "x-ui": { "help": "Reuse a previous answer when a semantically-equivalent question was already answered - skips the model/tool loop entirely on a hit." }
     }
   }
 }

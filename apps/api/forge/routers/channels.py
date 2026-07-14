@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+import logging
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,8 +15,17 @@ from forge.db.base import SessionLocal
 from forge.deps import CurrentUser, current_tenant_id, get_run_service, get_session, require_role
 from forge.services.channels import ChannelService
 from forge.services.dispatch import dispatch_message
+from forge.services.handoff import (
+    HITL_META_KEY,
+    HandoffService,
+    interrupt_ack,
+    interrupt_hitl_meta,
+    interrupt_reason,
+)
 from forge.services.runs import RunService
 from forge.util.ratelimit import rate_limiter
+
+log = logging.getLogger("forge.channels.router")
 
 router = APIRouter(prefix="/v1/projects/{project_id}/channels", tags=["channels"])
 public = APIRouter(tags=["channels"])  # unauthenticated inbound webhooks
@@ -100,15 +111,6 @@ async def _resolve(type_: str, key: str):
     return ch, workflow_id
 
 
-def _handoff_reason(result: dict) -> str | None:
-    for group in result.get("interrupts") or []:
-        for it in (group or []):
-            val = it.get("value") if isinstance(it, dict) else None
-            if isinstance(val, dict) and val.get("handoff"):
-                return val.get("reason") or "Escalated to a human agent."
-    return None
-
-
 async def _maybe_open_handoff(ch, result: dict, *, customer, customer_message, reply_context) -> str | None:
     """If the run paused at an interrupt, open a HandoffRequest and return a customer-facing
     acknowledgement. A text channel (email/Teams) can't resume an HITL pause inline, so ANY
@@ -116,24 +118,26 @@ async def _maybe_open_handoff(ch, result: dict, *, customer, customer_message, r
     rather than falling through to a stale/empty partial answer (audit F8)."""
     if not result.get("interrupted"):
         return None
-    reason = _handoff_reason(result) or (
+    interrupts = result.get("interrupts")
+    reason = interrupt_reason(interrupts) or (
         "Conversation paused awaiting input/approval - a team member will follow up."
     )
-    from forge.services.handoff import HandoffService
+    # Persist the interrupting node's allowed_decisions so the human's channel reply is coerced
+    # to a valid decision before resuming (a Router keyed on approve/reject then matches) - C.
+    hitl_meta = interrupt_hitl_meta(interrupts)
+    ctx = dict(reply_context or {})
+    if hitl_meta.get("allowed_decisions"):
+        ctx[HITL_META_KEY] = {
+            "allowed_decisions": hitl_meta["allowed_decisions"], "kind": hitl_meta.get("kind"),
+        }
     async with SessionLocal() as s:
         await HandoffService.create(
             s, channel=ch, tenant_id=ch.tenant_id, project_id=ch.project_id,
             workflow_id=result.get("workflow_id"), run_id=result.get("run_id"),
             thread_id=result.get("thread_id"), customer=customer, customer_message=customer_message,
-            reason=reason, reply_context=reply_context,
+            reason=reason, reply_context=ctx,
         )
-    # surface the configured ack_message if present
-    for group in result.get("interrupts") or []:
-        for it in (group or []):
-            val = it.get("value") if isinstance(it, dict) else None
-            if isinstance(val, dict) and val.get("ack_message"):
-                return val["ack_message"]
-    return "A team member will follow up with you shortly."
+    return interrupt_ack(interrupts) or "A team member will follow up with you shortly."
 
 
 @public.post("/v1/channels/email/{key}/inbound")
@@ -155,32 +159,53 @@ async def email_inbound(key: str, request: Request, run_service: RunService = De
                                     source="channel_email")
     ack = await _maybe_open_handoff(ch, result, customer=parsed.get("from_addr"), customer_message=text, reply_context=parsed)
     reply_text = ack or result.get("answer")
+    delivered = None
     if (ch.config or {}).get("reply", True) and reply_text:
         try:
-            await email_ch.send_reply(ch, parsed, reply_text)
+            # send_reply now retries with backoff and returns whether an email was actually sent
+            # (False = SMTP not configured); a failure raises so we can record it (audit E).
+            delivered = await email_ch.send_reply(ch, parsed, reply_text)
         except Exception:  # noqa: BLE001 - reply delivery failure shouldn't 500 the webhook
-            pass
-    return {"ok": True, "handoff": bool(ack)}
+            log.warning("email reply delivery failed for channel %s", ch.id, exc_info=True)
+            delivered = False
+    return {"ok": True, "handoff": bool(ack), "delivered": delivered}
 
 
 @public.post("/v1/channels/teams/{key}/messages")
-async def teams_messages(key: str, request: Request, run_service: RunService = Depends(get_run_service)):
+async def teams_messages(key: str, request: Request, run_service: RunService = Depends(get_run_service),
+                         authorization: str | None = Header(default=None)):
     ch, workflow_id = await _resolve("teams", key)
     activity = await request.json()
+    # Authenticate the inbound Bot Framework activity (audit D): the public messaging endpoint is
+    # otherwise driveable by anyone. When the channel has an app_id and verify_jwt isn't disabled,
+    # require a valid connector JWT (audience == app_id). Without an app_id the audience can't be
+    # validated, so we can only warn - configure app_id to enable authentication.
+    cfg = ch.config or {}
+    app_id = cfg.get("app_id")
+    if app_id and cfg.get("verify_jwt", True):
+        if not await teams_ch.verify_bot_jwt(authorization, app_id=app_id):
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid Bot Framework token")
+    elif not app_id:
+        log.warning("Teams inbound for channel %s is UNAUTHENTICATED (no app_id configured to verify the JWT)", ch.id)
     parsed = teams_ch.parse_activity(activity)
-    if parsed.get("type") != "message" or not parsed.get("text"):
+    # Accept a typed message OR a card action (Action.Submit) - a button press has no `text`, its
+    # data rides in `value`; inbound_text derives an input string from either (audit D).
+    text = teams_ch.inbound_text(parsed)
+    if parsed.get("type") not in ("message",) or not text:
         return {"ok": True}  # ignore non-message activities (typing, conversationUpdate, …)
     if not rate_limiter.allow(f"teams:{key}", rate=120, per=60):
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "rate limit exceeded")
     result = await dispatch_message(run_service, tenant_id=ch.tenant_id, project_id=ch.project_id,
-                                    workflow_id=workflow_id, text=parsed["text"],
+                                    workflow_id=workflow_id, text=text,
                                     conversation_key=parsed.get("conversation_id"),
                                     source="channel_teams")
-    ack = await _maybe_open_handoff(ch, result, customer=parsed.get("from_name"), customer_message=parsed["text"], reply_context=parsed)
+    ack = await _maybe_open_handoff(ch, result, customer=parsed.get("from_name"), customer_message=text, reply_context=parsed)
     reply_text = ack or result.get("answer")
+    delivered = None
     if reply_text:
         try:
-            await teams_ch.send_reply(ch, parsed, reply_text)
-        except Exception:  # noqa: BLE001
-            pass
-    return {"ok": True, "handoff": bool(ack)}
+            delivered = await teams_ch.send_reply(ch, parsed, reply_text)
+        except Exception:  # noqa: BLE001 - reply delivery failure shouldn't 500 the webhook
+            log.warning("teams reply delivery failed for channel %s", ch.id, exc_info=True)
+            delivered = False
+    return {"ok": True, "handoff": bool(ack), "delivered": delivered}

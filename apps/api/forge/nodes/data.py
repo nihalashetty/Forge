@@ -81,6 +81,8 @@ def human_input_factory(cfg: dict, ctx: CompileContext):
     from langchain_core.messages import HumanMessage
     from langgraph.types import interrupt
 
+    from forge.services.runs import HITL_APPROVAL_TIMEOUT_SECONDS
+
     prompt = cfg["prompt"]
     decisions = cfg.get("allowed_decisions", ["approve", "reject"])
     schema = cfg.get("schema")
@@ -88,14 +90,29 @@ def human_input_factory(cfg: dict, ctx: CompileContext):
     # can branch on it (approve → continue, reject → end). The key must be declared in
     # workflow state (the canvas auto-declares node-written keys).
     output_key = cfg.get("output_key")
+    # Deadline surfaced on the interrupt so operators/UI see how long the approval waits before
+    # the reaper expires it (audit C). Per-node override, else the global HITL timeout (0 = none).
+    timeout_seconds = cfg.get("timeout_seconds") or HITL_APPROVAL_TIMEOUT_SECONDS or None
 
     def _node(state: dict) -> dict:
         # Pauses the run; resumed via Command(resume=value). Node re-runs from the
         # top on resume, so the side effect (writing the decision) is placed after.
-        decision = interrupt({"prompt": prompt, "allowed_decisions": decisions, "schema": schema})
+        decision = interrupt({
+            "prompt": prompt, "allowed_decisions": decisions, "schema": schema,
+            "timeout_seconds": timeout_seconds,
+        })
         out: dict[str, Any] = {"messages": [HumanMessage(content=f"[human decision] {decision}")]}
         if output_key:
-            out[output_key] = str(decision)
+            # Coerce a free-text resume value to one of allowed_decisions for the ROUTING key so a
+            # Router keyed on approve/reject matches even on a direct API resume (audit C). The
+            # transcript message above keeps the human's raw wording; only the routed value is
+            # normalized. Structured (dict) input is left as-is.
+            routed: Any = decision
+            if isinstance(decision, str) and decisions:
+                from forge.services.handoff import coerce_to_allowed_decision
+
+                routed = coerce_to_allowed_decision(decision, list(decisions))
+            out[output_key] = str(routed)
         return out
 
     return _node

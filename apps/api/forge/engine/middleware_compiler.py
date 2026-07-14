@@ -427,6 +427,116 @@ def _tenant_budget(c: dict, ctx: CompileContext) -> AgentMiddleware:
     )
 
 
+def _cache_answer_text(response: Any) -> str | None:
+    """Extract a cacheable FINAL-answer string from a model response, or None. Skips a
+    tool-calling turn (not a final answer) and empty/structured responses so we never cache
+    a mid-loop step or a blank reply."""
+    from langchain_core.messages import AIMessage
+
+    msg: Any = None
+    if isinstance(response, AIMessage):
+        msg = response
+    else:
+        result = getattr(response, "result", None)
+        if result is None:  # ExtendedModelResponse wraps the ModelResponse
+            mr = getattr(response, "model_response", None)
+            result = getattr(mr, "result", None)
+        if result:
+            msg = next(
+                (m for m in result if getattr(m, "type", None) in ("ai", "AIMessageChunk")),
+                result[0],
+            )
+    if msg is None or getattr(msg, "tool_calls", None):
+        return None
+    text = _msg_text(msg).strip()
+    return text or None
+
+
+class _SemanticCacheMiddleware(AgentMiddleware):
+    """Answer cache keyed by question MEANING (vector similarity), wiring the built-but-unused
+    SemanticCacheService into the agent loop (audit A). On the FIRST model call of a fresh user
+    turn it looks the question up; a hit SHORT-CIRCUITS the whole model/tool loop with the cached
+    answer (returned as an AIMessage, which ends the ReAct loop). A fresh non-tool answer is stored
+    after. Gated per agent (only attached when the middleware is configured on the node).
+
+    Async-only: the embedder + cache store are async, so awrap_model_call does the work; the sync
+    wrap_model_call degrades to a pass-through (no caching) rather than crash - Forge's runtime
+    always drives agents with astream/ainvoke. Every cache call is fully guarded: a cache failure
+    (embedder cold, Chroma error) must never break a run."""
+
+    def __init__(self, tenant_id: str, project_id: str, *, threshold: float, ttl: int,
+                 scope: str, min_chars: int):
+        super().__init__()
+        self._tenant = tenant_id
+        self._project = project_id
+        self._threshold = threshold
+        self._ttl = ttl
+        self._scope = scope
+        self._min = min_chars
+
+    def _question(self, request) -> str | None:
+        """The user's question for THIS turn: the last message must be a human message (i.e.
+        the model is about to answer a fresh question, not continue a tool round). Returns None
+        mid-loop so we neither look up nor store a partial/tool step."""
+        msgs = getattr(request, "messages", None) or []
+        if not msgs:
+            return None
+        last = msgs[-1]
+        if getattr(last, "type", None) != "human":
+            return None
+        return _msg_text(last).strip() or None
+
+    def wrap_model_call(self, request, handler):  # type: ignore[no-untyped-def]
+        return handler(request)
+
+    async def awrap_model_call(self, request, handler):  # type: ignore[no-untyped-def]
+        from forge.db.base import SessionLocal
+        from forge.services.semantic_cache import SemanticCacheService
+
+        question = self._question(request)
+        cacheable = bool(question) and len(question) >= self._min
+        if cacheable:
+            try:
+                async with SessionLocal() as s:
+                    cached = await SemanticCacheService.lookup(
+                        s, self._tenant, self._project, question,
+                        scope=self._scope, threshold=self._threshold, ttl=self._ttl,
+                    )
+            except Exception:  # noqa: BLE001 - a cache lookup must never break the run
+                log.debug("semantic_cache lookup failed", exc_info=True)
+                cached = None
+            if cached is not None:
+                from langchain_core.messages import AIMessage
+
+                return AIMessage(content=cached)
+
+        response = await handler(request)
+
+        if cacheable:
+            answer = _cache_answer_text(response)
+            if answer:
+                try:
+                    async with SessionLocal() as s:
+                        await SemanticCacheService.store(
+                            s, self._tenant, self._project, question, answer, scope=self._scope,
+                        )
+                except Exception:  # noqa: BLE001 - a cache write must never break the run
+                    log.debug("semantic_cache store failed", exc_info=True)
+        return response
+
+
+def _semantic_cache(c: dict, ctx: CompileContext) -> AgentMiddleware:
+    from forge.services.semantic_cache import CACHE_DEFAULT_THRESHOLD, CACHE_DEFAULT_TTL_SECONDS
+
+    return _SemanticCacheMiddleware(
+        ctx.tenant_id, ctx.project_id,
+        threshold=float(c.get("threshold", CACHE_DEFAULT_THRESHOLD)),
+        ttl=int(c.get("ttl", CACHE_DEFAULT_TTL_SECONDS)),
+        scope=str(c.get("scope") or "default"),
+        min_chars=int(c.get("min_question_chars", 8)),
+    )
+
+
 MW_BUILDERS: dict[str, Builder] = {
     "summarization": _summarization,
     "human_in_the_loop": lambda c, ctx: HumanInTheLoopMiddleware(interrupt_on=c["interrupt_on"]),
@@ -453,6 +563,7 @@ MW_BUILDERS: dict[str, Builder] = {
     "tool_filter_by_context": _tool_filter_by_context,
     "guardrail_regex": _guardrail_regex,
     "tenant_budget": _tenant_budget,
+    "semantic_cache": _semantic_cache,
 }
 
 

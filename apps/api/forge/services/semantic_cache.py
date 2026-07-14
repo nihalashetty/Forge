@@ -14,6 +14,14 @@ import time
 from forge.knowledge.store import ChromaStore
 from forge.services.knowledge import KnowledgeService
 
+# Cache defaults. Threshold is deliberately HIGH: a wrong cached answer to a not-really-
+# equivalent question is worse than a cache miss, so only near-identical paraphrases hit.
+# Settings wanted (owned by config.py; a parallel agent owns that file):
+#   FORGE_SEMANTIC_CACHE_THRESHOLD (float, default 0.95)
+#   FORGE_SEMANTIC_CACHE_TTL_SECONDS (int, default 3600)
+CACHE_DEFAULT_THRESHOLD = 0.95
+CACHE_DEFAULT_TTL_SECONDS = 3600
+
 
 class SemanticCacheService:
     @staticmethod
@@ -60,3 +68,35 @@ class SemanticCacheService:
             )
         except Exception:  # noqa: BLE001 - cache write failure is non-fatal
             pass
+
+    @staticmethod
+    async def purge(session, tenant_id, project_id, *, scope: str | None = None,
+                    ttl: int = CACHE_DEFAULT_TTL_SECONDS) -> int:
+        """Delete cache entries older than `ttl` seconds for a tenant/project (optionally a
+        single scope). TTL is checked on read too, but stale rows otherwise accumulate forever
+        in Chroma (they still cost storage + widen every vector query), so this reclaims them.
+        Returns how many were purged. Non-fatal: a store error yields 0. `ttl<=0` purges all."""
+        embedder = await KnowledgeService.embedder_for_project(session, tenant_id, project_id)
+        store = SemanticCacheService._store(embedder)
+        clauses = [{"tenant_id": {"$eq": tenant_id}}, {"project_id": {"$eq": project_id}}]
+        if scope is not None:
+            clauses.append({"scope": {"$eq": scope}})
+        where = {"$and": clauses} if len(clauses) > 1 else clauses[0]
+        try:
+            rows = store.list_docs(where)
+        except Exception:  # noqa: BLE001
+            return 0
+        now = time.time()
+        ids = rows.get("ids") or []
+        metas = rows.get("metadatas") or []
+        expired = [
+            ids[i] for i in range(len(ids))
+            if ttl <= 0 or (now - float((metas[i] or {}).get("ts", 0))) > ttl
+        ]
+        if not expired:
+            return 0
+        try:
+            store.delete_ids(expired)
+        except Exception:  # noqa: BLE001
+            return 0
+        return len(expired)
