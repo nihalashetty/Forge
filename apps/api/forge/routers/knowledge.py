@@ -16,7 +16,7 @@ from forge.schemas.dto import (
     RechunkBulkIn,
     RechunkIn,
 )
-from forge.services.knowledge import KnowledgeService
+from forge.services.knowledge import KnowledgeService, _strip_html
 from forge.util.tasks import spawn
 
 router = APIRouter(prefix="/v1/projects/{project_id}/knowledge", tags=["knowledge"])
@@ -31,6 +31,104 @@ _QUEUE_FULL_MSG = "ingest queue is full; please retry in a moment"
 # enforced at the reverse proxy / uvicorn in front of the app.
 _MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 _MAX_PDF_PAGES = 500
+
+# Extensions we KNOW are binary containers - decoding them as text yields mojibake garbage that
+# then gets embedded, so reject with a clear message instead (finding: binary files ingested as
+# latin-1). PDFs are handled separately (extractable text); these have no text-decode path here.
+_BINARY_EXTS = frozenset({
+    ".docx", ".xlsx", ".pptx", ".doc", ".xls", ".ppt", ".odt", ".ods", ".odp", ".rtf",
+    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".webp", ".ico", ".svgz",
+    ".zip", ".gz", ".tar", ".7z", ".rar", ".bz2", ".xz",
+    ".mp3", ".mp4", ".mov", ".avi", ".wav", ".flac", ".ogg", ".webm", ".mkv",
+    ".exe", ".dll", ".so", ".dylib", ".bin", ".class", ".jar", ".parquet", ".sqlite", ".db",
+})
+_SUPPORTED_HINT = "Supported: .txt, .md, .pdf, .csv, .json, .html and other UTF-8 text files."
+
+
+def _csv_to_text(text: str) -> str:
+    """CSV -> one header-qualified record per block ("col: value | col: value"), so each row is
+    self-describing after chunking instead of an opaque comma soup. Falls back to raw text if it
+    doesn't parse as tabular."""
+    import csv
+    import io
+
+    try:
+        rows = list(csv.reader(io.StringIO(text)))
+    except Exception:  # noqa: BLE001 - not valid CSV -> ingest as-is
+        return text
+    if len(rows) < 2:
+        return text
+    header = [h.strip() for h in rows[0]]
+    blocks: list[str] = []
+    for row in rows[1:]:
+        parts = [f"{(header[i] if i < len(header) else f'col{i + 1}')}: {v}"
+                 for i, v in enumerate(row) if str(v).strip()]
+        if parts:
+            blocks.append(" | ".join(parts))
+    return "\n\n".join(blocks) if blocks else text
+
+
+def _json_record(item) -> str:
+    import json
+
+    if isinstance(item, dict):
+        return " | ".join(
+            f"{k}: {v if isinstance(v, (str, int, float, bool)) else json.dumps(v, ensure_ascii=False)}"
+            for k, v in item.items()
+        )
+    return json.dumps(item, ensure_ascii=False)
+
+
+def _json_to_text(text: str) -> str:
+    """JSON -> one record per block. A list becomes one block per element; a top-level object
+    with a single list value expands that list (the common {"items": [...]} shape); otherwise the
+    object is one header-qualified block. Falls back to raw text if it doesn't parse."""
+    import json
+
+    try:
+        data = json.loads(text)
+    except Exception:  # noqa: BLE001 - not valid JSON -> ingest as-is
+        return text
+    if isinstance(data, dict):
+        list_vals = [v for v in data.values() if isinstance(v, list)]
+        if len(data) == 1 and list_vals:
+            data = list_vals[0]
+    if isinstance(data, list):
+        blocks = [_json_record(x) for x in data]
+        return "\n\n".join(b for b in blocks if b.strip()) or text
+    return _json_record(data)
+
+
+def _decode_upload(name: str, raw: bytes) -> str:
+    """Turn uploaded bytes into ingestible text, or raise 422. Rejects known binary containers
+    and null-byte binaries (finding: binaries decoded as latin-1 mojibake); strips HTML; parses
+    CSV/JSON into per-record, header-qualified text (finding: tabular ingested opaquely)."""
+    import os
+
+    ext = os.path.splitext(name.lower())[1]
+    if ext in _BINARY_EXTS:
+        raise HTTPException(422, f"'{ext}' files aren't a readable text format. {_SUPPORTED_HINT}")
+    # Null bytes are the strongest signal of a binary we don't recognize by extension.
+    if b"\x00" in raw:
+        raise HTTPException(422, f"File looks binary, not text. {_SUPPORTED_HINT}")
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        # Retry as latin-1 ONLY for genuinely-textual non-UTF-8 files; if the result is mostly
+        # unprintable it was binary after all -> reject rather than embed garbage.
+        text = raw.decode("latin-1", errors="replace")
+        printable = sum(c.isprintable() or c.isspace() for c in text)
+        if not text or printable / len(text) < 0.85:
+            raise HTTPException(422, f"File isn't a readable text format. {_SUPPORTED_HINT}") from None
+    if ext in (".html", ".htm"):
+        text = _strip_html(text)
+    elif ext == ".csv":
+        text = _csv_to_text(text)
+    elif ext == ".json":
+        text = _json_to_text(text)
+    if not text.strip():
+        raise HTTPException(422, "File is empty or not a readable text format.")
+    return text
 
 
 async def _queue_ingest(session, tenant_id: str, src, *, reingest: bool = False, label: str = "ingest") -> None:
@@ -47,7 +145,7 @@ async def list_sources(project_id: str, session: AsyncSession = Depends(get_sess
 
 @router.post("/sources", response_model=KbSourceOut, status_code=201)
 async def add_source(project_id: str, body: KbSourceCreate, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id), _: CurrentUser = Depends(require_role("editor"))):
-    src = await KnowledgeService.create_source(session, tenant_id, project_id, kind=body.kind, name=body.name, uri=body.uri, text=body.text, folder=body.folder, chunking_strategy=body.chunking_strategy)
+    src = await KnowledgeService.create_source(session, tenant_id, project_id, kind=body.kind, name=body.name, uri=body.uri, text=body.text, folder=body.folder, chunking_strategy=body.chunking_strategy, meta=body.meta)
     # Ingest (fetch/chunk/embed) off the request: a real embedder takes seconds+ for a large
     # source, which would time out the HTTP call. The source returns as "queued"; the UI polls.
     await _queue_ingest(session, tenant_id, src)
@@ -91,12 +189,8 @@ async def upload_source(
         if not text:
             raise HTTPException(422, "PDF contains no extractable text (scanned image PDFs need OCR).")
     else:
-        try:
-            text = raw.decode("utf-8")
-        except UnicodeDecodeError:
-            text = raw.decode("latin-1", errors="replace")
-        if not text.strip():
-            raise HTTPException(422, "File is empty or not a readable text format.")
+        # Strip HTML, parse CSV/JSON into per-record text, and reject binaries with a clear 422.
+        text = _decode_upload(name, raw)
     src = await KnowledgeService.create_source(session, tenant_id, project_id, kind="file", name=name, text=text, folder=folder, chunking_strategy=(chunking_strategy or None))
     # The file bytes are fully read above; only the chunk+embed runs in the background so a
     # large upload doesn't block (and time out) the request. Returns "queued"; the UI polls.

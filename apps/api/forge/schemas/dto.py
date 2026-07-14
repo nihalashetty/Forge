@@ -326,6 +326,9 @@ class KbSourceCreate(BaseModel):
     # How to split this source into chunks: recursive (default) | section | sentence.
     # None -> falls back to the project's rag_defaults.chunking_strategy, then "recursive".
     chunking_strategy: str | None = None
+    # Optional per-source ingest knobs stored on the source meta and read at ingest time -
+    # e.g. for a crawl: {"max_pages": 50, "max_depth": 2, "crawl_delay": 0.5}.
+    meta: dict | None = None
 
 
 class QaPairOut(ORMModel):

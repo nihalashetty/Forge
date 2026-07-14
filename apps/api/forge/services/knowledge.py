@@ -9,7 +9,7 @@ import re
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from forge.knowledge.embeddings import KNOWN_EMBEDDING_DIMS, resolve_embedder
+from forge.knowledge.embeddings import KNOWN_EMBEDDING_DIMS, cosine, resolve_embedder
 from forge.knowledge.splitter import chunk_text
 from forge.knowledge.store import ChromaStore, Hit, _where
 from forge.models import KbSource, Project, QaPair
@@ -17,6 +17,13 @@ from forge.secrets.store import SecretStore
 from forge.util.http import shared_async_client
 
 log = logging.getLogger("forge.knowledge")
+
+# Ingestion batching + retry (finding: all-or-nothing ingest with no backoff/checkpoint). Embeds
+# are done in batches, each upserted immediately so partial progress is durable in the store, and
+# retried with exponential backoff so a transient embedder/API blip doesn't fail the whole source.
+_EMBED_BATCH_SIZE = 128
+_EMBED_MAX_ATTEMPTS = 3
+_EMBED_BACKOFF_BASE = 0.5
 
 # Fallback chunking when neither the source's own meta nor the project's rag_defaults set
 # one. Overridable per project (config.rag_defaults) or per source (re-chunk). The web UI
@@ -48,6 +55,16 @@ def _strip_html(html: str) -> str:
         return BeautifulSoup(html, "html.parser").get_text(" ", strip=True)
     except Exception:  # noqa: BLE001
         return re.sub(r"<[^>]+>", " ", html)
+
+
+def _page_title(url: str) -> str:
+    """A short, readable title for a crawled page derived from its URL path (last non-empty
+    segment), falling back to the host. Stored in chunk metadata so retrieval can cite the page."""
+    from urllib.parse import unquote, urlparse
+
+    p = urlparse(url)
+    segs = [s for s in p.path.split("/") if s]
+    return unquote(segs[-1]) if segs else (p.netloc or url)
 
 
 def _project_chunks_2d(embeddings: list, query_vec: list | None = None, *, spread: float = 1000.0):
@@ -157,9 +174,12 @@ class KnowledgeService:
 
     @staticmethod
     async def embedding_health(session, tenant_id: str, project_id: str) -> dict:
-        """Detect the silent dim-mismatch trap: sources embedded with a different model
-        (dim) than the project's CURRENT embedder won't be found in search. Surfaces a
-        'needs re-embed' flag + the offending sources so the UI can warn + offer reingest."""
+        """Detect the silent model-mismatch trap: sources embedded with a different model than
+        the project's CURRENT embedder. A DIFFERENT-dim model lands in a different collection
+        (found nothing); a SAME-dim different model shares the collection and would return
+        wrong/foreign chunks - search now isolates by model identity, so those also read as
+        empty. Either way the fix is a re-embed, so flag any source whose embedding model NAME
+        differs from the current one (not just a dim change)."""
         from forge.knowledge.embeddings import _MODEL_DIMS
 
         embedder = await KnowledgeService.embedder_for_project(session, tenant_id, project_id)
@@ -176,9 +196,10 @@ class KnowledgeService:
 
         sources = await KnowledgeService.list_sources(session, tenant_id, project_id)
         mismatched = [
-            {"id": s.id, "name": s.name, "embedded_with": s.embedding_model, "dim": dim_of(s.embedding_model)}
+            {"id": s.id, "name": s.name, "embedded_with": s.embedding_model, "dim": dim_of(s.embedding_model),
+             "same_dim": dim_of(s.embedding_model) == embedder.dim}
             for s in sources
-            if s.status == "ready" and dim_of(s.embedding_model) not in (None, embedder.dim)
+            if s.status == "ready" and s.embedding_model and s.embedding_model != embedder.name
         ]
         return {
             "current_model": embedder.name, "current_dim": embedder.dim,
@@ -230,13 +251,15 @@ class KnowledgeService:
         return list(rows.scalars())
 
     @staticmethod
-    async def create_source(session, tenant_id, project_id, *, kind, name, uri=None, text=None, folder="", chunking_strategy=None) -> KbSource:
-        meta: dict = {}
+    async def create_source(session, tenant_id, project_id, *, kind, name, uri=None, text=None, folder="", chunking_strategy=None, meta=None) -> KbSource:
+        # `meta` carries source-kind knobs the ingest reads later - e.g. crawl {max_pages,
+        # max_depth, crawl_delay} (finding: crawl had a hardcoded max_pages=10, no depth).
+        src_meta: dict = dict(meta or {})
         if text:
-            meta["text"] = text
+            src_meta["text"] = text
         if chunking_strategy:
-            meta["chunk_strategy"] = chunking_strategy
-        src = KbSource(tenant_id=tenant_id, project_id=project_id, kind=kind, name=name, uri=uri, folder=folder or "", status="queued", meta=meta)
+            src_meta["chunk_strategy"] = chunking_strategy
+        src = KbSource(tenant_id=tenant_id, project_id=project_id, kind=kind, name=name, uri=uri, folder=folder or "", status="queued", meta=src_meta)
         session.add(src)
         await session.commit()
         await session.refresh(src)
@@ -287,19 +310,33 @@ class KnowledgeService:
         src.status = "processing"
         await session.commit()
         try:
+            # Build per-provenance SEGMENTS: (text, extra_metadata). A crawl keeps one segment
+            # PER PAGE (so each chunk carries its own page URL/title instead of collapsing every
+            # page into one document); every other kind is a single segment.
+            segments: list[tuple[str, dict]] = []
             if src.kind in ("text", "file"):
                 # File uploads stash their decoded text in meta["text"] (see the upload
                 # endpoint), same as inline text sources - so they share this branch.
-                content = (src.meta or {}).get("text", "")
+                segments = [((src.meta or {}).get("text", ""), {})]
             elif src.kind == "url":
                 from forge.util.ssrf import guarded_get
                 r = await guarded_get(shared_async_client(), src.uri, timeout=20, follow_redirects=True)
-                content = _strip_html(r.text)
+                segments = [(_strip_html(r.text), {})]
             elif src.kind == "crawl":
-                from forge.knowledge.crawl import crawl_site
-                pages = await crawl_site(src.uri, int((src.meta or {}).get("max_pages", 10)))
-                content = "\n\n".join(f"# {u}\n{t}" for u, t in pages.items())
-                src.meta = {**(src.meta or {}), "pages_crawled": len(pages)}
+                from forge.knowledge.crawl import (
+                    DEFAULT_DELAY_SECONDS,
+                    DEFAULT_MAX_DEPTH,
+                    DEFAULT_MAX_PAGES,
+                    crawl_site,
+                )
+                m = src.meta or {}
+                pages = await crawl_site(
+                    src.uri, int(m.get("max_pages") or DEFAULT_MAX_PAGES),
+                    max_depth=int(m["max_depth"]) if m.get("max_depth") is not None else DEFAULT_MAX_DEPTH,
+                    delay=float(m["crawl_delay"]) if m.get("crawl_delay") is not None else DEFAULT_DELAY_SECONDS,
+                )
+                segments = [(t, {"page_url": u, "page_title": _page_title(u)}) for u, t in pages.items()]
+                src.meta = {**m, "pages_crawled": len(pages)}
             else:
                 raise ValueError(f"Unsupported source kind for ingest: {src.kind}")
 
@@ -320,6 +357,19 @@ class KnowledgeService:
             embedder = await KnowledgeService.embedder_for_project(session, src.tenant_id, src.project_id)
             store = KnowledgeService._store(embedder)
 
+            # Clamp chunk_size to the embedder's safe char budget: anything longer is SILENTLY
+            # truncated by the model at embed time, losing the tail of every chunk. Record the
+            # clamp so the UI/user can see why the effective size differs from what they asked.
+            max_chars = getattr(embedder, "max_input_chars", None)
+            chunk_clamped = None
+            if max_chars and chunk_size > max_chars:
+                chunk_clamped = chunk_size
+                chunk_size = max_chars
+                log.warning("ingest: chunk_size %d exceeds %s max input (%d chars); clamping to %d",
+                            chunk_clamped, embedder.name, max_chars, chunk_size)
+            if max_chars:
+                child_size = min(child_size, max_chars)
+
             # Semantic chunking embeds each sentence, so it needs the embedder AND must run off
             # the event loop; every other strategy is pure-Python. This helper hides that.
             async def _split(t: str, size: int) -> list[str]:
@@ -330,41 +380,49 @@ class KnowledgeService:
                     )
                 return chunk_text(t, strategy=strategy, chunk_size=size, overlap=overlap)
 
-            base = {"tenant_id": src.tenant_id, "project_id": src.project_id, "source_id": src.id}
+            # Source-level provenance on EVERY chunk so retrieval can cite it, plus the embedding
+            # model identity so search can isolate chunks from a different (even same-dim) model.
+            base = {"tenant_id": src.tenant_id, "project_id": src.project_id, "source_id": src.id,
+                    "source_name": src.name or "", "source_uri": src.uri or "", "embedding_model": embedder.name}
             ids: list[str] = []
             docs: list[str] = []
             metas: list[dict] = []
             n_parents = 0
-            if parent_child:
-                # Split into parent windows (the chosen strategy), then each parent into small
-                # children (recursive). ONLY children are embedded/searched; each child carries
-                # its parent's text so retrieval can hand back the wider context (see search()).
-                parents = await _split(content, chunk_size)
-                n_parents = len(parents)
-                child_overlap = min(overlap, max(child_size // 4, 0))
-                for pj, parent in enumerate(parents):
-                    for child in chunk_text(parent, strategy="recursive", chunk_size=child_size, overlap=child_overlap):
-                        ids.append(f"{src.id}:{len(ids)}")
-                        docs.append(child)
-                        metas.append({**base, "chunk_idx": len(metas), "parent_idx": pj,
-                                      "parent_id": f"{src.id}:p{pj}", "parent_text": parent})
-            else:
-                for i, chunk in enumerate(await _split(content, chunk_size)):
-                    ids.append(f"{src.id}:{i}")
-                    docs.append(chunk)
-                    metas.append({**base, "chunk_idx": i})
+            child_overlap = min(overlap, max(child_size // 4, 0))
+            for seg_text, seg_meta in segments:
+                seg_base = {**base, **seg_meta}
+                if parent_child:
+                    # Split into parent windows (the chosen strategy), then each parent into small
+                    # children (recursive). ONLY children are embedded/searched; each child carries
+                    # its parent's text so retrieval hands back the wider context (see search()).
+                    for parent in await _split(seg_text, chunk_size):
+                        pj = n_parents
+                        for child in chunk_text(parent, strategy="recursive", chunk_size=child_size, overlap=child_overlap):
+                            idx = len(ids)
+                            ids.append(f"{src.id}:{idx}")
+                            docs.append(child)
+                            metas.append({**seg_base, "chunk_idx": idx, "parent_idx": pj,
+                                          "parent_id": f"{src.id}:p{pj}", "parent_text": parent})
+                        n_parents += 1
+                else:
+                    for chunk in await _split(seg_text, chunk_size):
+                        idx = len(ids)
+                        ids.append(f"{src.id}:{idx}")
+                        docs.append(chunk)
+                        metas.append({**seg_base, "chunk_idx": idx})
 
-            if ids:
-                vectors = await embedder.aembed(docs)
-                store.upsert(ids=ids, embeddings=vectors, documents=docs, metadatas=metas)
-            src.chunks = len(ids)  # embedded/searchable units (children in parent_child mode)
+            embedded = await KnowledgeService._embed_and_upsert(session, src, store, embedder, ids, docs, metas)
+            src.chunks = embedded  # embedded/searchable units (children in parent_child mode)
             src.embedding_model = embedder.name
             # Record the chunking actually used (covers the project-default fallback) so the UI
             # can show it and reingest / re-chunk reuses it.
             src.meta = {**(src.meta or {}), "chunk_strategy": strategy, "chunk_size": chunk_size,
                         "chunk_overlap": overlap, "retrieval_mode": "parent_child" if parent_child else "chunk"}
+            if chunk_clamped:
+                src.meta["chunk_size_requested"] = chunk_clamped
             if parent_child:
                 src.meta["parents"] = n_parents
+            src.meta.pop("ingest_progress", None)  # completed cleanly; drop the resume marker
             src.status = "ready"
         except Exception as e:  # noqa: BLE001
             src.status = "error"
@@ -372,6 +430,42 @@ class KnowledgeService:
         await session.commit()
         await session.refresh(src)
         return src
+
+    @staticmethod
+    async def _embed_with_retry(embedder, docs: list[str]) -> list:
+        """Embed one batch with exponential backoff so a transient embedder/API failure retries
+        instead of failing the whole source. Raises after the last attempt (caller marks error)."""
+        delay = _EMBED_BACKOFF_BASE
+        for attempt in range(1, _EMBED_MAX_ATTEMPTS + 1):
+            try:
+                return await embedder.aembed(docs)
+            except Exception:  # noqa: BLE001 - retry transient failures, re-raise the last one
+                if attempt >= _EMBED_MAX_ATTEMPTS:
+                    raise
+                log.warning("embed batch failed (attempt %d/%d); retrying in %.1fs",
+                            attempt, _EMBED_MAX_ATTEMPTS, delay, exc_info=True)
+                await asyncio.sleep(delay)
+                delay *= 2
+        return []  # unreachable (loop either returns or raises)
+
+    @staticmethod
+    async def _embed_and_upsert(session, src, store, embedder, ids, docs, metas) -> int:
+        """Embed + upsert in batches, CHECKPOINTING progress after each batch. Each batch is
+        upserted immediately, so a mid-way failure leaves the completed batches durable in the
+        store (partial, not all-or-nothing) and `src.chunks`/`ingest_progress` reflect reality.
+        Returns the number of chunks embedded."""
+        total = len(ids)
+        done = 0
+        for start in range(0, total, _EMBED_BATCH_SIZE):
+            b_ids, b_docs, b_metas = ids[start:start + _EMBED_BATCH_SIZE], docs[start:start + _EMBED_BATCH_SIZE], metas[start:start + _EMBED_BATCH_SIZE]
+            vectors = await KnowledgeService._embed_with_retry(embedder, b_docs)
+            store.upsert(ids=b_ids, embeddings=vectors, documents=b_docs, metadatas=b_metas)
+            done += len(b_ids)
+            if total > _EMBED_BATCH_SIZE:  # only checkpoint for multi-batch sources (avoid churn)
+                src.chunks = done
+                src.meta = {**(src.meta or {}), "ingest_progress": {"done": done, "total": total}}
+                await session.commit()
+        return done
 
     @staticmethod
     async def mark_error(session, src: KbSource, message: str) -> None:
@@ -497,6 +591,7 @@ class KnowledgeService:
     async def search(
         session, tenant_id, project_id, query, *, top_k=5, source_ids=None, folders=None,
         embedder=None, embedding=None, hybrid=False, rerank=False, rerank_top_n=None,
+        mmr=False, mmr_lambda=0.5,
     ) -> list[Hit]:
         """Vector search over the project's chunks - or hybrid (BM25 lexical + vector,
         fused via RRF) when `hybrid=True`. Hybrid is opt-in; vector-only is the default.
@@ -507,7 +602,12 @@ class KnowledgeService:
         reranker model is unavailable (see knowledge/rerank.py). NOTE: a reranked `Hit.score` is a
         cross-encoder relevance on a DIFFERENT scale than cosine/fusion - a caller applying a
         cosine-tuned floor (e.g. the retrieval node's min_score) must not apply it to reranked
-        hits (see nodes/rag.py).
+        hits (see nodes/rag.py). In hybrid mode `Hit.score` is the fused rank and `Hit.vector_score`
+        the underlying cosine, so a cosine floor thresholds the latter.
+
+        When `mmr=True`, a final Maximal Marginal Relevance pass re-ranks the candidate pool to
+        trade a little relevance for diversity (`mmr_lambda` in [0,1]: 1.0 = pure relevance,
+        lower = more diverse), reducing near-duplicate passages in the returned top_k.
 
         `embedder`/`embedding` let a caller that already embedded the query (e.g. the
         retrieval node, which reuses one vector for docs AND Q&A) skip re-embedding.
@@ -532,14 +632,21 @@ class KnowledgeService:
         pool = max(rerank_top_n or top_k * 5, 25) if rerank else top_k
         pool = max(pool, top_k * 6)
         if hybrid:
-            hits = store.hybrid_query(
-                embedding=vec, query=query, tenant_id=tenant_id, project_id=project_id,
-                top_k=pool, source_ids=source_ids,
+            # Hybrid does a corpus scan + BM25 (CPU-bound); run it off the event loop so it
+            # doesn't stall the SSE stream / other requests. The BM25 index itself is cached
+            # per corpus version inside the store, so repeat queries skip the rebuild.
+            hits = await asyncio.to_thread(
+                store.hybrid_query, embedding=vec, query=query, tenant_id=tenant_id,
+                project_id=project_id, top_k=pool, source_ids=source_ids,
             )
         else:
             hits = store.query(
                 embedding=vec, tenant_id=tenant_id, project_id=project_id, top_k=pool, source_ids=source_ids
             )
+        # Isolate the CURRENT embedding model: a same-dim different model shares the collection,
+        # so drop any chunk tagged with a different model (legacy chunks with no tag are kept -
+        # they predate the tagging and embedding_health flags them for re-embed separately).
+        hits = [h for h in hits if (h.metadata or {}).get("embedding_model") in (None, embedder.name)]
         # Stage 2: optional cross-encoder rerank (over child text in parent_child mode). Only this
         # path needs the project config (reranker model), so the common flat/vector-only search
         # makes NO extra Project DB round-trip.
@@ -548,8 +655,41 @@ class KnowledgeService:
 
             rag = await KnowledgeService._rag_defaults(session, project_id)
             hits = await arerank_hits(query, hits, top_k=pool, model=rag.get("reranker_model"))
-        # ...then collapse child hits to their (deduped) parent windows and keep the best top_k.
-        return KnowledgeService._collapse_parents(hits)[:top_k]
+        # ...then collapse child hits to their (deduped) parent windows.
+        collapsed = KnowledgeService._collapse_parents(hits)
+        if mmr and len(collapsed) > top_k:
+            collapsed = await KnowledgeService._mmr_rerank(store, tenant_id, project_id, source_ids, vec, collapsed, top_k, mmr_lambda)
+        return collapsed[:top_k]
+
+    @staticmethod
+    async def _mmr_rerank(store, tenant_id, project_id, source_ids, query_vec, hits, top_k, lam):
+        """Maximal Marginal Relevance: greedily pick hits that are relevant to the query yet
+        dissimilar from those already picked, so the top_k isn't several near-duplicate chunks.
+        Needs each hit's embedding (fetched by id); degrades to the input order (relevance-only)
+        if embeddings can't be fetched, so it never breaks a search."""
+        lam = min(max(float(lam), 0.0), 1.0)
+        try:
+            ids = [h.id for h in hits]
+            dumped = await asyncio.to_thread(store.dump, _where(tenant_id, project_id, source_ids), ids=ids)
+            emb_by_id = {i: list(e) for i, e in zip(dumped["ids"], dumped["embeddings"], strict=False) if e is not None}
+        except Exception:  # noqa: BLE001 - can't fetch vectors -> relevance-only order
+            return hits
+        if not emb_by_id:
+            return hits
+        candidates = list(hits)
+        selected: list[Hit] = []
+        while candidates and len(selected) < top_k:
+            best, best_score = None, float("-inf")
+            for c in candidates:
+                emb = emb_by_id.get(c.id)
+                rel = cosine(query_vec, emb) if emb else float(c.score)
+                div = max((cosine(emb, emb_by_id[s.id]) for s in selected if emb and s.id in emb_by_id), default=0.0)
+                score = lam * rel - (1.0 - lam) * div
+                if score > best_score:
+                    best, best_score = c, score
+            selected.append(best)
+            candidates.remove(best)
+        return selected
 
     @staticmethod
     async def chunk_map(
@@ -763,6 +903,8 @@ class KnowledgeService:
 
     @staticmethod
     async def lookup(session, tenant_id, project_id, query, *, threshold=0.85, kind="any", kinds=None) -> dict | None:
+        """Single best Q&A match at/above `threshold` (default a HARD 0.85 = near-verbatim). The
+        primitive behind `deflect`; `top_qa` is the looser, advisory multi-hit path."""
         embedder = await KnowledgeService.embedder_for_project(session, tenant_id, project_id)
         q = await embedder.aembed_query(query)
         res = await KnowledgeService.top_qa(
@@ -770,3 +912,19 @@ class KnowledgeService:
             kind=kind, kinds=kinds, embedder=embedder, embedding=q,
         )
         return res[0] if res else None
+
+    @staticmethod
+    async def deflect(session, tenant_id, project_id, query, *, threshold=0.85, kinds=None) -> dict | None:
+        """High-confidence VERBATIM Q&A deflection for a channel/assistant to answer directly.
+
+        Returns the curated {question, answer, score, kind} ONLY when a Q&A question matches the
+        user's question very closely (>= `threshold`), so the approved answer can be returned
+        verbatim (skipping the LLM); None below the bar, so the normal grounded/advisory path
+        runs. This is the intended production entrypoint for the otherwise-unused high-threshold
+        deflection - unlike `top_qa`, which merely feeds an agent the closest FAQs as grounding.
+
+        NOTE: not yet wired into the channels/assistant reply paths (out of scope for this
+        change - those modules were not editable); until then Q&A remains advisory. Wiring a
+        caller here is a one-liner: `if (hit := await KnowledgeService.deflect(...)): reply(hit["answer"])`.
+        """
+        return await KnowledgeService.lookup(session, tenant_id, project_id, query, threshold=threshold, kinds=kinds)

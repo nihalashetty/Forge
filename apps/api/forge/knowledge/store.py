@@ -7,7 +7,8 @@ embedder), so Chroma never needs to download its default model - fully offline.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, replace
 
 from forge.config import settings
 
@@ -18,6 +19,11 @@ class Hit:
     text: str
     score: float
     metadata: dict
+    # In hybrid mode `score` is the normalized RRF fusion RANK (top≈1.0), NOT cosine, so a
+    # cosine floor (min_score) can't be applied to it. `vector_score` carries the underlying
+    # dense cosine similarity for the SAME chunk so callers can threshold the true scale (see
+    # nodes/rag.py). None when the chunk surfaced from BM25 only (no dense score to compare).
+    vector_score: float | None = None
 
 
 def _where(tenant_id: str, project_id: str, source_ids: list[str] | None) -> dict:
@@ -27,11 +33,46 @@ def _where(tenant_id: str, project_id: str, source_ids: list[str] | None) -> dic
     return {"$and": clauses} if len(clauses) > 1 else clauses[0]
 
 
+def citation_for(metadata: dict | None) -> str:
+    """A short human-readable citation for a retrieved chunk, built from the source
+    provenance now persisted in chunk metadata (see services.knowledge.ingest). Prefers a
+    crawled page's URL/title, then the source name, then the source URI. Empty string when
+    no provenance is available (legacy chunks ingested before provenance was recorded), so
+    callers can omit the citation rather than print a blank one."""
+    m = metadata or {}
+    page_url = m.get("page_url")
+    title = m.get("page_title") or m.get("source_name")
+    if page_url:
+        return f"{title} — {page_url}" if title and title != page_url else str(page_url)
+    name = m.get("source_name")
+    uri = m.get("source_uri")
+    if name and uri:
+        return f"{name} — {uri}"
+    return str(name or uri or "")
+
+
 # Client + collection handles are cached process-wide: PersistentClient construction
 # and get_or_create_collection cost ~9s cold / ~10ms warm each (measured), and were
 # previously paid on every store call.
 _CLIENT_CACHE: dict[str, object] = {}
 _COL_CACHE: dict[tuple[str, str], object] = {}
+
+# Per-collection write version, bumped on every upsert/delete. The BM25 cache stamps the
+# version it was built at and rebuilds when the collection changes, so a lexical index is
+# never served stale after an ingest/delete - and never rebuilt while the corpus is unchanged.
+_COL_VERSION: dict[tuple[str, str], int] = {}
+# Cached lexical index per (collection-key, where-clause): {key: (version, bm25, ids, by_id)}.
+# Building it (a full corpus scan + BM25 tokenization) previously ran on EVERY hybrid query
+# and on the event loop; now it is built once per corpus version and reused (see hybrid_query,
+# which itself runs off the loop via services.knowledge.search).
+_BM25_CACHE: dict[tuple, tuple] = {}
+# Max chunks pulled into the lexical corpus. Bounds the one-time build cost + cache memory;
+# lexical matches in chunks beyond this cap are invisible (rare - needs a huge single project).
+_CORPUS_CAP = 5000
+
+
+def _bump_version(key: tuple[str, str]) -> None:
+    _COL_VERSION[key] = _COL_VERSION.get(key, 0) + 1
 
 
 def _client_for(path: str):
@@ -58,11 +99,13 @@ class ChromaStore:
             _COL_CACHE[(path, collection)] = col
         self._client = _CLIENT_CACHE[path]
         self._col = col
+        self._key = (path, collection)
 
     def upsert(self, *, ids, embeddings, documents, metadatas) -> None:
         if not ids:
             return
         self._col.upsert(ids=ids, embeddings=embeddings, documents=documents, metadatas=metadatas)
+        _bump_version(self._key)  # invalidate any cached lexical index for this collection
 
     def query(self, *, embedding, tenant_id, project_id, top_k=5, source_ids=None) -> list[Hit]:
         return self.query_where(
@@ -97,32 +140,55 @@ class ChromaStore:
             for i in range(len(ids))
         ]
 
+    def _lexical_index(self, where: dict, corpus_cap: int) -> tuple:
+        """Cached (bm25, ids, by_id) lexical index for this collection + where-clause. The
+        corpus scan and BM25 tokenization are the expensive parts of a hybrid query; caching
+        them per corpus-version turns every subsequent hybrid query into a cheap `get_scores`
+        (rebuilt only after an ingest/delete bumps the version). by_id keeps chunk text +
+        metadata so a BM25-only hit still carries its content."""
+        from forge.knowledge.hybrid import build_bm25
+
+        version = _COL_VERSION.get(self._key, 0)
+        cache_key = (self._key, json.dumps(where, sort_keys=True))
+        cached = _BM25_CACHE.get(cache_key)
+        if cached is not None and cached[0] == version:
+            return cached[1], cached[2], cached[3]
+        corpus = self._get_documents(where, limit=corpus_cap)
+        built = build_bm25([(h.id, h.text) for h in corpus])
+        bm25, ids = built if built else (None, [])
+        by_id = {h.id: h for h in corpus}
+        _BM25_CACHE[cache_key] = (version, bm25, ids, by_id)
+        return bm25, ids, by_id
+
     def hybrid_query(
         self, *, embedding, query: str, tenant_id, project_id, top_k=5, source_ids=None,
-        candidate_pool: int | None = None, corpus_cap: int = 5000,
+        candidate_pool: int | None = None, corpus_cap: int = _CORPUS_CAP,
     ) -> list[Hit]:
         """Fuse dense (vector) and lexical (BM25) ranking via RRF, scoped by the SAME
         tenant/project/source where-clause as vector search. Degrades to vector-only when
-        BM25 is unavailable or the corpus has nothing to match. The returned score is the
-        fused rank normalized to (0, 1] (NOT cosine) so downstream min_score still filters."""
-        from forge.knowledge.hybrid import bm25_rank, rrf_fuse
+        BM25 is unavailable or the corpus has nothing to match. The returned `score` is the
+        fused rank normalized to (0, 1] (NOT cosine); each Hit ALSO carries `vector_score`, the
+        underlying dense cosine, so a caller's cosine floor thresholds the right scale."""
+        from forge.knowledge.hybrid import bm25_scores, rrf_fuse
 
         where = _where(tenant_id, project_id, source_ids)
         pool = candidate_pool or max(top_k * 5, 20)
         vec_hits = self.query_where(embedding=embedding, where=where, top_k=pool)
-        corpus = self._get_documents(where, limit=corpus_cap)
-        bm25_ids = bm25_rank(query, [(h.id, h.text) for h in corpus])
+        vec_cos = {h.id: h.score for h in vec_hits}  # dense cosine per chunk id
+        bm25, ids, by_id = self._lexical_index(where, corpus_cap)
+        bm25_ids = bm25_scores((bm25, ids), query)
         if not bm25_ids:
-            return vec_hits[:top_k]
+            return [replace(h, vector_score=h.score) for h in vec_hits[:top_k]]
 
         fused = rrf_fuse([h.id for h in vec_hits], bm25_ids)
-        by_id: dict[str, Hit] = {h.id: h for h in corpus}
+        by_id = dict(by_id)
         by_id.update({h.id: h for h in vec_hits})  # prefer the vector hit's text/metadata
         max_score = max(fused.values()) or 1.0
         ranked = sorted(fused, key=lambda i: fused[i], reverse=True)[:top_k]
         return [
             Hit(id=by_id[i].id, text=by_id[i].text,
-                score=round(fused[i] / max_score, 4), metadata=by_id[i].metadata)
+                score=round(fused[i] / max_score, 4), metadata=by_id[i].metadata,
+                vector_score=vec_cos.get(i))
             for i in ranked if i in by_id
         ]
 
@@ -152,6 +218,7 @@ class ChromaStore:
     def delete_ids(self, ids: list[str]) -> None:
         if ids:
             self._col.delete(ids=ids)
+            _bump_version(self._key)
 
     def delete_by_source(self, source_id: str, *, tenant_id: str | None = None, project_id: str | None = None) -> None:
         clauses: list[dict] = [{"source_id": {"$eq": source_id}}]
@@ -161,6 +228,7 @@ class ChromaStore:
             clauses.append({"project_id": {"$eq": project_id}})
         where = {"$and": clauses} if len(clauses) > 1 else clauses[0]
         self._col.delete(where=where)
+        _bump_version(self._key)
 
     def count(self, tenant_id: str, project_id: str) -> int:
         return self.count_where(_where(tenant_id, project_id, None))

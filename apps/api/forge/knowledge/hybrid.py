@@ -21,24 +21,44 @@ def tokenize(text: str) -> list[str]:
     return _TOKEN.findall((text or "").lower())
 
 
-def bm25_rank(query: str, docs: list[tuple[str, str]]) -> list[str]:
-    """Rank (id, text) candidates by BM25 against ``query``; ids best-first, positives
-    only. Returns [] when rank_bm25 is absent, the corpus is empty, or nothing matches."""
+def build_bm25(docs: list[tuple[str, str]]) -> tuple | None:
+    """Build a REUSABLE BM25 index over (id, text) docs -> (bm25, ids), or None when
+    rank_bm25 is absent / the corpus is empty / nothing tokenizes. Split out from
+    ``bm25_rank`` so the store can cache the index (the expensive part) per corpus version
+    and re-run only the cheap per-query scoring (see store.ChromaStore._lexical_index)."""
     if not docs:
-        return []
+        return None
     try:
         from rank_bm25 import BM25Okapi
     except Exception:  # noqa: BLE001 - knowledge extra not installed -> vector-only
-        return []
+        return None
     tokenized = [tokenize(t) for _, t in docs]
     if not any(tokenized):
+        return None
+    return BM25Okapi(tokenized), [d[0] for d in docs]
+
+
+def bm25_scores(index: tuple | None, query: str) -> list[str]:
+    """Score a prebuilt index (from ``build_bm25``) against ``query``; ids best-first,
+    positives only. [] when the index is empty or the query has no usable tokens."""
+    if not index:
+        return []
+    bm25, ids = index
+    if bm25 is None or not ids:
         return []
     q = tokenize(query)
     if not q:
         return []
-    scores = BM25Okapi(tokenized).get_scores(q)
-    ranked = sorted(range(len(docs)), key=lambda i: scores[i], reverse=True)
-    return [docs[i][0] for i in ranked if scores[i] > 0]
+    scores = bm25.get_scores(q)
+    ranked = sorted(range(len(ids)), key=lambda i: scores[i], reverse=True)
+    return [ids[i] for i in ranked if scores[i] > 0]
+
+
+def bm25_rank(query: str, docs: list[tuple[str, str]]) -> list[str]:
+    """Rank (id, text) candidates by BM25 against ``query``; ids best-first, positives
+    only. Returns [] when rank_bm25 is absent, the corpus is empty, or nothing matches.
+    Thin wrapper over build_bm25 + bm25_scores (kept for the one-shot / test call sites)."""
+    return bm25_scores(build_bm25(docs), query)
 
 
 def rrf_fuse(*ranked_lists: list[str], k: int = _RRF_K) -> dict[str, float]:
