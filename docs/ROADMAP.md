@@ -30,7 +30,7 @@ planned item are welcome - see [Contributing](../README.md#contributing).
 ### Knowledge & RAG
 - Ingestion from pasted text, URLs, site crawls, or file uploads; recursive / section / sentence / semantic chunking; folders.
 - **Local open-source embedder (fastembed) by default** - free and offline; provider embedders optional.
-- Vectors in Chroma (embedded local, shared-volume for a single worker); curated Q&A pairs with deflection; a search debugger; and re-embed health checks.
+- Vectors in Chroma (embedded, zero-infra) **or pgvector** (Postgres-backed, shared across workers) - selected by the `vector_backend` setting behind one interface; curated Q&A pairs with deflection; a search debugger; and re-embed health checks.
 - Grounded answers: calibrated relevance floor, hybrid cosine thresholding + rerank floor, chunk citations, crawl provenance, and MMR diversity.
 
 ### Deploy
@@ -49,11 +49,11 @@ planned item are welcome - see [Contributing](../README.md#contributing).
 - Roles (owner/admin/editor/viewer) plus **per-project RBAC** and **scoped, revocable API keys**; an audit log with pagination + export; per-tenant isolation (row-level security on Postgres).
 - **Project budgets** (USD / token caps) and **allowed-model** enforcement; scheduled **data-retention purge**.
 - A production hardening guard that refuses to boot with unsafe defaults; a worker dead-letter queue.
-- Zero-infra local stack (SQLite + embedded Chroma + in-process scheduler) that swaps - config-only - to Postgres, Redis + an arq worker, and a durable checkpointer. Docker Compose stack included.
+- Zero-infra local stack (SQLite + embedded Chroma + in-process scheduler) that swaps - config-only - to Postgres + pgvector, Redis + an arq worker, and a durable checkpointer. Docker Compose stack included.
 
 ## In progress / next
-- **pgvector-backed vector store** for shared, multi-worker production (Chroma ships today).
 - **Durable SSE reconnect** - decouple run execution from the connection with `Last-Event-ID` replay and reattach-to-a-running-run.
+- pgvector **ANN indexing** (HNSW per embedding dim) - the shared store ships with exact search today.
 - Canvas polish: auto-layout ("Tidy") and drag-from-palette.
 - Remote / Docker-isolated code sandbox (a subprocess sandbox ships today).
 - Multi-tenant MCP server hardening.

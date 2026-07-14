@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from forge.knowledge.embeddings import KNOWN_EMBEDDING_DIMS
-from forge.knowledge.store import ChromaStore
+from forge.knowledge.store import make_store
 from forge.models import (
     Agent,
     AuthProvider,
@@ -144,7 +144,7 @@ class ProjectService:
         for dim in sorted(KNOWN_EMBEDDING_DIMS):
             for prefix in ("forge_kb", "forge_qa", "forge_mem", "forge_cache"):
                 try:
-                    ChromaStore(collection=f"{prefix}_{dim}")._col.delete(where=where)
+                    make_store(collection=f"{prefix}_{dim}").delete_where(where)
                 except Exception:  # noqa: BLE001 - best-effort vector cleanup
                     pass
 

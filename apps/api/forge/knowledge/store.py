@@ -75,6 +75,64 @@ def _bump_version(key: tuple[str, str]) -> None:
     _COL_VERSION[key] = _COL_VERSION.get(key, 0) + 1
 
 
+# --- Backend-agnostic hybrid search --------------------------------------------------------
+# The lexical (BM25) index build + the RRF fusion are identical regardless of which vector
+# backend supplies the dense hits and the corpus scan, so they live here as free functions
+# operating on any store that exposes `_key`, `query_where`, and `_get_documents`. Both
+# ChromaStore and PgVectorStore delegate to them (DRY + a single caching path).
+
+
+def _build_lexical_index(store, where: dict, corpus_cap: int) -> tuple:
+    """Cached (bm25, ids, by_id) lexical index for `store`'s collection + where-clause. The
+    corpus scan and BM25 tokenization are the expensive parts of a hybrid query; caching them
+    per corpus-version turns every subsequent hybrid query into a cheap `get_scores` (rebuilt
+    only after an ingest/delete bumps the version). by_id keeps chunk text + metadata so a
+    BM25-only hit still carries its content."""
+    from forge.knowledge.hybrid import build_bm25
+
+    version = _COL_VERSION.get(store._key, 0)
+    cache_key = (store._key, json.dumps(where, sort_keys=True))
+    cached = _BM25_CACHE.get(cache_key)
+    if cached is not None and cached[0] == version:
+        return cached[1], cached[2], cached[3]
+    corpus = store._get_documents(where, limit=corpus_cap)
+    built = build_bm25([(h.id, h.text) for h in corpus])
+    bm25, ids = built if built else (None, [])
+    by_id = {h.id: h for h in corpus}
+    _BM25_CACHE[cache_key] = (version, bm25, ids, by_id)
+    return bm25, ids, by_id
+
+
+def _hybrid_fuse(store, *, embedding, query: str, where: dict, top_k: int,
+                 candidate_pool: int | None, corpus_cap: int) -> list[Hit]:
+    """Fuse dense (vector) and lexical (BM25) ranking via RRF over `store`'s where-scoped
+    corpus. Degrades to vector-only when BM25 is unavailable or the corpus has nothing to
+    match. The returned `score` is the fused rank normalized to (0, 1] (NOT cosine); each Hit
+    ALSO carries `vector_score`, the underlying dense cosine, so a caller's cosine floor
+    thresholds the right scale."""
+    from forge.knowledge.hybrid import bm25_scores, rrf_fuse
+
+    pool = candidate_pool or max(top_k * 5, 20)
+    vec_hits = store.query_where(embedding=embedding, where=where, top_k=pool)
+    vec_cos = {h.id: h.score for h in vec_hits}  # dense cosine per chunk id
+    bm25, ids, by_id = _build_lexical_index(store, where, corpus_cap)
+    bm25_ids = bm25_scores((bm25, ids), query)
+    if not bm25_ids:
+        return [replace(h, vector_score=h.score) for h in vec_hits[:top_k]]
+
+    fused = rrf_fuse([h.id for h in vec_hits], bm25_ids)
+    by_id = dict(by_id)
+    by_id.update({h.id: h for h in vec_hits})  # prefer the vector hit's text/metadata
+    max_score = max(fused.values()) or 1.0
+    ranked = sorted(fused, key=lambda i: fused[i], reverse=True)[:top_k]
+    return [
+        Hit(id=by_id[i].id, text=by_id[i].text,
+            score=round(fused[i] / max_score, 4), metadata=by_id[i].metadata,
+            vector_score=vec_cos.get(i))
+        for i in ranked if i in by_id
+    ]
+
+
 def _client_for(path: str):
     client = _CLIENT_CACHE.get(path)
     if client is None:
@@ -140,57 +198,16 @@ class ChromaStore:
             for i in range(len(ids))
         ]
 
-    def _lexical_index(self, where: dict, corpus_cap: int) -> tuple:
-        """Cached (bm25, ids, by_id) lexical index for this collection + where-clause. The
-        corpus scan and BM25 tokenization are the expensive parts of a hybrid query; caching
-        them per corpus-version turns every subsequent hybrid query into a cheap `get_scores`
-        (rebuilt only after an ingest/delete bumps the version). by_id keeps chunk text +
-        metadata so a BM25-only hit still carries its content."""
-        from forge.knowledge.hybrid import build_bm25
-
-        version = _COL_VERSION.get(self._key, 0)
-        cache_key = (self._key, json.dumps(where, sort_keys=True))
-        cached = _BM25_CACHE.get(cache_key)
-        if cached is not None and cached[0] == version:
-            return cached[1], cached[2], cached[3]
-        corpus = self._get_documents(where, limit=corpus_cap)
-        built = build_bm25([(h.id, h.text) for h in corpus])
-        bm25, ids = built if built else (None, [])
-        by_id = {h.id: h for h in corpus}
-        _BM25_CACHE[cache_key] = (version, bm25, ids, by_id)
-        return bm25, ids, by_id
-
     def hybrid_query(
         self, *, embedding, query: str, tenant_id, project_id, top_k=5, source_ids=None,
         candidate_pool: int | None = None, corpus_cap: int = _CORPUS_CAP,
     ) -> list[Hit]:
         """Fuse dense (vector) and lexical (BM25) ranking via RRF, scoped by the SAME
-        tenant/project/source where-clause as vector search. Degrades to vector-only when
-        BM25 is unavailable or the corpus has nothing to match. The returned `score` is the
-        fused rank normalized to (0, 1] (NOT cosine); each Hit ALSO carries `vector_score`, the
-        underlying dense cosine, so a caller's cosine floor thresholds the right scale."""
-        from forge.knowledge.hybrid import bm25_scores, rrf_fuse
-
-        where = _where(tenant_id, project_id, source_ids)
-        pool = candidate_pool or max(top_k * 5, 20)
-        vec_hits = self.query_where(embedding=embedding, where=where, top_k=pool)
-        vec_cos = {h.id: h.score for h in vec_hits}  # dense cosine per chunk id
-        bm25, ids, by_id = self._lexical_index(where, corpus_cap)
-        bm25_ids = bm25_scores((bm25, ids), query)
-        if not bm25_ids:
-            return [replace(h, vector_score=h.score) for h in vec_hits[:top_k]]
-
-        fused = rrf_fuse([h.id for h in vec_hits], bm25_ids)
-        by_id = dict(by_id)
-        by_id.update({h.id: h for h in vec_hits})  # prefer the vector hit's text/metadata
-        max_score = max(fused.values()) or 1.0
-        ranked = sorted(fused, key=lambda i: fused[i], reverse=True)[:top_k]
-        return [
-            Hit(id=by_id[i].id, text=by_id[i].text,
-                score=round(fused[i] / max_score, 4), metadata=by_id[i].metadata,
-                vector_score=vec_cos.get(i))
-            for i in ranked if i in by_id
-        ]
+        tenant/project/source where-clause as vector search (see module `_hybrid_fuse`)."""
+        return _hybrid_fuse(
+            self, embedding=embedding, query=query, where=_where(tenant_id, project_id, source_ids),
+            top_k=top_k, candidate_pool=candidate_pool, corpus_cap=corpus_cap,
+        )
 
     def dump(self, where: dict, limit: int | None = None, *, ids: list[str] | None = None) -> dict:
         """Raw rows INCLUDING their embedding vectors - the input to the chunk map's
@@ -227,6 +244,12 @@ class ChromaStore:
         if project_id:
             clauses.append({"project_id": {"$eq": project_id}})
         where = {"$and": clauses} if len(clauses) > 1 else clauses[0]
+        self._col.delete(where=where)
+        _bump_version(self._key)
+
+    def delete_where(self, where: dict) -> None:
+        """Delete every chunk matching an arbitrary where-clause (used by project deletion to
+        sweep a tenant/project's vectors). Public so callers never poke at `._col` directly."""
         self._col.delete(where=where)
         _bump_version(self._key)
 
@@ -277,3 +300,15 @@ class ChromaStore:
             return list(self._col.get(where=where).get("ids", []))
         except Exception:  # noqa: BLE001 - collection empty / not ready
             return []
+
+
+def make_store(collection: str = "forge_kb"):
+    """Return the configured embedding store for `collection`, keyed by embedder dim by the
+    caller (e.g. forge_kb_384). `settings.vector_backend` selects the backend: "chroma"
+    (embedded, single-writer) or "pgvector" (Postgres-backed, shared across workers). Both
+    expose the same interface, so call sites are backend-agnostic."""
+    if settings.vector_backend == "pgvector":
+        from forge.knowledge.pgvector_store import PgVectorStore
+
+        return PgVectorStore(collection=collection)
+    return ChromaStore(collection=collection)

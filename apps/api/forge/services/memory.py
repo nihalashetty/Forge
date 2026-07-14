@@ -10,15 +10,15 @@ from __future__ import annotations
 
 from sqlalchemy import select
 
-from forge.knowledge.store import ChromaStore
+from forge.knowledge.store import make_store
 from forge.models import Memory
 from forge.services.knowledge import KnowledgeService
 
 
 class MemoryService:
     @staticmethod
-    def _store(embedder) -> ChromaStore:
-        return ChromaStore(collection=f"forge_mem_{embedder.dim}")
+    def _store(embedder):
+        return make_store(collection=f"forge_mem_{embedder.dim}")
 
     @staticmethod
     async def remember(session, tenant_id: str, project_id: str, text: str, *, scope: str = "default", kind: str = "note") -> Memory:

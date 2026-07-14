@@ -25,7 +25,7 @@ def build_bm25(docs: list[tuple[str, str]]) -> tuple | None:
     """Build a REUSABLE BM25 index over (id, text) docs -> (bm25, ids), or None when
     rank_bm25 is absent / the corpus is empty / nothing tokenizes. Split out from
     ``bm25_rank`` so the store can cache the index (the expensive part) per corpus version
-    and re-run only the cheap per-query scoring (see store.ChromaStore._lexical_index)."""
+    and re-run only the cheap per-query scoring (see store._build_lexical_index)."""
     if not docs:
         return None
     try:

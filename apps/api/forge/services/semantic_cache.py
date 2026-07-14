@@ -12,7 +12,7 @@ import hashlib
 import time
 
 from forge.config import settings
-from forge.knowledge.store import ChromaStore
+from forge.knowledge.store import make_store
 from forge.services.knowledge import KnowledgeService
 
 # Cache defaults (env-overridable: FORGE_SEMANTIC_CACHE_THRESHOLD / _TTL_SECONDS). Threshold is
@@ -24,8 +24,8 @@ CACHE_DEFAULT_TTL_SECONDS = settings.semantic_cache_ttl_seconds
 
 class SemanticCacheService:
     @staticmethod
-    def _store(embedder) -> ChromaStore:
-        return ChromaStore(collection=f"forge_cache_{embedder.dim}")
+    def _store(embedder):
+        return make_store(collection=f"forge_cache_{embedder.dim}")
 
     @staticmethod
     def _id(tenant_id: str, project_id: str, scope: str, question: str) -> str:

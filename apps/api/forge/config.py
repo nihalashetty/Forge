@@ -95,7 +95,13 @@ class Settings(BaseSettings):
         default_factory=lambda: (_DEFAULT_DATA_DIR / "checkpoints.sqlite").as_posix()
     )
 
-    # --- Vectors (user-mandated: Chroma; embedded persistent client) ---
+    # --- Vectors ---
+    # Backend for the embedding store. "chroma" (default) is the embedded persistent client -
+    # zero-infra, but single-writer (one process owns the on-disk index), so it does NOT share
+    # across workers. "pgvector" stores vectors in Postgres (reusing `database_url`) behind the
+    # same interface, so every worker reads/writes the same vectors - the production choice.
+    # pgvector requires Postgres with the `vector` extension available.
+    vector_backend: str = Field(default="chroma")  # chroma | pgvector
     chroma_path: str = Field(default_factory=lambda: (_DEFAULT_DATA_DIR / "chroma").as_posix())
     # Cache dir for the local fastembed embedder's model files. Set to a baked path in the
     # Docker image (see apps/api/Dockerfile) so the default model ships with the image - no

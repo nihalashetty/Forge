@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from forge.knowledge.embeddings import KNOWN_EMBEDDING_DIMS, cosine, resolve_embedder
 from forge.knowledge.splitter import chunk_text
-from forge.knowledge.store import ChromaStore, Hit, _where
+from forge.knowledge.store import Hit, _where, make_store
 from forge.models import KbSource, Project, QaPair
 from forge.secrets.store import SecretStore
 from forge.util.http import shared_async_client
@@ -147,8 +147,8 @@ class KnowledgeService:
         return cfg.get("rag_defaults") or {}
 
     @staticmethod
-    def _store(embedder) -> ChromaStore:
-        return ChromaStore(collection=f"forge_kb_{embedder.dim}")
+    def _store(embedder):
+        return make_store(collection=f"forge_kb_{embedder.dim}")
 
     @staticmethod
     def _collapse_parents(hits: list[Hit]) -> list[Hit]:
@@ -207,10 +207,10 @@ class KnowledgeService:
         }
 
     @staticmethod
-    def _qa_store(embedder) -> ChromaStore:
+    def _qa_store(embedder):
         # Q&A pairs live in their OWN dim-keyed collection so semantic match is a top-k
         # vector query (not an O(n) Python cosine over every row).
-        return ChromaStore(collection=f"forge_qa_{embedder.dim}")
+        return make_store(collection=f"forge_qa_{embedder.dim}")
 
     @staticmethod
     def _qa_where(tenant_id: str, project_id: str, kinds: list[str] | None, kind: str = "any") -> dict:
@@ -487,7 +487,7 @@ class KnowledgeService:
             pass
         for collection in _dim_collections("forge_kb"):
             try:
-                ChromaStore(collection=collection).delete_by_source(src.id, tenant_id=src.tenant_id, project_id=src.project_id)
+                make_store(collection=collection).delete_by_source(src.id, tenant_id=src.tenant_id, project_id=src.project_id)
             except Exception:  # noqa: BLE001
                 pass
         return await KnowledgeService.ingest(session, src)
@@ -515,7 +515,7 @@ class KnowledgeService:
     @staticmethod
     async def delete_source(session, src: KbSource) -> None:
         # Vectors are stored in a dimension-keyed collection (forge_kb_<dim>), so the
-        # delete MUST target that same collection - a bare ChromaStore() hits the
+        # delete MUST target that same collection - a bare make_store() hits the
         # default `forge_kb` collection and silently leaves the real chunks behind
         # (they keep showing up in search). Resolve the project's embedder to get the
         # right collection; also sweep the other known collection as a safety net in
@@ -527,7 +527,7 @@ class KnowledgeService:
             pass
         for collection in _dim_collections("forge_kb"):
             try:
-                ChromaStore(collection=collection).delete_by_source(src.id, tenant_id=src.tenant_id, project_id=src.project_id)
+                make_store(collection=collection).delete_by_source(src.id, tenant_id=src.tenant_id, project_id=src.project_id)
             except Exception:  # noqa: BLE001
                 pass
         await session.delete(src)
@@ -847,7 +847,7 @@ class KnowledgeService:
         # drift from the model table.
         for collection in _dim_collections("forge_qa"):
             try:
-                ChromaStore(collection=collection).delete_ids([qa.id])
+                make_store(collection=collection).delete_ids([qa.id])
             except Exception:  # noqa: BLE001
                 pass
         await session.delete(qa)
