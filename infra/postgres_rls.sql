@@ -4,8 +4,9 @@
 -- makes that a DB-level guarantee: even a query that forgets the filter returns only the
 -- current tenant's rows. Apply this AFTER `alembic upgrade head` on a Postgres database.
 --
--- NOTE: the platform-hardening tables (api_keys, project_members, user_security) are new -
--- create their Alembic migration before applying this file.
+-- NOTE: the version-history, eval-history, and platform-hardening tables (entity_versions,
+-- eval_runs, eval_results, api_keys, project_members, user_security) are created by Alembic
+-- migration 0004 - run `alembic upgrade head` before applying this file.
 --
 -- Runtime: the application must set the tenant for each connection/transaction, e.g.
 --   SET LOCAL app.current_tenant = '<tenant-uuid>';
@@ -19,6 +20,7 @@ BEGIN
     'users','projects','workflows','tools','agents','auth_providers','secrets',
     'kb_sources','qa_pairs','mcp_clients','threads','runs','traces','spans',
     'triggers','channels','handoff_requests','datasets','memories',
+    'entity_versions','eval_runs','eval_results',
     'api_keys','project_members','user_security'
   ]
   LOOP
