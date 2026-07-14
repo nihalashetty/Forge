@@ -26,6 +26,44 @@ from sqlalchemy import func, select
 from forge.models import Project, Run
 
 
+def collect_workflow_models(executable: dict | None) -> set[str]:
+    """Every chat-model ref declared in a workflow's nodes - agent/llm/classifier `config.model`
+    plus any nested middleware `model`/`models` (model_fallback, summarization, tool-selector).
+    Only these node types carry a `model` key in the schema; embedders live under different keys
+    (`embedding_model`), so they're never collected. Backs the publish-time allow-list check."""
+    models: set[str] = set()
+
+    def walk(obj: object) -> None:
+        if isinstance(obj, dict):
+            m = obj.get("model")
+            if isinstance(m, str) and m:
+                models.add(m)
+            for x in obj.get("models") or []:
+                if isinstance(x, str) and x:
+                    models.add(x)
+            for v in obj.values():
+                walk(v)
+        elif isinstance(obj, list):
+            for v in obj:
+                walk(v)
+
+    for node in (executable or {}).get("nodes") or []:
+        if isinstance(node, dict):
+            walk(node.get("config"))
+    return models
+
+
+def disallowed_workflow_models(project_config: dict | None, executable: dict | None) -> list[str]:
+    """The workflow's chat models that the project's `allowed_models` forbids (sorted). Empty
+    when the project sets no allow-list (no-op) or every model is permitted - so the publish
+    route can enforce it unconditionally. Mirrors enforce_project_budget's per-run model check
+    across ALL per-node models at publish time."""
+    allowed = (project_config or {}).get("allowed_models") or []
+    if not allowed:
+        return []
+    return sorted(m for m in collect_workflow_models(executable) if m not in allowed)
+
+
 class BudgetError(Exception):
     def __init__(self, message: str) -> None:
         super().__init__(message)

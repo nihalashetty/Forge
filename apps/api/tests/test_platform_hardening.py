@@ -156,6 +156,31 @@ async def test_project_budget_and_allowed_models():
             await enforce_project_budget(s, "tb", pid, model="openai:gpt-4o")
 
 
+def test_disallowed_workflow_models_at_publish():
+    """Per-node allowed_models validation (item 6): every chat model in a workflow's nodes is
+    checked at publish, mirroring the admission-time single-model check across all nodes."""
+    from forge.services.budget import collect_workflow_models, disallowed_workflow_models
+
+    executable = {
+        "nodes": [
+            {"id": "a", "type": "agent", "config": {"model": "openai:gpt-4o", "middleware": [
+                {"kind": "model_fallback", "config": {"models": ["anthropic:claude", "openai:gpt-4o"]}},
+            ]}},
+            {"id": "l", "type": "llm", "config": {"model": "openai:gpt-4o"}},
+            {"id": "r", "type": "retrieval", "config": {"embedding_model": "fastembed:bge"}},
+            {"id": "e", "type": "end", "config": {}},
+        ]
+    }
+    # agent/llm/classifier + nested middleware models are collected; the embedder is NOT.
+    assert collect_workflow_models(executable) == {"openai:gpt-4o", "anthropic:claude"}
+    # no allow-list => no-op (publish always allowed)
+    assert disallowed_workflow_models({}, executable) == []
+    # allow-list forbids the fallback's anthropic model
+    assert disallowed_workflow_models({"allowed_models": ["openai:gpt-4o"]}, executable) == ["anthropic:claude"]
+    # a fully-covered allow-list passes
+    assert disallowed_workflow_models({"allowed_models": ["openai:gpt-4o", "anthropic:claude"]}, executable) == []
+
+
 # --- a: auth endpoint throttling --------------------------------------------------------
 
 async def test_login_is_throttled_per_email(monkeypatch):

@@ -118,6 +118,23 @@ async def publish_workflow(
     result = WorkflowService.validate(wf.executable or {})
     if not result.valid:
         raise HTTPException(422, detail={"errors": result.errors})
+    # Governance: reject publishing a workflow that uses a chat model the project's
+    # allowed_models forbids. Admission (services/budget.enforce_project_budget) validates the
+    # run's model at runtime; this catches EVERY per-node model before the workflow goes live.
+    # No-op unless the project configures an allow-list.
+    from sqlalchemy import select
+
+    from forge.models import Project
+    from forge.services.budget import disallowed_workflow_models
+
+    proj = (await session.execute(
+        select(Project).where(Project.tenant_id == tenant_id, Project.id == project_id)
+    )).scalar_one_or_none()
+    bad = disallowed_workflow_models(proj.config if proj else None, wf.executable or {})
+    if bad:
+        raise HTTPException(422, detail={"errors": [
+            f"model {m!r} is not in this project's allowed_models" for m in bad
+        ]})
     wf.status = "active"
     wf.active_version = (wf.active_version or 1) + 1
     await session.commit()
