@@ -182,6 +182,10 @@ class Settings(BaseSettings):
     # Auto-attach AnthropicPromptCachingMiddleware to Anthropic-model agents (caches the
     # static system-prompt/tools prefix; large multi-turn cost saving). Off => opt-in only.
     default_anthropic_prompt_caching: bool = True
+    # Minimum cosine similarity for a long-term-memory `recall` hit to be returned. 0 = off
+    # (return the top_k nearest regardless of distance). Raise (~0.3-0.5 for the default BGE
+    # embedder) to stop unrelated memories polluting the prompt.
+    memory_recall_min_score: float = 0.0
 
     # --- Models ---
     default_model: str = "fake:echo"  # offline-safe default; set a real provider model in prod
@@ -192,6 +196,12 @@ class Settings(BaseSettings):
     # at the end; fastest, but HITL interrupts mid-run rely on per-step checkpoints,
     # so keep async/sync when using human_input nodes).
     run_durability: str = "async"
+    # Floor for LangGraph's per-run superstep budget (recursion_limit). LangGraph's own
+    # default is 25, which a Loop node (each iteration ~= loop->router->body, ~3 supersteps)
+    # blows past after only a handful of iterations, raising GraphRecursionError mid-run. The
+    # actual limit used is max(this floor, a value derived from workflow size + loop max_iter),
+    # so large graphs/loops scale automatically. Raise the floor for very deep workflows.
+    graph_recursion_limit: int = 100
 
     # --- Observability (OpenTelemetry export; point at an OTLP collector or Langfuse) ---
     otel_enabled: bool = False
@@ -228,6 +238,13 @@ class Settings(BaseSettings):
     # Seed demo data (projects/tools/auth) on first run. Off => start from an empty
     # workspace and create projects yourself. Set FORGE_SEED_DEMO=true to populate.
     seed_demo: bool = False
+
+    # --- Versioning (entity change history) ---
+    # How many recent versions to retain per entity (workflows, agents, tools, components,
+    # auth providers, knowledge sources, project settings). Older versions are pruned on each
+    # new snapshot. 0 = keep all (no pruning). Overridable per-tenant via tenant.settings
+    # ("version_history_limit"); exposed in the console Settings > Versioning panel.
+    version_history_limit: int = 5
 
     # --- CORS ---
     cors_origins: Annotated[list[str], NoDecode] = ["http://localhost:3000", "http://127.0.0.1:3000"]

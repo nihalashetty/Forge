@@ -139,6 +139,24 @@ def _internal_message_nodes(nodes: list) -> set[str]:
     return out
 
 
+def _recursion_limit(executable: dict | None) -> int:
+    """LangGraph superstep budget for a run. LangGraph defaults to 25, which a Loop node
+    (each iteration spends ~3 supersteps: loop -> router -> body -> back) exceeds after only
+    a few iterations, raising GraphRecursionError mid-run - so the Loop node effectively broke
+    past ~8 iterations on every non-assistant run path. Derive a budget from graph size plus
+    each loop's max_iter, floored by settings.graph_recursion_limit, so large workflows scale
+    automatically and small ones keep safe headroom."""
+    ex = executable or {}
+    nodes = [n for n in (ex.get("nodes") or []) if isinstance(n, dict)]
+    loop_iters = sum(
+        int((n.get("config") or {}).get("max_iter", 10) or 10)
+        for n in nodes
+        if n.get("type") == "loop"
+    )
+    computed = (len(nodes) + 1) * 2 + loop_iters * 3 + 10
+    return max(int(settings.graph_recursion_limit or 0), computed)
+
+
 class RunService:
     def __init__(self, checkpointer: Any = None, store: Any = None) -> None:
         self.checkpointer = checkpointer
@@ -255,6 +273,7 @@ class RunService:
             config: dict[str, Any] = {
                 "configurable": {"thread_id": thread.lg_thread_id},
                 "callbacks": [tracer],
+                "recursion_limit": _recursion_limit(wf.executable),
             }
             # finalized => we reached a terminal state (done/interrupt/error) and persisted it,
             # so the `finally` must NOT also mark the run canceled. It stays False if the
@@ -418,7 +437,7 @@ class RunService:
 
                 checkpointer = InMemorySaver()
             tracer = ForgeTracer()
-            config = {"configurable": {"thread_id": thread.lg_thread_id}, "callbacks": [tracer]}
+            config = {"configurable": {"thread_id": thread.lg_thread_id}, "callbacks": [tracer], "recursion_limit": _recursion_limit(wf.executable)}
             tlock = await thread_locks.acquire_cm(thread.lg_thread_id)
             try:
                 async with tenant_concurrency.slot(tenant_id, settings.max_concurrent_runs_per_tenant), tlock:
@@ -507,7 +526,7 @@ class RunService:
             thread = (await session.execute(select(Thread).where(Thread.id == run.thread_id))).scalar_one()
 
             tracer = ForgeTracer()
-            config = {"configurable": {"thread_id": thread.lg_thread_id}, "callbacks": [tracer]}
+            config = {"configurable": {"thread_id": thread.lg_thread_id}, "callbacks": [tracer], "recursion_limit": _recursion_limit(wf.executable)}
             tlock = await thread_locks.acquire_cm(thread.lg_thread_id)
             try:
                 async with tenant_concurrency.slot(tenant_id, settings.max_concurrent_runs_per_tenant), tlock:

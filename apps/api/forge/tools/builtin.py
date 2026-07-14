@@ -47,6 +47,17 @@ class _FetchArgs(BaseModel):
     url: str = Field(description="URL to fetch")
 
 
+def _memory_scope(ctx) -> str:
+    """Per-end-user long-term-memory partition. Without this every end user of a deployed
+    multi-user workflow shares one project-global memory pool, so user A's remembered
+    facts (preferences, account details) are recalled for user B - a privacy leak. Falls
+    back to 'default' for anonymous / internal (operator) runs, preserving prior behavior
+    for single-user setups."""
+    eu = getattr(ctx, "end_user", None) or {}
+    uid = str(eu.get("id") or "").strip()
+    return f"user:{uid}" if uid else "default"
+
+
 def build_builtin_tool(cfg: dict, ctx):
     builtin = cfg["builtin"]
     name = cfg.get("name", builtin)
@@ -131,7 +142,7 @@ def build_builtin_tool(cfg: dict, ctx):
             from forge.services.memory import MemoryService
 
             async with SessionLocal() as s:
-                await MemoryService.remember(s, ctx.tenant_id, ctx.project_id, text)
+                await MemoryService.remember(s, ctx.tenant_id, ctx.project_id, text, scope=_memory_scope(ctx))
             return "Saved to long-term memory."
 
         return StructuredTool.from_function(
@@ -149,7 +160,7 @@ def build_builtin_tool(cfg: dict, ctx):
             from forge.services.memory import MemoryService
 
             async with SessionLocal() as s:
-                mems = await MemoryService.recall(s, ctx.tenant_id, ctx.project_id, query, top_k=5)
+                mems = await MemoryService.recall(s, ctx.tenant_id, ctx.project_id, query, scope=_memory_scope(ctx), top_k=5)
             return "\n".join(f"- {m}" for m in mems) if mems else "No relevant memories found."
 
         return StructuredTool.from_function(
