@@ -19,6 +19,7 @@ from typing import Any
 from langchain.tools import ToolRuntime
 from langchain_core.tools import StructuredTool
 
+from forge.tools.materialize import entitlement_denial
 from forge.tools.rest import build_args_schema_from_jsonschema
 
 # Inline placeholder the agent copies into its reply to position a rendered component (the
@@ -65,6 +66,12 @@ def build_component_tool(cfg: dict, ctx) -> Any:
             validator = None
 
     async def _call(runtime: ToolRuntime = None, **kwargs):  # type: ignore[assignment]
+        # Server-side entitlement gate (Feature 3b), same guarantee as tools: deny independently
+        # of the LLM if the run's end_user lacks the entitlements this component declares, so a
+        # gated widget can't be rendered by talking the model into calling it.
+        denial = entitlement_denial(cfg, ctx)
+        if denial:
+            return denial
         # Drop None props so optional fields fall back to the template's own defaults instead
         # of rendering as null (audit L1).
         props = {k: v for k, v in kwargs.items() if v is not None}

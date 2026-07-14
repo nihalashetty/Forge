@@ -9,9 +9,19 @@ import httpx
 from langchain.tools import ToolRuntime
 
 from forge.tools.projection import project_response
-from forge.tools.rest import _build_structured_tool, _redirect_info, _tool_return, build_args_schema
+from forge.tools.rest import (
+    _build_structured_tool,
+    _read_body_capped,
+    _redirect_info,
+    _tool_return,
+    build_args_schema,
+)
 from forge.util.http import select_client
 from forge.util.ssrf import EgressPolicy, guarded_request, validate_url
+
+
+class GraphQLToolError(RuntimeError):
+    """A GraphQL response that transported fine (HTTP 200) but carried application errors."""
 
 
 async def execute_graphql(
@@ -38,9 +48,14 @@ async def execute_graphql(
     # list (select_client enforces the gate); guarded_request re-applies it per redirect hop. An
     # explicit `client` (tests) always wins.
     skip_verify = bool(cfg.get("tls_skip_verify"))
+    # A GraphQL request may name the operation to run when the document defines several
+    # (operationName); include it only when configured.
+    payload: dict[str, Any] = {"query": cfg["query"], "variables": variables}
+    if cfg.get("operation_name"):
+        payload["operationName"] = cfg["operation_name"]
     kw = dict(
         headers=headers or None, params=params or None, cookies=cookies or None,
-        json={"query": cfg["query"], "variables": variables}, timeout=cfg.get("timeout_seconds", 30),
+        json=payload, timeout=cfg.get("timeout_seconds", 30),
     )
     t0 = time.monotonic()
     try:
@@ -59,12 +74,18 @@ async def execute_graphql(
             raw: Any = r.text
         else:
             r.raise_for_status()
-            try:
-                raw = r.json()
-            except Exception:  # noqa: BLE001 - non-JSON body (e.g. a followed redirect to an HTML page)
-                raw = r.text
+            raw = _read_body_capped(r)  # shared size-guarded JSON/text read (rest.py)
     finally:
         latency = int((time.monotonic() - t0) * 1000)
+    # GraphQL signals failure in-band: HTTP 200 with a non-empty `errors` array. A response that
+    # produced ONLY errors (data null/absent) is a failure, not success - surfacing the empty body
+    # as a normal result would silently hide the error from the model/operator. A PARTIAL result
+    # (data present alongside errors) is valid GraphQL and passes through unchanged.
+    if isinstance(raw, dict) and raw.get("errors") and raw.get("data") is None:
+        messages = "; ".join(
+            str(e.get("message", e)) if isinstance(e, dict) else str(e) for e in raw["errors"][:5]
+        )
+        raise GraphQLToolError(f"GraphQL query returned errors: {messages}")
     return {
         "raw": raw, "projected": project_response(raw, cfg.get("response")), "status": status,
         "latency_ms": latency, "final_url": str(r.url), "redirect": _redirect_info(r, follow),

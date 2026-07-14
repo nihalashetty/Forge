@@ -11,9 +11,10 @@ This is why the record carries the tool `name`: a later NON-REST tool call in th
 same task could otherwise observe a stale REST record left in the context. The
 tracer only applies a record whose name matches the span it is closing.
 
-Redaction and clipping are policy: `trace_tool_io_redact` masks sensitive
-header/cookie values; `trace_tool_io_max_chars` bounds each stored field so a big
-body can't bloat the `spans` table.
+Redaction and clipping are policy: sensitive header/cookie values are masked when
+`trace_tool_io_redact` is set OR the install is production (see `_redaction_enabled`),
+so a default prod deploy never persists live credentials; `trace_tool_io_max_chars`
+bounds each stored field so a big body can't bloat the `spans` table.
 """
 
 from __future__ import annotations
@@ -50,6 +51,17 @@ def set_tool_io(name: str, *, request: dict, response: dict) -> None:
     _TOOL_IO.set({"name": name, "input": request, "output": response})
 
 
+def _redaction_enabled() -> bool:
+    """Whether sensitive header/cookie/body values are masked before they land in a span.
+
+    Redact when the operator explicitly opted in (`trace_tool_io_redact`) OR whenever this is a
+    production install - so a DEFAULT production deploy (flag still false) never persists live
+    cookies / bearer tokens / CSRF / PII into the `spans` table. Dev/test keep values visible for
+    debugging unless the flag is set.
+    """
+    return bool(settings.trace_tool_io_redact or settings.is_production)
+
+
 def _is_sensitive(key: str) -> bool:
     k = (key or "").lower()
     return any(s in k for s in _SENSITIVE)
@@ -69,7 +81,7 @@ def redact_headers(headers: dict | None, *, mask_all: bool = False) -> dict:
     """
     if not headers:
         return {}
-    if not settings.trace_tool_io_redact:
+    if not _redaction_enabled():
         return {str(k): v for k, v in headers.items()}
     return {str(k): (_mask(v) if (mask_all or _is_sensitive(str(k))) else v) for k, v in headers.items()}
 

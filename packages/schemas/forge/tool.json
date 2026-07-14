@@ -7,7 +7,7 @@
     "name": { "$ref": "forge/common#/$defs/Identifier", "x-ui": { "section": "Identity", "modelView": false } },
     "display_name": { "type": "string", "x-ui": { "section": "Identity", "modelView": false, "help": "Human-readable name shown in chat/streaming activity (e.g. \"Quote pricing grid\"). The model still calls the tool by its identifier above; leave blank to show the identifier." } },
     "description": { "type": "string", "x-ui": { "section": "Identity", "widget": "textarea", "modelView": true, "help": "This is what the model reads to decide when to use the tool." } },
-    "kind": { "type": "string", "enum": ["rest_api", "graphql", "code", "sql", "builtin"], "x-ui": { "section": "Identity", "widget": "segmented" } },
+    "kind": { "type": "string", "enum": ["rest_api", "graphql", "code", "sql", "builtin", "mcp"], "x-ui": { "section": "Identity", "widget": "segmented" } },
     "auth_provider_id": { "type": "string", "x-ui": { "section": "Auth", "widget": "reference", "refType": "auth_provider" } },
     "rate_limit": { "type": "object", "properties": { "per_minute": { "type": "integer" } }, "x-ui": { "section": "Reliability" } },
     "timeout_seconds": { "type": "integer", "default": 30, "x-ui": { "section": "Reliability" } },
@@ -54,7 +54,7 @@
           "properties": {
             "method": { "type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"] },
             "url_template": { "$ref": "forge/common#/$defs/TemplateString" },
-            "body_encoding": { "type": "string", "enum": ["json", "form", "raw"], "x-ui": { "section": "Request", "help": "How the request body is encoded. Unset (auto): a structured body is JSON, a body template is sent as-is. json: application/json. form: application/x-www-form-urlencoded — in:body fields (and JSON body templates) are URL-encoded and the Content-Type is set for you; use this for classic HTML form posts, including multi-line values and repeated keys. raw: send the body template string verbatim." } },
+            "body_encoding": { "type": "string", "enum": ["json", "form", "multipart", "raw"], "x-ui": { "section": "Request", "help": "How the request body is encoded. Unset (auto): a structured body is JSON, a body template is sent as-is. json: application/json. form: application/x-www-form-urlencoded — in:body fields (and JSON body templates) are URL-encoded and the Content-Type is set for you; use this for classic HTML form posts, including multi-line values and repeated keys. multipart: multipart/form-data — in:body fields become form parts (a value shaped [filename, content] or {content, filename?, content_type?} is sent as a file part); the Content-Type + boundary are set for you. raw: send the body template string verbatim." } },
             "body_template": { "$ref": "forge/common#/$defs/TemplateString", "x-ui": { "section": "Request", "widget": "textarea", "help": "Free-form body interpolating {{input.*}} (validated tool args) and {{ctx.*}} (run context). Parsed as JSON when possible, else sent as raw content. For form posts prefer in:body fields with body_encoding=form (auto URL-encoded)." } },
             "fields": { "type": "array", "items": { "$ref": "#/$defs/FieldSpec" }, "x-ui": { "widget": "rows-table" } },
             "headers": { "type": "array", "items": { "type": "object", "properties": { "name": { "type": "string" }, "value": { "$ref": "forge/common#/$defs/TemplateString" } } }, "x-ui": { "widget": "rows-table" } },
@@ -77,6 +77,7 @@
       "properties": {
         "endpoint": { "type": "string" },
         "query": { "type": "string", "x-ui": { "widget": "code", "language": "graphql" } },
+        "operation_name": { "type": "string", "x-ui": { "section": "Request", "help": "operationName to run when the query document defines more than one operation. Leave blank for a single-operation document." } },
         "variables": { "type": "array", "items": { "$ref": "#/$defs/FieldSpec" }, "x-ui": { "widget": "rows-table" } },
         "follow_redirects": { "type": "boolean", "default": false, "x-ui": { "help": "Follow 3xx redirects to the target endpoint (each hop re-checked by the SSRF guard)." } },
         "tls_skip_verify": { "type": "boolean", "default": false, "x-ui": { "help": "Skip TLS certificate verification. Honored ONLY when the endpoint host is on the server's FORGE_EGRESS_ALLOW_PRIVATE_HOSTS allow-list (a trusted internal/dev target); ignored otherwise. Use for internal services with self-signed certs - never for public endpoints." } },

@@ -14,6 +14,7 @@ isolated executor (subprocess/container or the deep-agent sandbox backend); gate
 from __future__ import annotations
 
 import asyncio
+import json as _json
 from typing import Any
 
 from RestrictedPython import compile_restricted, safe_builtins, utility_builtins
@@ -31,6 +32,23 @@ _ALLOWED_IMPORTS = {
     "json", "math", "re", "datetime", "statistics", "random", "string",
     "itertools", "functools", "collections", "decimal", "base64", "hashlib", "uuid",
 }
+
+
+# Ceiling on a code tool's returned value so it can't hand the model a multi-megabyte blob (and
+# can't be used to amplify memory). Wanted setting: `code_tool_max_result_chars` (default 100000);
+# a module constant for now.
+_MAX_RESULT_CHARS = 100_000
+
+
+def _cap_result(result: Any) -> Any:
+    """Return the result unchanged, or a small marker when its serialized size is over the cap."""
+    try:
+        s = result if isinstance(result, str) else _json.dumps(result, default=str)
+    except Exception:  # noqa: BLE001 - unserializable -> fall back to repr for the size check
+        s = str(result)
+    if len(s) > _MAX_RESULT_CHARS:
+        return {"error": "result_too_large", "chars": len(s), "limit": _MAX_RESULT_CHARS, "preview": s[:2000]}
+    return result
 
 
 def _guarded_import(name, *args, **kwargs):
@@ -86,9 +104,15 @@ async def execute_code(cfg: dict, kwargs: dict) -> Any:
     source = cfg.get("source") or ""
     timeout = float(cfg.get("timeout_seconds", 5))
     try:
-        return await asyncio.wait_for(asyncio.to_thread(run_code, source, kwargs), timeout=timeout)
+        result = await asyncio.wait_for(asyncio.to_thread(run_code, source, kwargs), timeout=timeout)
     except TimeoutError as e:
+        # RESIDUAL (documented limitation): wait_for abandons the awaited result cleanly, but the
+        # worker THREAD cannot be forcibly killed in CPython - a runaway (e.g. `while True: pass`)
+        # keeps running on the shared executor until it finishes on its own, tying up a thread.
+        # Truly bounding CPU/threads needs an isolated executor (subprocess/container). Gate with
+        # FORGE_ENABLE_CODE_TOOLS; do not enable untrusted code tools in a shared install.
         raise CodeToolError(f"code tool timed out after {timeout}s") from e
+    return _cap_result(result)
 
 
 def build_code_tool(cfg: dict, ctx):

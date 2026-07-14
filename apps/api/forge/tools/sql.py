@@ -23,20 +23,49 @@ _FORBIDDEN = re.compile(
     r"\b(insert|update|delete|drop|alter|create|grant|revoke|truncate|merge|replace|call|exec|execute|attach|pragma|vacuum)\b",
     re.IGNORECASE,
 )
+# Read-only-breaking CONSTRUCTS the single-keyword list above can miss: writing query results to
+# a file (SELECT ... INTO OUTFILE/DUMPFILE - a filesystem write / exfil vector) and row-locking
+# clauses (FOR UPDATE/SHARE, LOCK IN SHARE MODE - side effects / lock contention). Matched as
+# multi-word phrases so a column literally named `outfile` doesn't false-positive.
+_FORBIDDEN_CONSTRUCTS = re.compile(
+    r"\binto\s+(?:outfile|dumpfile)\b|\bfor\s+(?:update|share)\b|\block\s+in\s+share\s+mode\b",
+    re.IGNORECASE,
+)
+
+# Per-cell size ceiling so one giant TEXT/BLOB column can't blow the tool observation / model
+# context. Wanted setting: `sql_tool_max_cell_chars` (default 10000); a module constant for now.
+_MAX_CELL_CHARS = 10_000
 
 
 class SqlToolError(RuntimeError):
     pass
 
 
-def _engine_for(url: str):
+async def _engine_for(url: str):
     eng = _ENGINE_CACHE.get(url)
     if eng is None:
         if len(_ENGINE_CACHE) >= _ENGINE_CACHE_MAX:
-            _ENGINE_CACHE.clear()  # crude bound; engines are GC'd / pools recycled
+            # Evict the oldest entry and DISPOSE its pool so pooled connections / sqlite file
+            # handles are released now, rather than left to GC (a bare dict.clear() leaks them).
+            old_url = next(iter(_ENGINE_CACHE))
+            old = _ENGINE_CACHE.pop(old_url, None)
+            if old is not None:
+                try:
+                    await old.dispose()
+                except Exception:  # noqa: BLE001 - best-effort cleanup
+                    pass
         eng = create_async_engine(url, pool_pre_ping=True)
         _ENGINE_CACHE[url] = eng
     return eng
+
+
+def _cap_cell(v: Any) -> Any:
+    """Truncate an oversized string/bytes cell so a single huge column can't bloat the result."""
+    if isinstance(v, str) and len(v) > _MAX_CELL_CHARS:
+        return v[:_MAX_CELL_CHARS] + f"…[truncated {len(v) - _MAX_CELL_CHARS} chars]"
+    if isinstance(v, (bytes, bytearray)) and len(v) > _MAX_CELL_CHARS:
+        return f"<{len(v)} bytes; truncated>"
+    return v
 
 
 async def _assert_dsn_allowed(url: str, policy: EgressPolicy | None = None) -> None:
@@ -59,6 +88,8 @@ def _assert_read_only(query: str) -> None:
         raise SqlToolError("read-only SQL tools may only run SELECT / WITH queries")
     if _FORBIDDEN.search(q):
         raise SqlToolError("query contains a write/DDL keyword; read-only tools forbid it")
+    if _FORBIDDEN_CONSTRUCTS.search(q):
+        raise SqlToolError("query uses a non-read-only construct (INTO OUTFILE/DUMPFILE or a row-lock clause); read-only tools forbid it")
 
 
 async def execute_sql(
@@ -85,8 +116,10 @@ async def execute_sql(
     policy = egress if isinstance(egress, EgressPolicy) else EgressPolicy.from_settings(egress if isinstance(egress, dict) else None)
     await _assert_dsn_allowed(url, policy)
 
-    engine = _engine_for(url)
+    engine = await _engine_for(url)
     sm = async_sessionmaker(engine, expire_on_commit=False)
+    data: list[dict] = []
+    truncated = False
     async with sm() as session:
         trans = await session.begin()
         try:
@@ -94,12 +127,22 @@ async def execute_sql(
             # honours a read-only transaction even for volatile/SECURITY DEFINER functions.
             if read_only and engine.dialect.name == "postgresql":
                 await session.execute(text("SET TRANSACTION READ ONLY"))
-            result = await session.execute(text(query), kwargs or {})
-            rows = result.mappings().all()
-            data = [dict(r) for r in rows[:max_rows]]
+            # Stream rows and STOP after max_rows instead of materializing the whole result set
+            # then slicing: a query matching millions of rows would otherwise buffer every row
+            # into memory before we throw the tail away. We peek one past max_rows to set
+            # `truncated` accurately (there really were more rows), without keeping that row.
+            result = await session.stream(text(query), kwargs or {})
+            try:
+                async for row in result.mappings():
+                    if len(data) >= max_rows:
+                        truncated = True
+                        break
+                    data.append({k: _cap_cell(v) for k, v in dict(row).items()})
+            finally:
+                await result.close()
         finally:
             await trans.rollback()  # read-only: never persist
-    return {"rows": data, "row_count": len(data), "truncated": len(data) >= max_rows}
+    return {"rows": data, "row_count": len(data), "truncated": truncated}
 
 
 def build_sql_tool(cfg: dict, ctx):
