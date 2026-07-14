@@ -277,6 +277,16 @@ class Settings(BaseSettings):
     # live in tenant.settings (max_runs_per_minute / max_runs_per_day). ---
     run_rate_limit_per_minute: int = 60
     api_rate_limit_per_minute: int = 240
+    # Projected per-run cost (USD) reserved against the daily cost cap while a run is in flight,
+    # so N concurrent runs can't each pass a stale "already-spent" check and blow past the cap.
+    # 0 = disabled (admit on completed-cost only, prior behavior). Per-tenant override:
+    # tenant.settings["projected_run_cost_usd"] / ["max_cost_per_run_usd"].
+    projected_run_cost_usd: float = 0.0
+    # Timezone for the daily quota reset window (was hard-coded to UTC midnight). Per-tenant
+    # override: tenant.settings["reset_tz"]. Falls back to UTC where tzdata is unavailable.
+    quota_reset_tz: str = "UTC"
+    # Bounded concurrency for evaluation runs (each dataset item is a full billable run).
+    eval_concurrency: int = 5
 
     # --- Public embed surface (anonymous, browser-facing). The publishable key is PUBLIC
     # by design, so these are the real abuse/cost ceilings. Per-IP is the important one

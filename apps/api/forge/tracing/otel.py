@@ -98,7 +98,7 @@ def export(records, *, trace_name: str = "run") -> None:
         root_end = max(ends) if ends else root_start
         root = _tracer.start_span(trace_name, start_time=root_start)
         root_ctx = set_span_in_context(root)
-        ctx_by_id: dict[str, Any] = {}
+        ctx_by_id: dict = {}
         for r in records:
             start_ns, end_ns = _span_time_ns(r)
             parent_id = getattr(r, "parent_id", None)

@@ -226,7 +226,7 @@ async def safe_snapshot(
     entity_type: str,
     obj,
     *,
-    author: "object | None" = None,
+    author: object | None = None,
     tenant_settings: dict | None = None,
 ) -> None:
     """Router-friendly helper: snapshot `obj` after a successful create/update. NEVER raises -
