@@ -41,8 +41,8 @@ log = logging.getLogger("forge.runs")
 #     handoff with a fallback channel message (audit C).
 #   FORGE_RUN_WALL_CLOCK_TIMEOUT_SECONDS (int, default 0 = unlimited) - hard per-run wall-clock
 #     budget for graph execution, checked cooperatively between stream frames (audit H).
-HITL_APPROVAL_TIMEOUT_SECONDS = 0
-RUN_WALL_CLOCK_TIMEOUT_SECONDS = 0
+HITL_APPROVAL_TIMEOUT_SECONDS = settings.hitl_approval_timeout_seconds
+RUN_WALL_CLOCK_TIMEOUT_SECONDS = settings.run_wall_clock_timeout_seconds
 
 
 class _RunControl:
@@ -234,6 +234,11 @@ class RunService:
         # wraps this in run_admission for atomic burst-safety. No-op unless a quota is configured.
         from forge.services.quota import check_run_quota
         await check_run_quota(session, tenant_id)
+        # Project governance: monthly USD cap + allowed_models allow-list (no-op unless the
+        # project configures them). Raises BudgetExceeded / ModelNotAllowed, mapped to HTTP by
+        # the admission routers. Model is validated per-node at publish; admission checks spend.
+        from forge.services.budget import enforce_project_budget
+        await enforce_project_budget(session, tenant_id, project_id)
 
         wf = (
             await session.execute(

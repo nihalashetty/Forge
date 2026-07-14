@@ -11,16 +11,15 @@ from __future__ import annotations
 import hashlib
 import time
 
+from forge.config import settings
 from forge.knowledge.store import ChromaStore
 from forge.services.knowledge import KnowledgeService
 
-# Cache defaults. Threshold is deliberately HIGH: a wrong cached answer to a not-really-
-# equivalent question is worse than a cache miss, so only near-identical paraphrases hit.
-# Settings wanted (owned by config.py; a parallel agent owns that file):
-#   FORGE_SEMANTIC_CACHE_THRESHOLD (float, default 0.95)
-#   FORGE_SEMANTIC_CACHE_TTL_SECONDS (int, default 3600)
-CACHE_DEFAULT_THRESHOLD = 0.95
-CACHE_DEFAULT_TTL_SECONDS = 3600
+# Cache defaults (env-overridable: FORGE_SEMANTIC_CACHE_THRESHOLD / _TTL_SECONDS). Threshold is
+# deliberately HIGH: a wrong cached answer to a not-really-equivalent question is worse than a
+# cache miss, so only near-identical paraphrases hit. Per-agent middleware config can override.
+CACHE_DEFAULT_THRESHOLD = settings.semantic_cache_threshold
+CACHE_DEFAULT_TTL_SECONDS = settings.semantic_cache_ttl_seconds
 
 
 class SemanticCacheService:

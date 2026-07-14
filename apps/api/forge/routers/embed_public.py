@@ -108,6 +108,7 @@ async def embed_create_run(key: str, body: EmbedRunIn, request: Request, session
         end_user = claims.get("end_user") or None
     # The public surface is anonymous and uncapped by design, so it MUST also honor the
     # tenant daily quota (audit S2) - otherwise the widget bypasses the only spend ceiling.
+    from forge.services.budget import BudgetExceeded, ModelNotAllowed
     from forge.services.quota import QuotaExceeded, run_admission
     try:
         async with run_admission(session, proj.tenant_id):
@@ -117,6 +118,10 @@ async def embed_create_run(key: str, body: EmbedRunIn, request: Request, session
             )
     except QuotaExceeded as e:
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, e.message) from e
+    except (BudgetExceeded, ModelNotAllowed) as e:
+        # Anonymous embed surface: budget/model errors are hidden as a generic 402 (no internal
+        # detail to the browser end user), logged operator-side by the run machinery.
+        raise HTTPException(status.HTTP_402_PAYMENT_REQUIRED, "This assistant is temporarily unavailable.") from e
     return {"id": run.id, "thread_id": run.thread_id}
 
 

@@ -164,6 +164,7 @@ async def project_run(
     wf = await _configured_workflow(session, tenant_id, project_id)
     end_user = _resolve_end_user(body, user, tenant_id, project_id)
     # Enforce the tenant DAILY quota atomically with run creation (audit F2).
+    from forge.services.budget import BudgetExceeded, ModelNotAllowed
     from forge.services.quota import QuotaExceeded, run_admission
 
     try:
@@ -174,6 +175,10 @@ async def project_run(
             )
     except QuotaExceeded as e:
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, e.message) from e
+    except ModelNotAllowed as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, e.message) from e
+    except BudgetExceeded as e:
+        raise HTTPException(status.HTTP_402_PAYMENT_REQUIRED, e.message) from e
 
     if body.stream:
         async def gen_new():

@@ -77,6 +77,7 @@ async def create_run(
 
     # Per-tenant DAILY quota, enforced atomically with run creation so concurrent POSTs
     # can't all pass a stale pre-insert count (audit F2).
+    from forge.services.budget import BudgetExceeded, ModelNotAllowed
     from forge.services.quota import QuotaExceeded, run_admission
     try:
         async with run_admission(session, tenant_id):
@@ -92,6 +93,10 @@ async def create_run(
             )
     except QuotaExceeded as e:
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, e.message) from e
+    except ModelNotAllowed as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, e.message) from e
+    except BudgetExceeded as e:
+        raise HTTPException(status.HTTP_402_PAYMENT_REQUIRED, e.message) from e
     out = RunOut(id=run.id, status=run.status, thread_id=run.thread_id)
     if idempotency_key:
         idempotency.put(f"run:{tenant_id}:{idempotency_key}", out)

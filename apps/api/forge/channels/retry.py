@@ -15,13 +15,14 @@ import random
 from collections.abc import Awaitable, Callable
 from typing import TypeVar
 
+from forge.config import settings
+
 log = logging.getLogger("forge.channels.retry")
 
-# Settings wanted (config.py is owned by a parallel agent; using module constants for now):
-#   FORGE_CHANNEL_SEND_MAX_ATTEMPTS (int, default 3)
-#   FORGE_CHANNEL_SEND_BACKOFF_BASE_SECONDS (float, default 0.5)
-CHANNEL_SEND_MAX_ATTEMPTS = 3
-CHANNEL_SEND_BACKOFF_BASE_SECONDS = 0.5
+# Outbound-delivery retry policy (env-overridable: FORGE_CHANNEL_SEND_MAX_ATTEMPTS /
+# _BACKOFF_BASE_SECONDS).
+CHANNEL_SEND_MAX_ATTEMPTS = settings.channel_send_max_attempts
+CHANNEL_SEND_BACKOFF_BASE_SECONDS = settings.channel_send_backoff_base_seconds
 CHANNEL_SEND_MAX_BACKOFF_SECONDS = 8.0
 
 T = TypeVar("T")

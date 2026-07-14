@@ -197,6 +197,20 @@ class Settings(BaseSettings):
     # embedder) to stop unrelated memories polluting the prompt.
     memory_recall_min_score: float = 0.0
 
+    # --- Semantic cache / HITL / channel delivery (framework-configurable) ---
+    # Cosine threshold for a semantic-cache hit (the `semantic_cache` agent middleware) and its
+    # entry TTL. Per-agent config can override; these are the deployment defaults.
+    semantic_cache_threshold: float = 0.95
+    semantic_cache_ttl_seconds: int = 3600
+    # How long a HITL-interrupted run may wait for a human before the reaper expires it (fails
+    # the run + closes the handoff with the on_error fallback). 0 = never expire (prior behavior).
+    hitl_approval_timeout_seconds: int = 0
+    # Hard per-run wall-clock ceiling (cooperative, checked between stream frames). 0 = unlimited.
+    run_wall_clock_timeout_seconds: int = 0
+    # Outbound channel delivery (email SMTP / Teams) retry policy.
+    channel_send_max_attempts: int = 3
+    channel_send_backoff_base_seconds: float = 0.5
+
     # --- Models ---
     default_model: str = "fake:echo"  # offline-safe default; set a real provider model in prod
     request_timeout_seconds: int = 600
