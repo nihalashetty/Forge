@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from forge.deps import CurrentUser, current_tenant_id, get_current_user, get_session
+from forge.deps import CurrentUser, current_tenant_id, get_session, require_role
 from forge.schemas.dto import AgentCreate, AgentOut, AgentUpdate, ValidateOut
 from forge.services.agents import AgentService
 
@@ -19,7 +19,7 @@ async def list_agents(project_id: str, session: AsyncSession = Depends(get_sessi
 
 @router.post("", response_model=AgentOut, status_code=201)
 async def create_agent(project_id: str, body: AgentCreate, session: AsyncSession = Depends(get_session),
-                       tenant_id: str = Depends(current_tenant_id), user: CurrentUser = Depends(get_current_user)):
+                       tenant_id: str = Depends(current_tenant_id), user: CurrentUser = Depends(require_role("editor"))):
     return await AgentService.create(session, tenant_id, project_id, name=body.name, config=body.config,
                                      created_by=user.id, created_by_email=user.email)
 
@@ -33,7 +33,8 @@ async def get_agent(project_id: str, agent_id: str, session: AsyncSession = Depe
 
 
 @router.patch("/{agent_id}", response_model=AgentOut)
-async def update_agent(project_id: str, agent_id: str, body: AgentUpdate, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id)):
+async def update_agent(project_id: str, agent_id: str, body: AgentUpdate, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id),
+                       _: CurrentUser = Depends(require_role("editor"))):
     agent = await AgentService.get(session, tenant_id, agent_id)
     if agent is None:
         raise HTTPException(404, "Agent not found")
@@ -41,7 +42,8 @@ async def update_agent(project_id: str, agent_id: str, body: AgentUpdate, sessio
 
 
 @router.delete("/{agent_id}", status_code=204)
-async def delete_agent(project_id: str, agent_id: str, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id)):
+async def delete_agent(project_id: str, agent_id: str, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id),
+                       _: CurrentUser = Depends(require_role("editor"))):
     agent = await AgentService.get(session, tenant_id, agent_id)
     if agent is None:
         raise HTTPException(404, "Agent not found")

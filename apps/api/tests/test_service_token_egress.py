@@ -98,7 +98,20 @@ def test_from_settings_reads_global_allow_private(monkeypatch):
     assert "localhost" in p.allow_private_hosts and "127.0.0.1" in p.allow_private_hosts
 
 
-def test_from_settings_merges_project_allow_private(monkeypatch):
+def test_from_settings_ignores_project_allow_private(monkeypatch):
+    # SECURITY (audit H1): project config is editable by any tenant member, so it must NOT be able
+    # to add a private-host bypass. allow_private_hosts is a deployment-level control only.
     monkeypatch.setattr(settings, "egress_allow_private_hosts", [])
     p = EgressPolicy.from_settings({"allow_private_hosts": ["10.0.0.5"]})
-    assert "10.0.0.5" in p.allow_private_hosts
+    assert "10.0.0.5" not in p.allow_private_hosts
+    assert p.allow_private_hosts == ()
+
+
+def test_from_settings_project_cannot_loosen_block_private(monkeypatch):
+    # SECURITY (audit H1): a project may only TIGHTEN block_private (False->True), never turn the
+    # SSRF guard off. With the guard on globally, project block_private:false is ignored.
+    monkeypatch.setattr(settings, "egress_block_private", True)
+    assert EgressPolicy.from_settings({"block_private": False}).block_private is True
+    # And a project can still tighten when the deployment default is off.
+    monkeypatch.setattr(settings, "egress_block_private", False)
+    assert EgressPolicy.from_settings({"block_private": True}).block_private is True

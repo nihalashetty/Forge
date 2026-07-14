@@ -41,11 +41,13 @@ def eval_expression(expr: str, state: dict | None = None, context: dict | None =
         raise ExpressionError(f"Invalid expression {expr!r}: {e}") from e
 
     env: dict[str, Any] = {
+        **state,  # state keys as bare names - spread FIRST so a state key can't shadow a guard
+        # Reserved/guard keys are set AFTER **state so the sandbox guards and safe builtins
+        # always win (a state key named e.g. "__builtins__" or "_getitem_" can't override them).
         "__builtins__": safe_builtins,
         "_getitem_": default_guarded_getitem,
         "_getiter_": default_guarded_getiter,
         **_SAFE_NAMES,
-        **state,  # state keys as bare names
         "state": state,
         "context": context,
         "ctx": context,

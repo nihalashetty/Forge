@@ -9,6 +9,8 @@ request/response JSON-RPC works with HTTP MCP clients.
 
 from __future__ import annotations
 
+import hmac
+
 from fastapi import APIRouter, HTTPException, Request, status
 from sqlalchemy import select
 
@@ -49,7 +51,8 @@ async def mcp_rpc(project_id: str, request: Request):
     cfg = proj.config or {}
     api_key = cfg.get("mcp_api_key")
     if api_key:  # enforced when a key is configured
-        if _bearer(request) != api_key:
+        # Constant-time compare so a wrong key can't be recovered via timing (matches deps.py).
+        if not hmac.compare_digest(_bearer(request) or "", api_key):
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid MCP api key")
     elif settings.auth_required:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "set project.config.mcp_api_key to expose MCP")

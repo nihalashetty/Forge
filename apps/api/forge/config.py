@@ -197,6 +197,10 @@ class Settings(BaseSettings):
     otel_enabled: bool = False
     otel_exporter_otlp_endpoint: str | None = None
     otel_service_name: str = "forge"
+    # Expose the unauthenticated /metrics (Prometheus counters) and /version (dependency
+    # versions) endpoints. OFF by default: these are an internal operational surface that also
+    # aids fingerprinting, so enable only where the scrape endpoint sits on a trusted network.
+    expose_metrics: bool = False
 
     # --- Tool I/O in traces (debug what an agent actually sent a tool) ---
     # Master switch: capture per-tool-call input/output on trace spans (the LLM's tool args,

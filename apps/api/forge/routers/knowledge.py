@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from forge.deps import current_tenant_id, get_session
+from forge.deps import CurrentUser, current_tenant_id, get_session, require_role
 from forge.schemas.dto import (
     KbSourceCreate,
     KbSourceOut,
@@ -26,6 +26,12 @@ qa_router = APIRouter(prefix="/v1/projects/{project_id}/qa-pairs", tags=["knowle
 # reached). Better to fail the source visibly than leave it stuck "queued" forever.
 _QUEUE_FULL_MSG = "ingest queue is full; please retry in a moment"
 
+# Upload DoS bounds (audit M3): cap the in-memory read and the PDF page count so a huge file or a
+# small decompression-bomb PDF can't exhaust the process. A global request-body-size limit is best
+# enforced at the reverse proxy / uvicorn in front of the app.
+_MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+_MAX_PDF_PAGES = 500
+
 
 async def _queue_ingest(session, tenant_id: str, src, *, reingest: bool = False, label: str = "ingest") -> None:
     """Spawn the background ingest for `src`; if the task ceiling rejects it, mark the source
@@ -40,7 +46,7 @@ async def list_sources(project_id: str, session: AsyncSession = Depends(get_sess
 
 
 @router.post("/sources", response_model=KbSourceOut, status_code=201)
-async def add_source(project_id: str, body: KbSourceCreate, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id)):
+async def add_source(project_id: str, body: KbSourceCreate, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id), _: CurrentUser = Depends(require_role("editor"))):
     src = await KnowledgeService.create_source(session, tenant_id, project_id, kind=body.kind, name=body.name, uri=body.uri, text=body.text, folder=body.folder, chunking_strategy=body.chunking_strategy)
     # Ingest (fetch/chunk/embed) off the request: a real embedder takes seconds+ for a large
     # source, which would time out the HTTP call. The source returns as "queued"; the UI polls.
@@ -56,18 +62,29 @@ async def upload_source(
     chunking_strategy: str = Form(""),
     session: AsyncSession = Depends(get_session),
     tenant_id: str = Depends(current_tenant_id),
+    _: CurrentUser = Depends(require_role("editor")),
 ):
     """Upload a document file (.txt/.md/.pdf and other text formats) into the knowledge base."""
-    raw = await file.read()
+    # Bound the in-memory read so an oversized upload can't exhaust memory (audit M3): read one byte
+    # past the cap to detect oversize without materializing the whole body.
+    raw = await file.read(_MAX_UPLOAD_BYTES + 1)
+    if len(raw) > _MAX_UPLOAD_BYTES:
+        raise HTTPException(413, f"file too large (max {_MAX_UPLOAD_BYTES // (1024 * 1024)} MB)")
     name = file.filename or "upload"
     lower = name.lower()
     if lower.endswith(".pdf"):
+        import io
+
+        from pypdf import PdfReader
         try:
-            import io
-
-            from pypdf import PdfReader
-
             reader = PdfReader(io.BytesIO(raw))
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(422, f"Could not read PDF: {e}") from e
+        # Cap page count: a small but deeply-compressed / many-page PDF can make extract_text
+        # explode CPU/memory (a decompression bomb) (audit M3).
+        if len(reader.pages) > _MAX_PDF_PAGES:
+            raise HTTPException(413, f"PDF has too many pages (max {_MAX_PDF_PAGES})")
+        try:
             text = "\n\n".join((page.extract_text() or "") for page in reader.pages).strip()
         except Exception as e:  # noqa: BLE001
             raise HTTPException(422, f"Could not read PDF: {e}") from e
@@ -102,7 +119,8 @@ async def embedding_health(project_id: str, session: AsyncSession = Depends(get_
 @router.post("/sources/{source_id}/reingest")
 async def reingest_source(project_id: str, source_id: str, body: RechunkIn | None = None,
                           session: AsyncSession = Depends(get_session),
-                          tenant_id: str = Depends(current_tenant_id)):
+                          tenant_id: str = Depends(current_tenant_id),
+                          _: CurrentUser = Depends(require_role("editor"))):
     """Re-fetch + re-embed a source (re-crawl a site, or re-embed under the current model).
     An optional body overrides the chunking (strategy / size / overlap) before re-ingest."""
     from sqlalchemy import select
@@ -125,7 +143,8 @@ async def reingest_source(project_id: str, source_id: str, body: RechunkIn | Non
 
 @router.post("/sources/rechunk")
 async def rechunk_sources(project_id: str, body: RechunkBulkIn, session: AsyncSession = Depends(get_session),
-                          tenant_id: str = Depends(current_tenant_id)):
+                          tenant_id: str = Depends(current_tenant_id),
+                          _: CurrentUser = Depends(require_role("editor"))):
     """Re-chunk a multi-selected set of sources with one shared set of overrides
     (strategy / size / overlap), then re-embed each (in the background). Tenant/project-scoped."""
     from sqlalchemy import select
@@ -152,7 +171,7 @@ async def rechunk_sources(project_id: str, body: RechunkBulkIn, session: AsyncSe
 
 
 @router.patch("/sources/{source_id}", response_model=KbSourceOut)
-async def update_source(project_id: str, source_id: str, body: dict, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id)):
+async def update_source(project_id: str, source_id: str, body: dict, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id), _: CurrentUser = Depends(require_role("editor"))):
     """Move a source between folders (the only mutable field; content requires re-ingest)."""
     from sqlalchemy import select
 
@@ -168,7 +187,7 @@ async def update_source(project_id: str, source_id: str, body: dict, session: As
 
 
 @router.delete("/sources/{source_id}", status_code=204)
-async def delete_source(project_id: str, source_id: str, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id)):
+async def delete_source(project_id: str, source_id: str, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id), _: CurrentUser = Depends(require_role("editor"))):
     from sqlalchemy import select
 
     from forge.models import KbSource
@@ -185,7 +204,7 @@ async def search(project_id: str, body: KnowledgeSearchIn, session: AsyncSession
 
 
 @router.post("/dedupe")
-async def dedupe_chunks(project_id: str, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id)):
+async def dedupe_chunks(project_id: str, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id), _: CurrentUser = Depends(require_role("editor"))):
     """Remove exact-duplicate chunks (identical text) project-wide, keeping one copy of each.
     Returns {removed, groups, sources_affected, remaining}."""
     return await KnowledgeService.dedupe_chunks(session, tenant_id, project_id)
@@ -224,12 +243,12 @@ async def list_qa_kinds(project_id: str, session: AsyncSession = Depends(get_ses
 
 
 @qa_router.post("", response_model=QaPairOut, status_code=201)
-async def add_qa(project_id: str, body: QaPairCreate, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id)):
+async def add_qa(project_id: str, body: QaPairCreate, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id), _: CurrentUser = Depends(require_role("editor"))):
     return await KnowledgeService.create_qa(session, tenant_id, project_id, question=body.question, answer=body.answer, kind=body.kind, tags=body.tags)
 
 
 @qa_router.delete("/{qa_id}", status_code=204)
-async def delete_qa(project_id: str, qa_id: str, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id)):
+async def delete_qa(project_id: str, qa_id: str, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id), _: CurrentUser = Depends(require_role("editor"))):
     from sqlalchemy import select
 
     from forge.models import QaPair

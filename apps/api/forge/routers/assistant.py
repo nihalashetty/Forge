@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
-from forge.deps import current_tenant_id, get_checkpointer
+from forge.deps import current_tenant_id, get_checkpointer, get_session
 from forge.services.assistant import AssistantService
+from forge.services.projects import ProjectService
 
 router = APIRouter(prefix="/v1/projects/{project_id}/assistant", tags=["assistant"])
 
@@ -44,7 +46,13 @@ async def assistant_stream(
     body: AssistantIn,
     tenant_id: str = Depends(current_tenant_id),
     checkpointer=Depends(get_checkpointer),
+    session: AsyncSession = Depends(get_session),
 ):
+    # Ownership check (audit H4): the assistant runs tools scoped to the URL's project_id; without
+    # this, a caller in tenant A could target tenant B's project and read/write its resources. 404
+    # (not 403) so a foreign project id is indistinguishable from a missing one.
+    if await ProjectService.get(session, tenant_id, project_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "project not found")
     if body.message:
         messages = [{"role": "user", "content": body.message}]
     else:
@@ -66,8 +74,11 @@ async def assistant_resume(
     body: AssistantResumeIn,
     tenant_id: str = Depends(current_tenant_id),
     checkpointer=Depends(get_checkpointer),
+    session: AsyncSession = Depends(get_session),
 ):
     """Resume a paused assistant thread (HITL approval for destructive tools)."""
+    if await ProjectService.get(session, tenant_id, project_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "project not found")
 
     async def event_gen():
         async for frame in AssistantService.resume(

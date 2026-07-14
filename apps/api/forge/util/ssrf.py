@@ -51,13 +51,17 @@ class EgressPolicy:
         block = settings.egress_block_private
         allow = list(settings.egress_allow_hosts or [])
         deny = list(settings.egress_deny_hosts or [])
+        # allow_private_hosts (the private/loopback/metadata bypass) is a DEPLOYMENT-level control
+        # ONLY. Project config is editable by any tenant member, so it must never be able to LOOSEN
+        # the SSRF guard (audit H1): a project may only *tighten* block_private (False->True), never
+        # turn it off, and may not add private-host bypasses. Allow/deny host scoping is still
+        # honored - it only narrows what a project can reach.
         allow_private = list(settings.egress_allow_private_hosts or [])
         if project_egress:
             if project_egress.get("block_private") is not None:
-                block = bool(project_egress["block_private"])
+                block = block or bool(project_egress["block_private"])  # tighten-only
             allow += list(project_egress.get("allow_hosts") or [])
             deny += list(project_egress.get("deny_hosts") or [])
-            allow_private += list(project_egress.get("allow_private_hosts") or [])
         return cls(
             block_private=block, allow_hosts=tuple(allow), deny_hosts=tuple(deny),
             allow_private_hosts=tuple(allow_private),
@@ -81,6 +85,12 @@ def _host_matches(host: str, patterns: tuple[str, ...]) -> bool:
     return False
 
 
+# NAT64 well-known prefix (RFC 6052): an IPv6 address here embeds a target IPv4 in its low 32
+# bits and is globally routable, so `is_private` alone won't catch an internal IPv4 reached via a
+# NAT64 gateway (audit L5).
+_NAT64_PREFIX = ipaddress.ip_network("64:ff9b::/96")
+
+
 def _ip_is_blocked(ip_str: str) -> bool:
     try:
         addr = ipaddress.ip_address(ip_str)
@@ -89,6 +99,9 @@ def _ip_is_blocked(ip_str: str) -> bool:
     # IPv4-mapped IPv6 (::ffff:a.b.c.d) - unwrap and re-check the v4 address.
     if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
         addr = addr.ipv4_mapped
+    # NAT64: unwrap the embedded IPv4 (low 32 bits) and re-check it (audit L5).
+    if isinstance(addr, ipaddress.IPv6Address) and addr in _NAT64_PREFIX:
+        addr = ipaddress.IPv4Address(int(addr) & 0xFFFFFFFF)
     return (
         addr.is_private
         or addr.is_loopback

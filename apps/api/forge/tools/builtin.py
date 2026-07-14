@@ -16,12 +16,20 @@ _OPS = {
     ast.Pow: op.pow, ast.Mod: op.mod, ast.USub: op.neg, ast.FloorDiv: op.floordiv,
 }
 
+# Bound exponentiation so an expression like `9**9**9` can't build a multi-gigabyte int and
+# lock the interpreter (DoS). Ordinary calculator use stays well within these limits.
+_MAX_POW_EXPONENT = 100
+_MAX_POW_BASE = 1_000_000
+
 
 def _calc(node: ast.AST) -> float:
     if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
         return node.value
     if isinstance(node, ast.BinOp) and type(node.op) in _OPS:
-        return _OPS[type(node.op)](_calc(node.left), _calc(node.right))
+        left, right = _calc(node.left), _calc(node.right)
+        if isinstance(node.op, ast.Pow) and (abs(right) > _MAX_POW_EXPONENT or abs(left) > _MAX_POW_BASE):
+            raise ValueError("exponent too large")
+        return _OPS[type(node.op)](left, right)
     if isinstance(node, ast.UnaryOp) and type(node.op) in _OPS:
         return _OPS[type(node.op)](_calc(node.operand))
     raise ValueError("Unsupported expression")

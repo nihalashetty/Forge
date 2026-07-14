@@ -9,10 +9,15 @@ the credentials.
 
 from __future__ import annotations
 
+import logging
 import time
+from urllib.parse import urlparse
 
 from forge.secrets.store import SecretStore
 from forge.util.http import shared_async_client
+from forge.util.ssrf import guarded_request
+
+log = logging.getLogger("forge.channels.teams")
 
 _TOKEN_URL = "https://login.microsoftonline.com/botframework.com/oauth2/v2.0/token"
 _token_cache: dict[str, tuple[float, str]] = {}  # app_id -> (expires_at, token)
@@ -68,6 +73,26 @@ async def _bot_token(app_id: str, app_password: str) -> str:
     return token
 
 
+# The Bot Connector `serviceUrl` arrives on the INBOUND activity, which is NOT signature-verified,
+# so it is attacker-controllable. send_reply mints and sends a valid AAD bot token to it, so it MUST
+# be a genuine Microsoft Bot Framework endpoint - otherwise a forged activity could exfiltrate the
+# token or point us at an internal host (audit H3). These are the commercial-cloud host patterns;
+# sovereign clouds (GCC-High/DoD) would extend this list.
+_TRUSTED_SERVICE_URL_HOSTS = ("smba.trafficmanager.net",)
+_TRUSTED_SERVICE_URL_SUFFIXES = (".botframework.com", ".smba.trafficmanager.net")
+
+
+def _is_trusted_service_url(url: str) -> bool:
+    try:
+        p = urlparse(url or "")
+    except Exception:  # noqa: BLE001
+        return False
+    host = (p.hostname or "").lower().rstrip(".")
+    return p.scheme == "https" and bool(host) and (
+        host in _TRUSTED_SERVICE_URL_HOSTS or host.endswith(_TRUSTED_SERVICE_URL_SUFFIXES)
+    )
+
+
 async def send_reply(channel, incoming: dict, text: str) -> None:
     """POST the reply Activity back to Teams via the Connector API. No-op if not configured."""
     cfg = channel.config or {}
@@ -75,6 +100,11 @@ async def send_reply(channel, incoming: dict, text: str) -> None:
     service_url = incoming.get("service_url")
     conv_id = incoming.get("conversation_id")
     if not (app_id and service_url and conv_id and cfg.get("app_password_ref")):
+        return
+    # serviceUrl is attacker-controllable (unsigned inbound activity); only ever send the bot token
+    # to a genuine Bot Framework endpoint, never an arbitrary or internal host (audit H3).
+    if not _is_trusted_service_url(service_url):
+        log.warning("Teams send_reply: refusing reply to untrusted serviceUrl %r", service_url)
         return
     try:
         app_password = await SecretStore().read_ref(
@@ -84,7 +114,9 @@ async def send_reply(channel, incoming: dict, text: str) -> None:
         return
     token = await _bot_token(app_id, str(app_password))
     url = f"{service_url.rstrip('/')}/v3/conversations/{conv_id}/activities"
-    await shared_async_client().post(
-        url, headers={"Authorization": f"Bearer {token}"},
+    # Route through the SSRF guard too (defense-in-depth alongside the serviceUrl allow-list above).
+    await guarded_request(
+        shared_async_client(), "POST", url,
+        headers={"Authorization": f"Bearer {token}"},
         json=build_reply_activity(incoming, text), timeout=30,
     )

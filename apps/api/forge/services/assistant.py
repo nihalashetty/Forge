@@ -126,12 +126,12 @@ def build_assistant_tools(tenant_id: str, project_id: str, mutated: list) -> lis
         async with SessionLocal() as s:
             def names(rows, attr="name"):
                 return [getattr(r, attr) for r in rows] or ["(none)"]
-            tools = (await s.execute(select(Tool).where(Tool.project_id == project_id))).scalars().all()
-            wfs = (await s.execute(select(Workflow).where(Workflow.project_id == project_id))).scalars().all()
-            agents = (await s.execute(select(Agent).where(Agent.project_id == project_id))).scalars().all()
-            aps = (await s.execute(select(AuthProvider).where(AuthProvider.project_id == project_id))).scalars().all()
-            srcs = (await s.execute(select(KbSource).where(KbSource.project_id == project_id))).scalars().all()
-            qas = (await s.execute(select(QaPair).where(QaPair.project_id == project_id))).scalars().all()
+            tools = (await s.execute(select(Tool).where(Tool.tenant_id == tenant_id, Tool.project_id == project_id))).scalars().all()
+            wfs = (await s.execute(select(Workflow).where(Workflow.tenant_id == tenant_id, Workflow.project_id == project_id))).scalars().all()
+            agents = (await s.execute(select(Agent).where(Agent.tenant_id == tenant_id, Agent.project_id == project_id))).scalars().all()
+            aps = (await s.execute(select(AuthProvider).where(AuthProvider.tenant_id == tenant_id, AuthProvider.project_id == project_id))).scalars().all()
+            srcs = (await s.execute(select(KbSource).where(KbSource.tenant_id == tenant_id, KbSource.project_id == project_id))).scalars().all()
+            qas = (await s.execute(select(QaPair).where(QaPair.tenant_id == tenant_id, QaPair.project_id == project_id))).scalars().all()
             return json.dumps({
                 "tools": [f"{t.name} ({t.kind})" for t in tools] or ["(none)"],
                 "workflows": [f"{w.name} [{w.status}]" for w in wfs] or ["(none)"],
@@ -142,7 +142,7 @@ def build_assistant_tools(tenant_id: str, project_id: str, mutated: list) -> lis
     async def describe_workflow(name_or_id: str = "") -> str:
         """Describe a workflow's structure (its nodes and how they connect) so you can explain how it works. Pass a name or id; empty picks the active workflow."""
         async with SessionLocal() as s:
-            wfs = (await s.execute(select(Workflow).where(Workflow.project_id == project_id))).scalars().all()
+            wfs = (await s.execute(select(Workflow).where(Workflow.tenant_id == tenant_id, Workflow.project_id == project_id))).scalars().all()
             wf = None
             if name_or_id:
                 wf = next((w for w in wfs if w.id == name_or_id or w.name.lower() == name_or_id.lower()), None)

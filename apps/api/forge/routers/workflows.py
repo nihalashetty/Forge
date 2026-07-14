@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from forge.deps import current_tenant_id, get_session
+from forge.deps import CurrentUser, current_tenant_id, get_session, require_role
 from forge.schemas.dto import (
     CanvasSaveIn,
     ExecutableIn,
@@ -34,6 +34,7 @@ async def create_workflow(
     body: WorkflowCreate,
     session: AsyncSession = Depends(get_session),
     tenant_id: str = Depends(current_tenant_id),
+    _: CurrentUser = Depends(require_role("editor")),
 ):
     return await WorkflowService.create(
         session, tenant_id, project_id,
@@ -68,6 +69,7 @@ async def update_workflow(
     body: WorkflowUpdate,
     session: AsyncSession = Depends(get_session),
     tenant_id: str = Depends(current_tenant_id),
+    _: CurrentUser = Depends(require_role("editor")),
 ):
     wf = await WorkflowService.get(session, tenant_id, workflow_id)
     if wf is None or wf.project_id != project_id:
@@ -85,6 +87,7 @@ async def update_executable(
     body: ExecutableIn,
     session: AsyncSession = Depends(get_session),
     tenant_id: str = Depends(current_tenant_id),
+    _: CurrentUser = Depends(require_role("editor")),
 ):
     wf = await WorkflowService.get(session, tenant_id, workflow_id)
     if wf is None:
@@ -99,6 +102,7 @@ async def publish_workflow(
     workflow_id: str,
     session: AsyncSession = Depends(get_session),
     tenant_id: str = Depends(current_tenant_id),
+    _: CurrentUser = Depends(require_role("editor")),
 ):
     """Validate the stored executable and mark the workflow active (a published version)."""
     wf = await WorkflowService.get(session, tenant_id, workflow_id)
@@ -121,6 +125,7 @@ async def delete_workflow(
     workflow_id: str,
     session: AsyncSession = Depends(get_session),
     tenant_id: str = Depends(current_tenant_id),
+    _: CurrentUser = Depends(require_role("editor")),
 ):
     wf = await WorkflowService.get(session, tenant_id, workflow_id)
     if wf is None:
@@ -135,6 +140,7 @@ async def save_canvas(
     body: CanvasSaveIn,
     session: AsyncSession = Depends(get_session),
     tenant_id: str = Depends(current_tenant_id),
+    _: CurrentUser = Depends(require_role("editor")),
 ):
     wf = await WorkflowService.get(session, tenant_id, workflow_id)
     if wf is None:

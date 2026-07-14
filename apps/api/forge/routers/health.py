@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from importlib.metadata import PackageNotFoundError, version
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import JSONResponse, PlainTextResponse
 from sqlalchemy import text
 
 import forge
+from forge.config import settings
 from forge.db import SessionLocal
 from forge.util.metrics import snapshot
 
@@ -50,7 +51,13 @@ async def readyz(request: Request) -> JSONResponse:
 async def metrics() -> PlainTextResponse:
     """Prometheus text-format exposition of the in-process counters so operators can scrape
     them (per-worker; aggregate across replicas at the scraper). Complements the OTLP trace
-    export. No new dependency - rendered directly from the counter snapshot."""
+    export. No new dependency - rendered directly from the counter snapshot.
+
+    Gated behind `settings.expose_metrics` (default off): the counters are an internal
+    operational surface, so keep it disabled on public deployments and enable only where the
+    scrape endpoint is reachable from a trusted network."""
+    if not settings.expose_metrics:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "not found")
     lines: list[str] = []
     for name, value in sorted(snapshot().items()):
         metric = "forge_" + "".join(c if (c.isalnum() or c == "_") else "_" for c in name)
@@ -61,6 +68,9 @@ async def metrics() -> PlainTextResponse:
 
 @router.get("/version")
 async def version_info() -> dict:
+    # Dependency versions aid fingerprinting; gate behind the same operator-only switch as /metrics.
+    if not settings.expose_metrics:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "not found")
     return {
         "name": "forge-api",
         "version": forge.__version__,

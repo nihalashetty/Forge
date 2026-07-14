@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
 from forge.config import settings
-from forge.deps import client_ip, get_run_service, get_session, run_context
+from forge.deps import client_ip, get_run_service, get_session
 from forge.models import Project, Workflow
 from forge.security import TokenError, decode_token
 from forge.services.components import ComponentService
@@ -62,7 +62,6 @@ async def _workflow_id(session: AsyncSession, proj: Project) -> str:
 
 class EmbedConfigOut(BaseModel):
     name: str
-    workflow_id: str
     allowed_origins: list[str] = []
 
 
@@ -76,7 +75,9 @@ class EmbedRunIn(BaseModel):
 async def embed_config(key: str, session: AsyncSession = Depends(get_session)):
     proj = await _project(session, key)
     e = (proj.config or {}).get("embed") or {}
-    return EmbedConfigOut(name=proj.name, workflow_id=await _workflow_id(session, proj), allowed_origins=e.get("allowed_origins") or [])
+    # workflow_id is resolved server-side from the key on each run - the widget never needs it, so
+    # don't leak the internal id to the anonymous client (audit L).
+    return EmbedConfigOut(name=proj.name, allowed_origins=e.get("allowed_origins") or [])
 
 
 @router.get("/components")
@@ -116,11 +117,11 @@ async def embed_create_run(key: str, body: EmbedRunIn, request: Request, session
             )
     except QuotaExceeded as e:
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, e.message) from e
-    return {"id": run.id, "thread_id": run.thread_id, "workflow_id": wid}
+    return {"id": run.id, "thread_id": run.thread_id}
 
 
 @router.get("/runs/{run_id}/stream")
-async def embed_stream(key: str, run_id: str, request: Request, session: AsyncSession = Depends(get_session), run_service: RunService = Depends(get_run_service), rc: dict | None = Depends(run_context)):
+async def embed_stream(key: str, run_id: str, request: Request, session: AsyncSession = Depends(get_session), run_service: RunService = Depends(get_run_service)):
     proj = await _project(session, key)
     _embed_rate_limit(
         key, client_ip(request),
@@ -131,8 +132,11 @@ async def embed_stream(key: str, run_id: str, request: Request, session: AsyncSe
     async def gen():
         # Scope by BOTH tenant and project (audit S1) so a publishable key can't stream
         # another project's runs; public=True hides internal error detail / operator data.
+        # run_context is NOT taken from the anonymous browser: X-Forge-Context is a trusted
+        # server-side caller channel, so honoring it here would let an end user forge {{ctx.*}}
+        # values injected into outbound tool requests (audit M4).
         async for frame in run_service.stream(
-            run_id=run_id, tenant_id=proj.tenant_id, project_id=proj.id, public=True, run_context=rc,
+            run_id=run_id, tenant_id=proj.tenant_id, project_id=proj.id, public=True, run_context=None,
         ):
             yield {"event": frame["event"], "data": json.dumps(frame["data"], default=str)}
 
@@ -144,7 +148,7 @@ class EmbedResumeIn(BaseModel):
 
 
 @router.post("/runs/{run_id}/resume")
-async def embed_resume(key: str, run_id: str, body: EmbedResumeIn, request: Request, session: AsyncSession = Depends(get_session), run_service: RunService = Depends(get_run_service), rc: dict | None = Depends(run_context)):
+async def embed_resume(key: str, run_id: str, body: EmbedResumeIn, request: Request, session: AsyncSession = Depends(get_session), run_service: RunService = Depends(get_run_service)):
     """Resume an interrupted (human-in-the-loop) run from the widget - mirrors the authed
     resume endpoint but resolves the tenant+project from the publishable key. resume() is
     scoped to this project (audit S1); the end-user identity is already bound to the thread
@@ -156,4 +160,6 @@ async def embed_resume(key: str, run_id: str, body: EmbedResumeIn, request: Requ
         per_min=settings.embed_rate_limit_per_minute,
         ip_per_min=settings.embed_rate_limit_per_ip_per_minute,
     )
-    return await run_service.resume(run_id=run_id, tenant_id=proj.tenant_id, value=body.value, project_id=proj.id, run_context=rc)
+    # public=True redacts internal error detail (M6) and returns only the final assistant message
+    # (H5); run_context=None so the anonymous caller can't inject {{ctx.*}} tool values (M4).
+    return await run_service.resume(run_id=run_id, tenant_id=proj.tenant_id, value=body.value, project_id=proj.id, run_context=None, public=True)

@@ -148,6 +148,13 @@ class RunService:
         self, session, *, tenant_id: str, project_id: str, workflow_id: str, input: dict,
         thread_id: str | None = None, end_user: dict | None = None, source: str = "playground",
     ) -> Run:
+        # Enforce the tenant's daily spend ceiling on EVERY run-creation path - webhook / email /
+        # Teams / app_event / MCP / playground - not just the embed widget (audit M2). create_run
+        # is the single run factory, so this is the universal floor. The embed path additionally
+        # wraps this in run_admission for atomic burst-safety. No-op unless a quota is configured.
+        from forge.services.quota import check_run_quota
+        await check_run_quota(session, tenant_id)
+
         wf = (
             await session.execute(
                 select(Workflow).where(Workflow.tenant_id == tenant_id, Workflow.id == workflow_id)
@@ -307,15 +314,20 @@ class RunService:
                         durability=settings.run_durability,
                     ):
                         if mode == "tasks" and isinstance(chunk, dict):
+                            # node_start / node_error expose internal workflow node names (and error
+                            # detail) - operator-only, never to an anonymous embed end user (H5).
+                            if public:
+                                continue
                             name = chunk.get("name")
                             if name in node_ids and "triggers" in chunk:
                                 yield {"event": "node_start", "data": {"node": name}}
                             elif name in node_ids and chunk.get("error") is not None:
                                 yield {"event": "node_error", "data": {"node": name, "message": _client_error(public, run.id, str(chunk.get("error")))}}
                             continue
-                        # Only surface top-level node transitions as run steps; skip the
-                        # subgraph-internal "model"/"tools" updates so the steps panel stays clean.
-                        if mode == "updates" and ns:
+                        # "updates" frames carry internal node names + intermediate node state
+                        # (retrieved knowledge, tool results); never send them to the public embed
+                        # surface (H5). For operators, still skip subgraph-internal updates.
+                        if mode == "updates" and (public or ns):
                             continue
                         # In messages mode, only stream the agent's own answer tokens - never
                         # tool-result / human-message content, nor a classifier/structured node's
@@ -327,7 +339,12 @@ class RunService:
                             meta = chunk[1] if isinstance(chunk, (list, tuple)) and len(chunk) == 2 else {}
                             if (meta or {}).get("langgraph_node") in suppressed_message_nodes:
                                 continue
-                        yield {"event": mode, "data": serialize_stream(mode, chunk)}
+                        data = serialize_stream(mode, chunk)
+                        # The internal node name rides along on message frames; strip it on the
+                        # public embed surface so node topology isn't exposed to end users (H5).
+                        if public and mode == "messages" and isinstance(data, dict):
+                            data.pop("node", None)
+                        yield {"event": mode, "data": data}
 
                     snapshot = await graph.aget_state(config)
                     interrupted = bool(getattr(snapshot, "next", ())) and any(
@@ -352,13 +369,14 @@ class RunService:
                         # tokens, so the UI can always render a final bubble.
                         done_data: dict[str, Any] = {
                             "status": run.status,
-                            "total_tokens": run.total_tokens,
-                            "total_cost_usd": run.total_cost_usd,
                             "answer": _last_ai_text(getattr(snapshot, "values", {}) or {}),
                         }
-                        # Run-step cost/debug is operator-only - never expose node names / cost
-                        # to an anonymous embed end user (memory: widget-no-operator-data).
+                        # Token counts, cost, run-step debug and node names are operator-only - never
+                        # expose them to an anonymous embed end user (audit H5 / memory:
+                        # widget-no-operator-data). Operators see all of it in the dashboard.
                         if not public:
+                            done_data["total_tokens"] = run.total_tokens
+                            done_data["total_cost_usd"] = run.total_cost_usd
                             done_data["debug"] = {"nodes": _debug_nodes(wf.executable or {}, tracer)}
                         yield {"event": "done", "data": done_data}
             except ConcurrencyLimitExceeded as e:
@@ -470,7 +488,7 @@ class RunService:
                     "escalate": bool(on_err.get("escalate")),
                 }
 
-    async def resume(self, *, run_id: str, tenant_id: str, value, project_id: str | None = None, run_context: dict | None = None) -> dict:
+    async def resume(self, *, run_id: str, tenant_id: str, value, project_id: str | None = None, run_context: dict | None = None, public: bool = False) -> dict:
         """Resume an interrupted run (HITL) with `Command(resume=value)` on its thread."""
         from langgraph.types import Command
 
@@ -511,13 +529,22 @@ class RunService:
                         session, run, tracer, snapshot,
                         status="interrupted" if interrupted else "done",
                     )
+                if public:
+                    # Public embed: expose ONLY the final assistant message, not the full
+                    # transcript (which includes tool-result / internal messages) (audit H5).
+                    # Keep the single-element `messages` shape the widget already consumes.
+                    answer = _last_ai_text(out or {})
+                    pub_msgs = [{"type": "ai", "content": answer}] if answer else []
+                    return {"status": run.status, "messages": pub_msgs, "interrupted": interrupted}
                 return {"status": run.status, "messages": jsonable((out or {}).get("messages", [])), "interrupted": interrupted}
             except ConcurrencyLimitExceeded as e:
                 return {"error": e.message, "status": "busy"}
             except Exception as e:  # noqa: BLE001
                 log.exception("resume %s failed", run.id)
                 await self._finalize_error(session, run, tracer, str(e))
-                return {"error": str(e)}
+                # Redact internal error detail on the public embed surface (audit M6); the stream
+                # path already does this via _client_error, the resume path did not.
+                return {"error": _client_error(public, run.id, str(e))}
 
     async def _write_trace(self, session, run: Run, tracer: ForgeTracer, *, status: str, values: dict | None = None):
         """Persist a Trace + its Span rows from the tracer. Shared by the success,

@@ -80,11 +80,14 @@ class IdempotencyCache:
 
 class RedisRateLimiter:
     """Fixed-window counter shared across workers via Redis (same `allow` interface as the
-    in-process limiter). Fails OPEN on a Redis error so a cache outage can't 500 every
-    request. Uses the sync redis client - calls are single round-trips (sub-ms locally)."""
+    in-process limiter). On a Redis error it fails OPEN by default (`fail_open=True`) so a
+    cache outage can't 500 every request; pass `fail_open=False` for a limiter protecting the
+    public surface, where a Redis outage should DENY rather than drop the limit. Uses the sync
+    redis client - calls are single round-trips (sub-ms locally)."""
 
-    def __init__(self, client) -> None:
+    def __init__(self, client, *, fail_open: bool = True) -> None:
         self._r = client
+        self._fail_open = fail_open
 
     def allow(self, key: str, *, rate: int, per: float = 60.0, burst: int | None = None) -> bool:
         if rate <= 0:
@@ -97,9 +100,9 @@ class RedisRateLimiter:
             pipe.expire(rk, int(per) + 1)
             count = pipe.execute()[0]
             return int(count) <= int(burst or rate)
-        except Exception:  # noqa: BLE001 - fail open on Redis trouble
-            log.warning("redis rate-limit check failed for %s; allowing", key)
-            return True
+        except Exception:  # noqa: BLE001 - Redis trouble: fail open/closed per config
+            log.warning("redis rate-limit check failed for %s; %s", key, "allowing" if self._fail_open else "denying")
+            return not self._fail_open
 
 
 class RedisIdempotencyCache:

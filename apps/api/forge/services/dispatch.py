@@ -142,7 +142,7 @@ async def _poll_app_event(run_service: RunService, trig) -> int:
     import jmespath
 
     from forge.util.http import shared_async_client
-    from forge.util.ssrf import validate_url
+    from forge.util.ssrf import guarded_request
 
     cfg = trig.config or {}
     url = cfg.get("poll_url")
@@ -161,9 +161,10 @@ async def _poll_app_event(run_service: RunService, trig) -> int:
         t.last_fired_at = datetime.utcnow()
         await s.commit()
 
-    await validate_url(url)
     method = (cfg.get("method") or "GET").upper()
-    r = await shared_async_client().request(method, url, timeout=20, follow_redirects=True)
+    # Follow redirects through the SSRF guard, which re-validates EVERY hop; httpx's own
+    # follow_redirects would connect to a redirect target (e.g. 169.254.169.254) unchecked (H2).
+    r = await guarded_request(shared_async_client(), method, url, timeout=20, follow_redirects=True)
     r.raise_for_status()
     try:
         data = r.json()

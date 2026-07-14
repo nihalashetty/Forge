@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from forge.deps import current_tenant_id, get_session
+from forge.deps import CurrentUser, current_tenant_id, get_session, require_role
 from forge.schemas.contracts import validate_against_id
 from forge.schemas.dto import AuthProviderCreate, AuthProviderOut, AuthProviderUpdate, AuthTestIn
 from forge.services.auth_providers import AuthProviderService
@@ -19,7 +19,8 @@ async def list_aps(project_id: str, session: AsyncSession = Depends(get_session)
 
 
 @router.post("", response_model=AuthProviderOut, status_code=201)
-async def create_ap(project_id: str, body: AuthProviderCreate, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id)):
+async def create_ap(project_id: str, body: AuthProviderCreate, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id),
+                    _: CurrentUser = Depends(require_role("editor"))):
     cfg = {**body.config, "name": body.name, "kind": body.kind}
     if body.credentials_ref:
         cfg["credentials_ref"] = body.credentials_ref
@@ -38,7 +39,8 @@ async def get_ap(project_id: str, ap_id: str, session: AsyncSession = Depends(ge
 
 
 @router.patch("/{ap_id}", response_model=AuthProviderOut)
-async def update_ap(project_id: str, ap_id: str, body: AuthProviderUpdate, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id)):
+async def update_ap(project_id: str, ap_id: str, body: AuthProviderUpdate, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id),
+                    _: CurrentUser = Depends(require_role("editor"))):
     ap = await AuthProviderService.get(session, tenant_id, ap_id)
     if ap is None:
         raise HTTPException(404, "Auth provider not found")
@@ -53,7 +55,8 @@ async def update_ap(project_id: str, ap_id: str, body: AuthProviderUpdate, sessi
 
 
 @router.delete("/{ap_id}", status_code=204)
-async def delete_ap(project_id: str, ap_id: str, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id)):
+async def delete_ap(project_id: str, ap_id: str, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id),
+                    _: CurrentUser = Depends(require_role("editor"))):
     ap = await AuthProviderService.get(session, tenant_id, ap_id)
     if ap is None:
         raise HTTPException(404, "Auth provider not found")
@@ -61,7 +64,8 @@ async def delete_ap(project_id: str, ap_id: str, session: AsyncSession = Depends
 
 
 @router.post("/{ap_id}/test")
-async def test_ap(project_id: str, ap_id: str, body: AuthTestIn, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id)):
+async def test_ap(project_id: str, ap_id: str, body: AuthTestIn, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id),
+                  _: CurrentUser = Depends(require_role("editor"))):
     ap = await AuthProviderService.get(session, tenant_id, ap_id)
     if ap is None:
         raise HTTPException(404, "Auth provider not found")
