@@ -14,11 +14,13 @@ payload before it reaches the model - the primary token lever.
 # keep the real class on the signature for both langgraph injection and langchain_core
 # pass-through.
 import asyncio
+import hashlib
 import json as _json
 import random
 import re
 import time
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 from langchain.tools import ToolRuntime
@@ -38,11 +40,23 @@ _PY = {"string": str, "integer": int, "number": float, "boolean": bool, "object"
 _RESP_CACHE: dict[str, tuple[float, Any]] = {}
 
 
-def _cache_key(name: str, method: str, url: str, params: dict | None, body: Any) -> str:
+def _cache_key(
+    name: str, method: str, url: str, params: dict | None, body: Any,
+    *, tenant_id: str = "", project_id: str = "", provider_id: str = "", context: dict | None = None,
+) -> str:
+    # The process-global response cache MUST be partitioned by tenant/project, the auth
+    # provider, AND a fingerprint of the per-run context (end_user + injected {{ctx.*}}
+    # secrets such as a session cookie / CSRF token). Without this, a per-user-authenticated
+    # GET produces an identical key for every caller, so enabling caching would serve one
+    # user's private response to another (and could collide across tenants).
+    ctx_fp = hashlib.sha256(
+        _json.dumps(context or {}, sort_keys=True, default=str).encode()
+    ).hexdigest()[:16]
     return "|".join([
-        name, method, url,
+        tenant_id, project_id, provider_id, name, method, url,
         _json.dumps(params or {}, sort_keys=True, default=str),
         _json.dumps(body or {}, sort_keys=True, default=str),
+        ctx_fp,
     ])
 
 
@@ -120,7 +134,11 @@ def _render_url(template: str, values: dict) -> str:
         if val is None:
             missing.append(key)
             return m.group(0)
-        return str(val)
+        # URL-encode as a single path segment: an LLM-supplied value containing '/', '?', '#'
+        # or '..' must not be able to alter the URL structure (path traversal / injected query
+        # string). safe="" encodes reserved chars including '/'. Query params go through httpx
+        # (already encoded); this closes the path-parameter lane.
+        return quote(str(val), safe="")
 
     url = re.sub(r"\{([a-zA-Z0-9_]+)\}", _sub, template)
     if missing:
@@ -260,11 +278,12 @@ def _tool_return(res: dict, cfg: dict) -> Any:
     Projection is applied to the model observation (see `project_observation`): with no projection
     the model gets the raw body, or - on a redirect - the {"body", "redirect"} envelope carrying the
     target URL; a `redirect.location` projection collapses that envelope to just the URL. A
-    non-JMESPath result is char-capped so a huge un-projected payload can't blow the model's
-    context (JMESPath output is trusted to be already small)."""
-    has_jmespath = bool((cfg.get("response") or {}).get("projection_jmespath"))
+    result is char-capped so a huge un-projected payload can't blow the model's context. The
+    cap is applied to JMESPath output too: a broken/typo'd expression falls back to the full
+    raw payload and a broad expression (e.g. `@`) selects everything, so trusting JMESPath to
+    be small let an un-projected payload through - always cap as a backstop."""
     _observation, projected = project_observation(res, cfg)
-    return projected if has_jmespath else cap_payload(projected, settings.max_tool_response_chars)
+    return cap_payload(projected, settings.max_tool_response_chars)
 
 
 def _capture_tool_io(
@@ -416,7 +435,10 @@ async def execute_rest(
 
     # Response cache (config.cache.ttl_seconds), idempotent GETs only.
     ttl = (cfg.get("cache") or {}).get("ttl_seconds", 0) or 0
-    cache_key = _cache_key(name, method, url, params, body) if (ttl and method.upper() == "GET") else None
+    cache_key = _cache_key(
+        name, method, url, params, body,
+        tenant_id=tenant_id, project_id=project_id, provider_id=provider_id or "", context=context,
+    ) if (ttl and method.upper() == "GET") else None
     if cache_key:
         cached = _cache_get(cache_key, ttl)
         if cached is not None:
