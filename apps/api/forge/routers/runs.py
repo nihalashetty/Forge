@@ -111,10 +111,18 @@ async def stream_run(
     tenant_id: str = Depends(current_tenant_id),
     run_service: RunService = Depends(get_run_service),
     rc: dict | None = Depends(run_context),
+    last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
 ):
+    # Reconnect/reattach: a browser's EventSource resends the last id it saw as Last-Event-ID;
+    # we replay frames after it then follow live. Absent/garbage -> start from the beginning.
+    start_from = int(last_event_id) if (last_event_id or "").isdigit() else 0
+
     async def event_gen():
-        async for frame in run_service.stream(run_id=run_id, tenant_id=tenant_id, project_id=project_id, run_context=rc):
-            yield {"event": frame["event"], "data": json.dumps(frame["data"], default=str)}
+        async for frame in run_service.stream(
+            run_id=run_id, tenant_id=tenant_id, project_id=project_id, run_context=rc,
+            last_event_id=start_from,
+        ):
+            yield {"event": frame["event"], "data": json.dumps(frame["data"], default=str), "id": frame.get("id")}
 
     return EventSourceResponse(event_gen(), headers=SSE_HEADERS)
 

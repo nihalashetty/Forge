@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -126,13 +126,21 @@ async def embed_create_run(key: str, body: EmbedRunIn, request: Request, session
 
 
 @router.get("/runs/{run_id}/stream")
-async def embed_stream(key: str, run_id: str, request: Request, session: AsyncSession = Depends(get_session), run_service: RunService = Depends(get_run_service)):
+async def embed_stream(
+    key: str, run_id: str, request: Request,
+    session: AsyncSession = Depends(get_session),
+    run_service: RunService = Depends(get_run_service),
+    last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+):
     proj = await _project(session, key)
     _embed_rate_limit(
         key, client_ip(request),
         per_min=0,  # connection churn is bounded per-IP below, not per-key
         ip_per_min=settings.embed_stream_limit_per_ip_per_minute,
     )
+    # A dropped widget connection resumes here: the browser's EventSource resends Last-Event-ID,
+    # so we replay missed frames then follow live - the run itself kept executing (finding #12).
+    start_from = int(last_event_id) if (last_event_id or "").isdigit() else 0
 
     async def gen():
         # Scope by BOTH tenant and project (audit S1) so a publishable key can't stream
@@ -141,9 +149,10 @@ async def embed_stream(key: str, run_id: str, request: Request, session: AsyncSe
         # server-side caller channel, so honoring it here would let an end user forge {{ctx.*}}
         # values injected into outbound tool requests (audit M4).
         async for frame in run_service.stream(
-            run_id=run_id, tenant_id=proj.tenant_id, project_id=proj.id, public=True, run_context=None,
+            run_id=run_id, tenant_id=proj.tenant_id, project_id=proj.id, public=True,
+            run_context=None, last_event_id=start_from,
         ):
-            yield {"event": frame["event"], "data": json.dumps(frame["data"], default=str)}
+            yield {"event": frame["event"], "data": json.dumps(frame["data"], default=str), "id": frame.get("id")}
 
     return EventSourceResponse(gen(), headers=SSE_HEADERS)
 

@@ -95,6 +95,118 @@ class _RunControl:
 run_control = _RunControl()
 
 
+# --- Durable SSE: decouple run execution from the client connection (finding #12) ----------
+# A run's graph is driven by a BACKGROUND task that publishes frames to a per-run broker; the
+# SSE endpoints merely SUBSCRIBE. So a client disconnect ends only the subscription - the run
+# keeps executing and persisting via the checkpointer, and a client can reattach (same run_id)
+# to replay missed frames via Last-Event-ID + follow the rest. In-process (single worker); a
+# multi-worker deployment additionally leans on the DB run status + the stale-run reaper.
+
+RUN_BROKER_TTL_SECONDS = 300  # retain a finished run's frames this long for late reconnects
+
+
+class _RunBroker:
+    """Ordered, replayable, multi-subscriber event buffer for one run episode. Frames get a
+    monotonic seq (the SSE event id); subscribers replay from a Last-Event-ID then follow live."""
+
+    def __init__(self) -> None:
+        self.seq = 0
+        self.events: list[tuple[int, dict]] = []
+        self.done = asyncio.Event()
+        self._subs: set[asyncio.Queue] = set()
+        self._lock = asyncio.Lock()
+
+    async def publish(self, frame: dict) -> None:
+        async with self._lock:
+            self.seq += 1
+            item = (self.seq, frame)
+            self.events.append(item)
+            for q in self._subs:
+                q.put_nowait(item)
+
+    async def finish(self) -> None:
+        async with self._lock:
+            if self.done.is_set():
+                return
+            self.done.set()
+            for q in self._subs:
+                q.put_nowait((None, None))  # unblock live subscribers
+
+    async def subscribe(self, last_event_id: int = 0) -> AsyncIterator[tuple[int, dict]]:
+        """Replay buffered frames with seq > last_event_id, then follow live frames until finish.
+        The queue is registered BEFORE the buffer snapshot so a frame published in the gap is
+        queued (never lost); `last_yielded` dedups the buffer/queue overlap."""
+        q: asyncio.Queue = asyncio.Queue()
+        async with self._lock:
+            self._subs.add(q)
+            buffered = list(self.events)
+            finished = self.done.is_set()
+        last_yielded = last_event_id
+        try:
+            for seq, frame in buffered:
+                if seq > last_yielded:
+                    yield seq, frame
+                    last_yielded = seq
+            if finished:
+                return
+            while True:
+                seq, frame = await q.get()
+                if seq is None:  # finish sentinel
+                    return
+                if seq > last_yielded:
+                    yield seq, frame
+                    last_yielded = seq
+        finally:
+            async with self._lock:
+                self._subs.discard(q)
+
+
+class _RunStreams:
+    """Process-wide registry of run brokers + their detached executor tasks."""
+
+    def __init__(self) -> None:
+        self._brokers: dict[str, _RunBroker] = {}
+        self._tasks: dict[str, asyncio.Task] = {}
+        self._lock = asyncio.Lock()
+
+    def get(self, run_id: str) -> _RunBroker | None:
+        return self._brokers.get(run_id)
+
+    async def ensure(self, run_id: str, *, start: bool, factory) -> tuple[_RunBroker | None, bool]:
+        """Return (broker, started_now). If a LIVE (unfinished) executor already owns this run,
+        reattach to it. Else if `start`, launch a fresh executor+broker episode (initial run or a
+        resume). Else return the finished broker (for replay) or None (nothing in this process)."""
+        async with self._lock:
+            existing = self._brokers.get(run_id)
+            if existing is not None and not existing.done.is_set():
+                return existing, False
+            if not start:
+                return existing, False
+            broker = _RunBroker()
+            self._brokers[run_id] = broker
+            task = asyncio.create_task(factory(broker))
+            self._tasks[run_id] = task
+            task.add_done_callback(lambda _t, rid=run_id, b=broker: self._on_done(rid, b))
+            return broker, True
+
+    def _on_done(self, run_id: str, broker: _RunBroker) -> None:
+        # Drop the task ref; GC this exact broker after a grace window (identity-checked so a
+        # later episode's broker under the same run_id is never evicted by this timer).
+        self._tasks.pop(run_id, None)
+
+        def _gc() -> None:
+            if self._brokers.get(run_id) is broker:
+                self._brokers.pop(run_id, None)
+
+        try:
+            asyncio.get_running_loop().call_later(RUN_BROKER_TTL_SECONDS, _gc)
+        except RuntimeError:  # no running loop (shouldn't happen from a task callback)
+            _gc()
+
+
+run_streams = _RunStreams()
+
+
 def _client_error(public: bool, run_id: str, detail: str) -> str:
     """On the public/embed surface, hide internal error detail from the browser end user
     (hostnames, secret-resolution failures, stack messages) and log it server-side keyed by
@@ -312,7 +424,13 @@ class RunService:
     async def stream(
         self, *, run_id: str, tenant_id: str, project_id: str | None = None, public: bool = False,
         run_context: dict | None = None, resume: bool = False, resume_value: Any = None,
+        last_event_id: int = 0,
     ) -> AsyncIterator[dict]:
+        """SSE SUBSCRIBER: ensure a detached executor is driving this run, then relay its frames
+        (each tagged with a monotonic `id`). A client disconnect ends only this subscription -
+        the executor keeps running (finding #12). Reconnecting with the same run_id + a
+        Last-Event-ID replays missed frames then follows the rest; a run that finished during the
+        gap is reconstructed from the persisted trace so the caller still gets the final answer."""
         set_current_tenant(tenant_id)  # bind tenant for the Postgres RLS GUC (no-op on SQLite)
         async with SessionLocal() as session:
             where = [Run.tenant_id == tenant_id, Run.id == run_id]
@@ -328,6 +446,95 @@ class RunService:
             # would re-invoke a finished thread (undefined) or race a live one (mirrors resume()).
             if resume and run.status != "interrupted":
                 yield {"event": "error", "data": {"message": f"run is not awaiting input (status={run.status})", "status": run.status}}
+                return
+            status = run.status
+
+        # A fresh streaming episode starts on a queued run (initial) or a resume (interrupted ->
+        # running); otherwise we only reattach. ensure() serializes so a double-connect can't
+        # start two executors - the second reattaches to the first's broker.
+        start = resume or status == "queued"
+        broker, _started = await run_streams.ensure(
+            run_id, start=start,
+            factory=lambda b: self._execute(
+                run_id=run_id, tenant_id=tenant_id, project_id=project_id, public=public,
+                run_context=run_context, resume=resume, resume_value=resume_value, broker=b,
+            ),
+        )
+        if broker is not None:
+            async for seq, frame in broker.subscribe(last_event_id):
+                yield {"id": str(seq), "event": frame["event"], "data": frame["data"]}
+            return
+        # No broker in this process (terminal run past its retention window, or a run whose
+        # executor lived in a since-gone process): rebuild the terminal frame from the DB.
+        async for frame in self._reattach_from_db(run_id, tenant_id, project_id, public):
+            yield frame
+
+    async def _reattach_from_db(
+        self, run_id: str, tenant_id: str, project_id: str | None, public: bool,
+    ) -> AsyncIterator[dict]:
+        """Fallback reattach: synthesize a single terminal frame from the persisted run + its
+        latest trace, so a late reconnect (after the in-memory broker was GC'd) still resolves
+        with the final answer instead of hanging."""
+        set_current_tenant(tenant_id)
+        async with SessionLocal() as session:
+            where = [Run.tenant_id == tenant_id, Run.id == run_id]
+            if project_id is not None:
+                where.append(Run.project_id == project_id)
+            run = (await session.execute(select(Run).where(*where))).scalar_one_or_none()
+            if run is None:
+                yield {"event": "error", "data": {"message": "run not found"}}
+                return
+            trace = (await session.execute(
+                select(Trace).where(Trace.run_id == run_id, Trace.tenant_id == tenant_id)
+                .order_by(Trace.created_at.desc())
+            )).scalars().first()
+            answer = (trace.ai_response if trace else "") or ""
+        if run.status == "done":
+            data: dict[str, Any] = {"status": "done", "answer": answer}
+            if not public:
+                data["total_tokens"] = run.total_tokens
+                data["total_cost_usd"] = run.total_cost_usd
+            yield {"event": "done", "data": data}
+        elif run.status == "canceled":
+            yield {"event": "done", "data": {"status": "canceled", "answer": answer, "canceled": True}}
+        elif run.status == "error":
+            yield {"event": "error", "data": {"message": _client_error(public, run_id, run.error or "run failed")}}
+        elif run.status == "interrupted":
+            # The interrupt payload isn't replayable from the DB; signal that input is still awaited.
+            yield {"event": "interrupt", "data": []}
+        else:
+            yield {"event": "error", "data": {"message": "run is not streaming on this server", "status": run.status}}
+
+    async def _execute(
+        self, *, run_id: str, tenant_id: str, project_id: str | None, public: bool,
+        run_context: dict | None, resume: bool, resume_value: Any, broker: _RunBroker,
+    ) -> None:
+        """Detached executor entrypoint. Drives the episode, then FINISHES the broker only after
+        the DB session has fully closed - so a subscriber that returns on the finish sentinel can
+        never race the session teardown (avoids cross-loop close errors under the test harness)."""
+        try:
+            await self._drive(
+                run_id=run_id, tenant_id=tenant_id, project_id=project_id, public=public,
+                run_context=run_context, resume=resume, resume_value=resume_value, broker=broker,
+            )
+        finally:
+            await broker.finish()
+
+    async def _drive(
+        self, *, run_id: str, tenant_id: str, project_id: str | None, public: bool,
+        run_context: dict | None, resume: bool, resume_value: Any, broker: _RunBroker,
+    ) -> None:
+        """Drive the run's graph to a terminal state, PUBLISHING each frame to `broker` (rather
+        than yielding). Runs (via `_execute`) as a detached background task so a client disconnect
+        never stops it; only a hard cancel, a real error, or normal completion ends it."""
+        set_current_tenant(tenant_id)  # bind tenant for the Postgres RLS GUC (no-op on SQLite)
+        async with SessionLocal() as session:
+            where = [Run.tenant_id == tenant_id, Run.id == run_id]
+            if project_id is not None:
+                where.append(Run.project_id == project_id)
+            run = (await session.execute(select(Run).where(*where))).scalar_one_or_none()
+            if run is None:
+                await broker.publish({"event": "error", "data": {"message": "run not found"}})
                 return
             wf = (await session.execute(select(Workflow).where(Workflow.id == run.workflow_id))).scalar_one()
             thread = (await session.execute(select(Thread).where(Thread.id == run.thread_id))).scalar_one()
@@ -374,7 +581,7 @@ class RunService:
                         log.warning("compile error for run %s: %s", run.id, e)
                         await self._finalize_error(session, run, tracer, f"compile error: {e}")
                         finalized = True
-                        yield {"event": "error", "data": {"message": _client_error(public, run.id, f"compile error: {e}")}}
+                        await broker.publish({"event": "error", "data": {"message": _client_error(public, run.id, f"compile error: {e}")}})
                         return
 
                     # Expose the caller-facing DB thread id here (same handle as the create
@@ -382,7 +589,7 @@ class RunService:
                     # an internal checkpointer key (and embeds the tenant id); a caller that
                     # echoed it back could never match Thread.id, so its conversation reset
                     # every turn. Keeping every thread_id in the stream identical avoids that.
-                    yield {"event": "run", "data": {"run_id": run.id, "thread_id": run.thread_id}}
+                    await broker.publish({"event": "run", "data": {"run_id": run.id, "thread_id": run.thread_id}})
 
                     # subgraphs=True is required for token-by-token streaming: agent nodes
                     # compile to nested subgraphs, and without it the inner LLM tokens never
@@ -422,9 +629,9 @@ class RunService:
                                 continue
                             name = chunk.get("name")
                             if name in node_ids and "triggers" in chunk:
-                                yield {"event": "node_start", "data": {"node": name}}
+                                await broker.publish({"event": "node_start", "data": {"node": name}})
                             elif name in node_ids and chunk.get("error") is not None:
-                                yield {"event": "node_error", "data": {"node": name, "message": _client_error(public, run.id, str(chunk.get("error")))}}
+                                await broker.publish({"event": "node_error", "data": {"node": name, "message": _client_error(public, run.id, str(chunk.get("error")))}})
                             continue
                         # "updates" frames carry internal node names + intermediate node state
                         # (retrieved knowledge, tool results); never send them to the public embed
@@ -446,7 +653,7 @@ class RunService:
                         # public embed surface so node topology isn't exposed to end users (H5).
                         if public and mode == "messages" and isinstance(data, dict):
                             data.pop("node", None)
-                        yield {"event": mode, "data": data}
+                        await broker.publish({"event": mode, "data": data})
 
                     snapshot = await graph.aget_state(config)
                     # Cooperative stop hit between frames: finalize with the right terminal state
@@ -455,16 +662,16 @@ class RunService:
                         if canceled:
                             await self._finalize(session, run, tracer, snapshot, status="canceled")
                             finalized = True
-                            yield {"event": "done", "data": {
+                            await broker.publish({"event": "done", "data": {
                                 "status": "canceled",
                                 "answer": _last_ai_text(getattr(snapshot, "values", {}) or {}),
                                 "canceled": True,
-                            }}
+                            }})
                         else:
                             detail = f"run exceeded the wall-clock timeout ({wall_clock}s)"
                             await self._finalize_error(session, run, tracer, detail, snapshot=snapshot)
                             finalized = True
-                            yield {"event": "error", "data": {"message": _client_error(public, run.id, detail)}}
+                            await broker.publish({"event": "error", "data": {"message": _client_error(public, run.id, detail)}})
                         return
                     interrupted = bool(getattr(snapshot, "next", ())) and any(
                         getattr(t, "interrupts", None) for t in getattr(snapshot, "tasks", [])
@@ -481,7 +688,7 @@ class RunService:
                             for t in getattr(snapshot, "tasks", [])
                             if getattr(t, "interrupts", None)
                         ]
-                        yield {"event": "interrupt", "data": payload}
+                        await broker.publish({"event": "interrupt", "data": payload})
                     else:
                         # The authoritative final answer comes from run state - this covers
                         # answers produced by non-LLM nodes that never stream as message
@@ -497,11 +704,11 @@ class RunService:
                             done_data["total_tokens"] = run.total_tokens
                             done_data["total_cost_usd"] = run.total_cost_usd
                             done_data["debug"] = {"nodes": _debug_nodes(wf.executable or {}, tracer)}
-                        yield {"event": "done", "data": done_data}
+                        await broker.publish({"event": "done", "data": done_data})
             except ConcurrencyLimitExceeded as e:
                 # Slot was refused before the run started; it stays queued for the reaper.
                 finalized = True
-                yield {"event": "error", "data": {"message": e.message}}
+                await broker.publish({"event": "error", "data": {"message": e.message}})
             except Exception as e:  # noqa: BLE001 - runtime failure -> error frame + trace
                 log.exception("run %s failed", run.id)
                 await self._finalize_error(session, run, tracer, str(e))
@@ -516,18 +723,19 @@ class RunService:
                     done_err: dict[str, Any] = {"status": "error", "answer": fallback, "error_handled": True}
                     if not public:
                         done_err["escalate"] = bool(on_err.get("escalate"))
-                    yield {"event": "done", "data": done_err}
+                    await broker.publish({"event": "done", "data": done_err})
                 else:
-                    yield {"event": "error", "data": {"message": _client_error(public, run.id, str(e))}}
+                    await broker.publish({"event": "error", "data": {"message": _client_error(public, run.id, str(e))}})
             finally:
                 run_control.end(run_id)
                 if display_token is not None:
                     reset_tool_display_names(display_token)
-                # Client disconnect / cancellation propagates here without `finalized` set -
-                # mark the otherwise-stranded run canceled in a fresh, shielded session so it
-                # never sticks at status="running" forever (audit F1). This also covers a HARD
-                # task-cancel (operator cancel of a run wedged in one long frame): CancelledError
-                # bypasses the `except Exception` above and lands here with finalized=False.
+                # A HARD task-cancel (operator cancel of a run wedged in one long frame) lands here
+                # with finalized=False - mark the otherwise-stranded run canceled in a fresh,
+                # shielded session so it never sticks at status="running" (audit F1). NOTE: a mere
+                # client disconnect no longer reaches here (the executor is detached from the SSE
+                # subscription - finding #12), so a disconnect leaves the run RUNNING. The broker
+                # is finished by `_execute` AFTER this session closes.
                 if not finalized:
                     await self._mark_unfinished(run_id, tenant_id, status="canceled")
 

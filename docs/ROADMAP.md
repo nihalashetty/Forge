@@ -12,6 +12,7 @@ planned item are welcome - see [Contributing](../README.md#contributing).
 - Provider-agnostic models (OpenAI, Anthropic, Google, or any LangChain provider) plus an offline `fake:` model for cost-free building.
 - Reorderable middleware stack (prompt caching, **semantic response cache**, moderation, summarization, guardrails, model fallback, per-tenant budgets, and more).
 - **Run cancellation** and graceful mid-stream error frames.
+- **Durable run streaming**: execution is detached from the SSE connection, so a client disconnect leaves the run going; reconnect with `Last-Event-ID` to replay missed frames and reattach to a still-running run.
 
 ### Visual builder
 - React Flow canvas with typed handles, connection validation, minimap, node inspector, save/validate, and a live-run overlay that lights up nodes over SSE.
@@ -52,8 +53,8 @@ planned item are welcome - see [Contributing](../README.md#contributing).
 - Zero-infra local stack (SQLite + embedded Chroma + in-process scheduler) that swaps - config-only - to Postgres + pgvector, Redis + an arq worker, and a durable checkpointer. Docker Compose stack included.
 
 ## In progress / next
-- **Durable SSE reconnect** - decouple run execution from the connection with `Last-Event-ID` replay and reattach-to-a-running-run.
 - pgvector **ANN indexing** (HNSW per embedding dim) - the shared store ships with exact search today.
+- Cross-worker durable streaming: today's reconnect/reattach is in-process; a multi-worker deployment relies on the DB run status + stale-run reaper.
 - Canvas polish: auto-layout ("Tidy") and drag-from-palette.
 - Remote / Docker-isolated code sandbox (a subprocess sandbox ships today).
 - Multi-tenant MCP server hardening.

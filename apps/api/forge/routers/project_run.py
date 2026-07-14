@@ -150,7 +150,9 @@ async def project_run(
                     run_id=run.id, tenant_id=tenant_id, project_id=project_id,
                     run_context=rc, resume=True, resume_value=value,
                 ):
-                    yield {"event": frame["event"], "data": json.dumps(frame["data"], default=str)}
+                    # `id` lets a disconnected client reattach via GET .../runs/{run_id}/stream
+                    # with Last-Event-ID (the run keeps executing regardless - finding #12).
+                    yield {"event": frame["event"], "data": json.dumps(frame["data"], default=str), "id": frame.get("id")}
 
             return EventSourceResponse(gen_resume(), headers=SSE_HEADERS)
         result = await run_service.resume(
@@ -186,7 +188,9 @@ async def project_run(
             async for frame in run_service.stream(
                 run_id=run.id, tenant_id=tenant_id, project_id=project_id, run_context=rc,
             ):
-                yield {"event": frame["event"], "data": json.dumps(frame["data"], default=str)}
+                # `id` lets a disconnected client reattach via GET .../runs/{run_id}/stream
+                # with Last-Event-ID (the run keeps executing regardless - finding #12).
+                yield {"event": frame["event"], "data": json.dumps(frame["data"], default=str), "id": frame.get("id")}
 
         return EventSourceResponse(gen_new(), headers=SSE_HEADERS)
 
