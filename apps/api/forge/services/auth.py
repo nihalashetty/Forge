@@ -42,10 +42,22 @@ class AuthService:
         return (await session.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
 
     @staticmethod
-    async def get_by_email(session, email: str) -> User | None:
-        return (
-            await session.execute(select(User).where(func.lower(User.email) == email.strip().lower()))
-        ).scalar_one_or_none()
+    async def users_by_email(session, email: str, *, tenant_id: str | None = None) -> list[User]:
+        stmt = select(User).where(func.lower(User.email) == email.strip().lower())
+        if tenant_id:
+            stmt = stmt.where(User.tenant_id == tenant_id)
+        return list((await session.execute(stmt.order_by(User.created_at))).scalars())
+
+    @staticmethod
+    async def get_by_email(session, email: str, *, tenant_id: str | None = None) -> User | None:
+        """Return an unambiguous email match.
+
+        Email is unique only inside a workspace. Callers that operate in a known workspace
+        must pass ``tenant_id``; public flows without one get a result only when the address
+        belongs to exactly one workspace, avoiding an arbitrary cross-tenant selection.
+        """
+        users = await AuthService.users_by_email(session, email, tenant_id=tenant_id)
+        return users[0] if len(users) == 1 else None
 
     @staticmethod
     async def register(session, *, email: str, password: str, workspace_name: str | None = None) -> User:
@@ -55,8 +67,6 @@ class AuthService:
             raise AuthError("a valid email is required")
         if len(password) < 8:
             raise AuthError("password must be at least 8 characters")
-        if await AuthService.get_by_email(session, email):
-            raise AuthError("an account with that email already exists")
         tenant = Tenant(name=workspace_name or f"{email.split('@')[0]}'s workspace", plan="free")
         session.add(tenant)
         await session.flush()
@@ -70,10 +80,16 @@ class AuthService:
         return user
 
     @staticmethod
-    async def authenticate(session, *, email: str, password: str) -> User:
-        user = await AuthService.get_by_email(session, email)
-        if not user or not verify_password(password, user.password_hash):
+    async def authenticate(
+        session, *, email: str, password: str, tenant_id: str | None = None,
+    ) -> User:
+        users = await AuthService.users_by_email(session, email, tenant_id=tenant_id)
+        matches = [u for u in users if verify_password(password, u.password_hash)]
+        if not matches:
             raise AuthError("invalid email or password")
+        if len(matches) > 1:
+            raise AuthError("multiple workspaces use these credentials; provide workspace_id")
+        user = matches[0]
         if user.status != "active":
             raise AuthError("this account is disabled")
         user.last_login_at = datetime.utcnow()
@@ -101,7 +117,7 @@ class AuthService:
         email = email.strip().lower()
         if role not in ROLES:
             raise AuthError(f"unknown role {role!r}")
-        if await AuthService.get_by_email(session, email):
+        if await AuthService.get_by_email(session, email, tenant_id=tenant_id):
             raise AuthError("a user with that email already exists")
         user = User(
             tenant_id=tenant_id, email=email, role=role,

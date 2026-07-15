@@ -29,13 +29,29 @@ async def test_register_login_me_flow():
         assert body["user"]["role"] == "owner"
         token = body["access_token"]
 
-        # duplicate registration is rejected
-        assert (await c.post("/v1/auth/register", json={"email": email, "password": "supersecret1"})).status_code == 400
+        # The same email may own another workspace. If both accounts use the same
+        # credentials, login requires the workspace id to disambiguate them.
+        second = await c.post(
+            "/v1/auth/register",
+            json={"email": email, "password": "supersecret1", "workspace_name": "Second"},
+        )
+        assert second.status_code == 201
+        assert second.json()["user"]["tenant_id"] != body["user"]["tenant_id"]
 
         # wrong password
         assert (await c.post("/v1/auth/login", json={"email": email, "password": "nope"})).status_code == 401
         # correct password
-        r = await c.post("/v1/auth/login", json={"email": email, "password": "supersecret1"})
+        assert (
+            await c.post("/v1/auth/login", json={"email": email, "password": "supersecret1"})
+        ).status_code == 401
+        r = await c.post(
+            "/v1/auth/login",
+            json={
+                "email": email,
+                "password": "supersecret1",
+                "workspace_id": body["user"]["tenant_id"],
+            },
+        )
         assert r.status_code == 200
 
         # me with token

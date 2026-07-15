@@ -65,6 +65,7 @@ class LoginIn(BaseModel):
     # plain str (not EmailStr): login accepts whatever was registered, incl. local addresses.
     email: str
     password: str
+    workspace_id: str | None = None
     totp_code: str | None = None  # required only when the account has TOTP MFA enabled
 
 
@@ -143,7 +144,9 @@ async def register(body: RegisterIn, request: Request, session: AsyncSession = D
 async def login(body: LoginIn, request: Request, session: AsyncSession = Depends(get_session)):
     _auth_throttle(request, str(body.email))
     try:
-        user = await AuthService.authenticate(session, email=str(body.email), password=body.password)
+        user = await AuthService.authenticate(
+            session, email=str(body.email), password=body.password, tenant_id=body.workspace_id,
+        )
     except AuthError as e:
         await AuditService.log(tenant_id="-", action="auth.login", actor_email=str(body.email),
                                ip=client_ip(request), status="denied", meta={"reason": str(e)})
@@ -331,6 +334,7 @@ async def deactivate_member(user_id: str, request: Request, session: AsyncSessio
 # --- password reset (finding j) ---
 class PasswordResetRequestIn(BaseModel):
     email: EmailStr
+    workspace_id: str | None = None
 
 
 class PasswordResetIn(BaseModel):
@@ -352,7 +356,9 @@ async def request_password_reset(body: PasswordResetRequestIn, request: Request,
     """Public: email a signed reset link. Always returns ok (never reveals whether the address
     exists). No SMTP configured => the link is returned so an admin/dev can use it."""
     _auth_throttle(request, str(body.email))
-    user = await AuthService.get_by_email(session, str(body.email))
+    user = await AuthService.get_by_email(
+        session, str(body.email), tenant_id=body.workspace_id,
+    )
     if user and user.status != "disabled":
         token = create_password_reset_token(user_id=user.id, tenant_id=user.tenant_id)
         link = f"{settings.public_console_url.rstrip('/')}/?reset={token}"
