@@ -209,7 +209,7 @@ function ConversationView({ project, detail }: { project: any; detail: Conversat
   };
 
   return (
-    <div className="fade-up col" style={{ maxWidth: 900, margin: "0 auto", gap: 4 }}>
+    <div className="fade-up col" style={{ maxWidth: 1100, margin: "0 auto", gap: 4 }}>
       {/* high-level rollup */}
       <div className="card" style={{ padding: "14px 18px", marginBottom: 12, borderLeft: "3px solid var(--accent)" }}>
         <div className="row spread">

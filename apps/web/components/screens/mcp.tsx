@@ -97,7 +97,7 @@ function ServerDetail({ project, server, onChanged, cached, onLoaded }: { projec
   const enabledCount = tools ? tools.filter((t) => !disabled.has(t.name)).length : 0;
 
   return (
-    <div style={{ maxWidth: 720 }}>
+    <div style={{ maxWidth: 960 }}>
       <div className="row spread" style={{ marginBottom: 18 }}>
         <div className="row gap3">
           <Tile icon="connect" color="var(--accent)" size={40} glow />

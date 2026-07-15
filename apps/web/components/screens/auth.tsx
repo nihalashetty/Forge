@@ -186,7 +186,7 @@ function ProviderDetail({ project, provider, onSaved }: { project: any; provider
   }
 
   return (
-    <div style={{ maxWidth: 640 }}>
+    <div style={{ maxWidth: 960 }}>
       <div className="row spread" style={{ marginBottom: 18 }}>
         <div className="row gap3">
           <Tile icon="auth" color="var(--accent)" size={40} glow />

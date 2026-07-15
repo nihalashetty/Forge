@@ -5,7 +5,7 @@
    Model Pricing and Secrets manage their own persistence. */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Icon } from "../icons";
-import { EmptyState, Field, Modal, Segmented, Toggle } from "../primitives";
+import { EmptyState, Field, Modal, Segmented, Tabs, Toggle } from "../primitives";
 import { api, clearTokens, InviteResult, MeResult, ProjectVersion, Secret, TeamMember } from "@/lib/api";
 import { MODELS } from "@/lib/data";
 
@@ -57,7 +57,7 @@ const HISTORY_TABS: SectionId[] = ["general", "budgets", "knowledge", "versionin
 // Field paths whose values must never be shown in a diff (secrets / credentials).
 const MASK_RE = /credential|secret|token|api[_-]?key|password/i;
 
-export function SettingsScreen({ project }: { project: any }) {
+export function SettingsScreen({ project, onDeleteProject }: { project: any; onDeleteProject?: (project: { id: string; name: string }) => Promise<void> | void }) {
   const [section, setSection] = useState<SectionId>("general");
   const [config, setConfig] = useState<Record<string, any>>({});
   const [meta, setMeta] = useState<{ name: string; description: string }>({ name: "", description: "" });
@@ -67,6 +67,8 @@ export function SettingsScreen({ project }: { project: any }) {
   const [secForm, setSecForm] = useState({ name: "", value: "", kind: "api_key" });
   const [pkeys, setPkeys] = useState<Record<string, string>>({});
   const [keySave, setKeySave] = useState<"idle" | "saving" | "saved">("idle");
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const reloadSecrets = useCallback(() => { if (project?.id) api.listSecrets(project.id).then(setSecrets).catch(() => {}); }, [project?.id]);
   useEffect(() => {
@@ -149,7 +151,7 @@ export function SettingsScreen({ project }: { project: any }) {
 
         {/* content */}
         <div className="scroll-y grow" style={{ minWidth: 0 }}>
-          <div className="fade-up" style={{ maxWidth: 720, margin: "0 auto", padding: "24px 28px" }}>
+          <div className="fade-up" style={{ maxWidth: 960, margin: "0 auto", padding: "24px 28px" }}>
             <div className="row spread" style={{ marginBottom: 18 }}>
               <div className="t-display">{activeMeta.label}</div>
               {activeMeta.savesConfig && (
@@ -318,6 +320,28 @@ export function SettingsScreen({ project }: { project: any }) {
                     </label>
                   ))}
                 </Card>
+                {onDeleteProject && project?.id && (
+                  <div className="card" style={{ padding: 18, marginBottom: 16, borderColor: "var(--err)" }}>
+                    <div className="row spread" style={{ marginBottom: 12 }}><div className="t-h2" style={{ color: "var(--err)" }}>Danger zone</div></div>
+                    <div className="field-help" style={{ marginTop: 0, marginBottom: 12 }}>Deleting this project removes its workflows, agents, tools, auth providers, knowledge, secrets, runs, and traces. This cannot be undone.</div>
+                    {!confirmDelete ? (
+                      <button className="btn btn-danger btn-sm" onClick={() => setConfirmDelete(true)}><Icon name="trash" size={14} />Delete project</button>
+                    ) : (
+                      <div className="row gap2 wrap" style={{ alignItems: "center" }}>
+                        <span className="t-body-sm">Permanently delete <b>{project.name}</b>?</span>
+                        <button className="btn btn-danger btn-sm" disabled={deleting}
+                          onClick={async () => {
+                            setDeleting(true);
+                            try { await onDeleteProject({ id: project.id, name: project.name }); }
+                            finally { setDeleting(false); setConfirmDelete(false); }
+                          }}>
+                          <Icon name="trash" size={14} />{deleting ? "Deleting…" : "Confirm delete"}
+                        </button>
+                        <button className="btn btn-ghost btn-sm" onClick={() => setConfirmDelete(false)} disabled={deleting}>Cancel</button>
+                      </div>
+                    )}
+                  </div>
+                )}
               </>
             )}
 
@@ -396,14 +420,12 @@ function SettingsHistory({ project }: { project: any }) {
   return (
     <div className="col" style={{ gap: 14 }}>
       <div className="field-help" style={{ marginTop: 0 }}>A read-only log of what changed in each settings section, newest first — captured on every save. Pick a section:</div>
-      <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
-        {HISTORY_TABS.map((id) => {
-          const meta = SECTIONS.find((s) => s.id === id)!;
-          return (
-            <button key={id} onClick={() => setTab(id)} className={"btn btn-sm " + (tab === id ? "btn-primary" : "btn-secondary")}>{meta.label}</button>
-          );
-        })}
-      </div>
+      <Tabs
+        equal
+        tabs={HISTORY_TABS.map((id) => ({ value: id, label: SECTIONS.find((s) => s.id === id)!.label }))}
+        value={tab}
+        onChange={(v) => setTab(v as SectionId)}
+      />
       {err && <div className="card" style={{ padding: 12, color: "var(--err)" }}>{err}</div>}
       {!err && versions === null && <div className="fg-2 t-caption">Loading history…</div>}
       {!err && versions !== null && forTab.length === 0 && (

@@ -235,7 +235,7 @@ export function Field({ label, help, children, required }: { label?: string; hel
 }
 
 /* ---------------- Tabs ---------------- */
-export function Tabs({ tabs, value, onChange }: { tabs: (string | { value: string; label: string; count?: number })[]; value: string; onChange: (v: string) => void }) {
+export function Tabs({ tabs, value, onChange, equal }: { tabs: (string | { value: string; label: string; count?: number })[]; value: string; onChange: (v: string) => void; equal?: boolean }) {
   return (
     <div className="row" style={{ gap: 2, borderBottom: "1px solid var(--line)" }}>
       {tabs.map((t) => {
@@ -244,7 +244,7 @@ export function Tabs({ tabs, value, onChange }: { tabs: (string | { value: strin
         const active = value === val;
         return (
           <button key={val} onClick={() => onChange(val)}
-            style={{ background: "none", border: "none", cursor: "pointer", padding: "9px 12px", fontSize: 13, fontWeight: 600, fontFamily: "var(--font-ui)", color: active ? "var(--fg-0)" : "var(--fg-2)", borderBottom: "2px solid " + (active ? "var(--accent)" : "transparent"), marginBottom: -1, transition: "color var(--dur-fast)" }}>
+            style={{ flex: equal ? "1 1 0" : "0 0 auto", minWidth: 0, textAlign: "center", background: "none", border: "none", cursor: "pointer", padding: "9px 12px", fontSize: 13, fontWeight: 600, fontFamily: "var(--font-ui)", color: active ? "var(--fg-0)" : "var(--fg-2)", borderBottom: "2px solid " + (active ? "var(--accent)" : "transparent"), marginBottom: -1, transition: "color var(--dur-fast)" }}>
             {lab}
             {typeof t === "object" && t.count != null && <span className="badge" style={{ marginLeft: 6 }}>{t.count}</span>}
           </button>

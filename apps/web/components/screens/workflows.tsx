@@ -165,7 +165,7 @@ export function WorkflowsScreen({ project, onOpen }: { project: any; onOpen: (w:
 
   return (
     <div className="scroll-y" style={{ flex: 1, padding: "24px 28px" }}>
-      <div className="fade-up" style={{ maxWidth: 1000, margin: "0 auto" }}>
+      <div className="fade-up" style={{ maxWidth: 1600, margin: "0 auto" }}>
         <div className="row spread" style={{ marginBottom: 18 }}>
           <div>
             <div className="t-display">Workflows</div>

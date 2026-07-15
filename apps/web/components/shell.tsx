@@ -2,7 +2,7 @@
 /* Forge app shell: topbar, project sidebar, command palette, assistant. */
 import { ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "./icons";
-import { Avatar, Tile, StatusPill } from "./primitives";
+import { Avatar, Tile } from "./primitives";
 import { PROJECT_NAV, NavLeaf } from "@/lib/data";
 import { Markdown } from "./markdown";
 
@@ -115,30 +115,29 @@ export function ProjectSidebar({ project, active, onNav, onBack, refreshKey }: {
     const timer = window.setInterval(refresh, 15_000);
     return () => { live = false; window.clearInterval(timer); };
   }, [project?.id, refreshKey, countsBump]);
-  return (
-    <div style={{ width: 224, flex: "none", background: "var(--bg-1)", borderRight: "1px solid var(--line)", display: "flex", flexDirection: "column" }}>
-      <button onClick={onBack} className="row gap2" style={{ padding: "12px 14px 10px", background: "none", border: "none", borderBottom: "1px solid var(--line)", cursor: "pointer", textAlign: "left" }}>
-        <Tile icon="layers" color="var(--accent)" size={32} />
-        <div className="col" style={{ minWidth: 0, flex: 1 }}>
-          <div className="t-h2 truncate">{project?.name}</div>
-          <div className="fg-2 t-caption row gap1"><StatusPill status={project?.status || "active"} /></div>
-        </div>
-        <Icon name="chevdown" size={15} style={{ color: "var(--fg-2)" }} />
+  const renderLeaf = (n: NavLeaf) => {
+    const on = active === n.id;
+    const count = n.countKey ? counts[n.countKey] : undefined;
+    return (
+      <button key={n.id} onClick={() => onNav(n.id)} title={n.help || n.label} className={"sidenav-item" + (on ? " active" : "")}
+        style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", height: 34, padding: "0 10px", marginBottom: 1, borderRadius: 7, border: "none", cursor: "pointer", textAlign: "left", color: on ? "var(--accent)" : "var(--fg-1)", fontSize: 13, fontWeight: on ? 600 : 500, fontFamily: "var(--font-ui)", transition: "color var(--dur-fast)" }}>
+        <Icon name={n.icon} size={17} style={{ flex: "none" }} />
+        <span className="grow truncate">{n.label}</span>
+        {count != null && count > 0 && <span className="badge" style={on ? { background: "var(--accent-glow)", color: "var(--accent)" } : {}}>{count}</span>}
       </button>
-      <nav className="scroll-y" style={{ flex: 1, padding: 8 }}>
+    );
+  };
+  // Settings is pinned to the bottom (rendered in the footer below), so drop it from the scroll list.
+  const settingsLeaf = PROJECT_NAV.find((e): e is NavLeaf => "id" in e && e.id === "settings");
+  return (
+    <div style={{ width: 224, flex: "none", background: "var(--bg-1)", borderRight: "1px solid var(--line)", display: "flex", flexDirection: "column", minHeight: 0 }}>
+      <button onClick={onBack} className="row gap2" style={{ height: 52, flex: "none", padding: "0 14px", background: "none", border: "none", borderBottom: "1px solid var(--line)", cursor: "pointer", textAlign: "left", alignItems: "center" }}>
+        <div className="t-h2 truncate" style={{ minWidth: 0, flex: 1 }}>{project?.name}</div>
+        <Icon name="chevdown" size={15} style={{ color: "var(--fg-2)", flex: "none" }} />
+      </button>
+      <nav className="scroll-y" style={{ flex: 1, minHeight: 0, padding: 8 }}>
         {PROJECT_NAV.map((entry, idx) => {
-          const renderLeaf = (n: NavLeaf) => {
-            const on = active === n.id;
-            const count = n.countKey ? counts[n.countKey] : undefined;
-            return (
-              <button key={n.id} onClick={() => onNav(n.id)} title={n.help || n.label} className={"sidenav-item" + (on ? " active" : "")}
-                style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", height: 34, padding: "0 10px", marginBottom: 1, borderRadius: 7, border: "none", cursor: "pointer", textAlign: "left", color: on ? "var(--accent)" : "var(--fg-1)", fontSize: 13, fontWeight: on ? 600 : 500, fontFamily: "var(--font-ui)", transition: "color var(--dur-fast)" }}>
-                <Icon name={n.icon} size={17} style={{ flex: "none" }} />
-                <span className="grow truncate">{n.label}</span>
-                {count != null && count > 0 && <span className="badge" style={on ? { background: "var(--accent-glow)", color: "var(--accent)" } : {}}>{count}</span>}
-              </button>
-            );
-          };
+          if ("id" in entry && entry.id === "settings") return null; // pinned to the footer
           if ("section" in entry) {
             const open = !collapsed[entry.section];
             return (
@@ -155,6 +154,13 @@ export function ProjectSidebar({ project, active, onNav, onBack, refreshKey }: {
           return renderLeaf(entry);
         })}
       </nav>
+      {/* Settings pinned to the bottom: sits above the scrolling nav (z-index + solid bg + top
+          shadow) so nav items scroll behind it on short viewports. */}
+      {settingsLeaf && (
+        <div style={{ flex: "none", position: "relative", zIndex: 2, padding: 8, borderTop: "1px solid var(--line)", background: "var(--bg-1)", boxShadow: "0 -6px 12px -8px rgba(0,0,0,.18)" }}>
+          {renderLeaf(settingsLeaf)}
+        </div>
+      )}
     </div>
   );
 }

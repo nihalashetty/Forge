@@ -1,7 +1,7 @@
 "use client";
 /* Tools list (card grid) + Tool Builder (tabbed config + Live response token-meter signature). */
 import * as jmespath from "jmespath";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "../icons";
 import { Field, Modal, Segmented, StatusPill, Tabs, Tile, TokenMeter, Toggle } from "../primitives";
 import { VersionHistory } from "../version-history";
@@ -57,7 +57,7 @@ export function ToolsScreen({ project, onOpen }: { project: any; onOpen: (t: Too
 
   return (
     <div className="scroll-y" style={{ flex: 1, padding: "22px 28px" }}>
-      <div className="fade-up" style={{ maxWidth: 1120, margin: "0 auto" }}>
+      <div className="fade-up" style={{ maxWidth: 1600, margin: "0 auto" }}>
         <div className="row spread" style={{ marginBottom: 18 }}>
           <div>
             <div className="t-display" style={{ fontSize: 21 }}>Tools</div>
@@ -118,12 +118,10 @@ function ToolCard({ t, onOpen, onDelete, onDuplicate, onToggle }: { t: Tool; onO
   return (
     <div className="card card-hover" style={{ padding: 15, opacity: t.enabled ? 1 : 0.6 }} onClick={onOpen}>
       <div className="row spread" style={{ marginBottom: 10 }}>
-        <div className="row gap2"><Tile icon={KIND_ICON[t.kind] || "k_rest"} color="var(--accent)" size={34} /><span className="chip chip-mono">{KIND_LABEL[t.kind] || t.kind}</span></div>
+        <span className="chip chip-mono">{KIND_LABEL[t.kind] || t.kind}</span>
         <div className="row gap2" style={{ alignItems: "center" }}>
           <StatusPill status={t.last_tested || "untested"} />
-          <Toggle on={t.enabled} onChange={onToggle} />
-          <button className="iconbtn" title="Duplicate tool" onClick={onDuplicate}><Icon name="copy" size={14} /></button>
-          <button className="iconbtn" title="Delete tool" onClick={onDelete}><Icon name="trash" size={14} /></button>
+          <ToolCardMenu enabled={t.enabled} onToggle={onToggle} onDuplicate={onDuplicate} onDelete={onDelete} />
         </div>
       </div>
       <div className="mono" style={{ fontWeight: 600, fontSize: 13.5, color: "var(--fg-0)", overflowWrap: "anywhere", wordBreak: "break-word" }}>{t.name}</div>
@@ -133,6 +131,36 @@ function ToolCard({ t, onOpen, onDelete, onDuplicate, onToggle }: { t: Tool; onO
         <span className="row gap1"><Icon name={proj ? "check" : "minus"} size={12} />{proj ? "Response projection set" : "No projection"}</span>
         {t.auth_provider_id && <span className="row gap1 truncate" style={{ maxWidth: 130 }}><Icon name="auth" size={11} />{t.auth_provider_id.slice(0, 10)}</span>}
       </div>
+    </div>
+  );
+}
+
+/* Overflow menu on each tool card - enable/disable toggle, duplicate, delete.
+   Drops DOWN from the trigger, right-aligned so it never runs off-screen. */
+function ToolCardMenu({ enabled, onToggle, onDuplicate, onDelete }: { enabled: boolean; onToggle: () => void; onDuplicate: (e: React.MouseEvent) => void; onDelete: (e: React.MouseEvent) => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const h = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    window.addEventListener("mousedown", h);
+    return () => window.removeEventListener("mousedown", h);
+  }, [open]);
+  const item: React.CSSProperties = { display: "flex", alignItems: "center", gap: 9, width: "100%", textAlign: "left", padding: "7px 9px", border: "none", background: "none", cursor: "pointer", borderRadius: 6, fontSize: 12.5, fontFamily: "var(--font-ui)" };
+  return (
+    <div ref={ref} style={{ position: "relative" }} onClick={(e) => e.stopPropagation()}>
+      <button className={"iconbtn" + (open ? " active" : "")} title="More actions" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((o) => !o)}><Icon name="more" size={16} /></button>
+      {open && (
+        <div className="card fade-in" role="menu" style={{ position: "absolute", top: "100%", right: 0, marginTop: 6, zIndex: 6000, minWidth: 172, padding: 4, boxShadow: "var(--sh-pop)" }}>
+          <div style={{ ...item, justifyContent: "space-between", color: "var(--fg-1)", cursor: "default" }}>
+            <span className="row gap2"><Icon name="bolt" size={15} style={{ color: enabled ? "var(--signal)" : "var(--fg-2)" }} />{enabled ? "Enabled" : "Disabled"}</span>
+            <Toggle on={enabled} onChange={onToggle} />
+          </div>
+          <div className="divider" style={{ margin: "4px 0" }} />
+          <button role="menuitem" style={{ ...item, color: "var(--fg-1)" }} onClick={(e) => { setOpen(false); onDuplicate(e); }}><Icon name="copy" size={15} />Duplicate</button>
+          <button role="menuitem" style={{ ...item, color: "var(--err)" }} onClick={(e) => { setOpen(false); onDelete(e); }}><Icon name="trash" size={15} />Delete</button>
+        </div>
+      )}
     </div>
   );
 }
