@@ -3,7 +3,6 @@
    workflow, allow-list embedding origins, and copy the iframe snippet + publishable key. */
 import { useEffect, useState } from "react";
 import { Icon } from "../icons";
-import { Tile } from "../primitives";
 import { api, Workflow } from "@/lib/api";
 
 /* Reusable settings body (no page chrome) so it can live standalone OR as a section inside
@@ -115,7 +114,6 @@ export function EmbedScreen({ project }: { project: any }) {
     <div className="scroll-y" style={{ flex: 1, padding: "24px 28px" }}>
       <div style={{ maxWidth: 960, margin: "0 auto" }} className="col gap4">
         <div className="row gap2">
-          <Tile icon="grid" color="var(--io-json)" size={30} />
           <div>
             <div className="t-display">Embed</div>
             <div className="fg-1" style={{ marginTop: 3 }}>Drop this project&apos;s chatbot into any website as a widget.</div>

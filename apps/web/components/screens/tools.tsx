@@ -117,7 +117,7 @@ export function ToolsScreen({ project, onOpen }: { project: any; onOpen: (t: Too
           <div className="fade-up" style={{ maxWidth: 1500, margin: "0 auto" }}>
             <div style={{ marginBottom: 22 }}>
               <div>
-                <div className="t-display" style={{ fontSize: 21 }}>{headingLabel}</div>
+                <div className="t-display">{headingLabel}</div>
                 <div className="fg-2" style={{ marginTop: 4, maxWidth: 560 }}>External capabilities - REST, GraphQL, code, SQL, or builtins - with response projection.</div>
               </div>
               <div className="row gap2 wrap" style={{ marginTop: 16, alignItems: "center" }}>
@@ -204,7 +204,7 @@ function SideItem({ label, count, active, onClick, alert }: { label: string; cou
 function ToolsSidebar({ tools, toolSets, countFor, ungroupedCount, filterSet, onFilter, onNewSet, onManage }: { tools: Tool[]; toolSets: ToolSet[]; countFor: (s: ToolSet) => number; ungroupedCount: number; filterSet: string; onFilter: (k: string) => void; onNewSet: () => void; onManage: () => void }) {
   return (
     <div className="col" style={{ width: 236, flex: "0 0 236px", background: "var(--bg-1)", borderRight: "1px solid var(--line)", padding: "20px 14px", gap: 22, overflowY: "auto" }}>
-      <div className="t-h1" style={{ padding: "0 8px" }}>MCP Tools</div>
+      <div className="t-h2" style={{ padding: "0 8px" }}>MCP Tools</div>
 
       <div className="col" style={{ gap: 2 }}>
         <SideItem label="All tools" count={tools.length} active={filterSet === "all"} onClick={() => onFilter("all")} />

@@ -61,7 +61,7 @@ export function AuthProvidersScreen({ project }: { project: any }) {
       {/* LEFT list */}
       <div style={{ width: 280, flex: "none", borderRight: "1px solid var(--line)", display: "flex", flexDirection: "column", background: "var(--bg-1)" }}>
         <div className="row spread" style={{ padding: "14px 16px", borderBottom: "1px solid var(--line)" }}>
-          <div className="t-h1">Auth Providers</div>
+          <div className="t-display">Auth Providers</div>
           <button className="btn btn-primary btn-sm" onClick={() => setCreateOpen(true)}><Icon name="plus" size={14} /></button>
         </div>
         <div className="scroll-y" style={{ flex: 1, padding: 8 }}>
