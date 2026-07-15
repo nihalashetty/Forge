@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import httpx
-import pytest
+from sqlalchemy import select
 
 from forge.auth_providers.resolver import AuthResolver
 from forge.db.base import SessionLocal
-from forge.models import AuthProvider
+from forge.models import AuditLog, AuthProvider
 from forge.secrets.store import SecretStore
 from forge.services.tools import ToolService
 from forge.tools.rest import build_args_schema, execute_rest
@@ -36,6 +36,19 @@ async def test_secret_roundtrip_encrypts_and_decrypts():
         await store.write(s, tenant_id="t_sec", project_id="p_sec", name="creds", value={"u": "a", "p": "b"}, kind="generic")
     got = await store.read_ref(tenant_id="t_sec", project_id="p_sec", ref="secret://proj/creds")
     assert got == {"u": "a", "p": "b"}
+    async with SessionLocal() as s:
+        audit = (
+            await s.execute(
+                select(AuditLog).where(
+                    AuditLog.tenant_id == "t_sec",
+                    AuditLog.project_id == "p_sec",
+                    AuditLog.action == "secret.read",
+                    AuditLog.resource_type == "secret",
+                    AuditLog.resource_id == "creds",
+                )
+            )
+        ).scalar_one()
+    assert audit.meta == {"scheme": "secret"}
 
 
 # --- REST tool ---

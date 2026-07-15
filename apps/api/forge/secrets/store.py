@@ -3,7 +3,8 @@
 Values are stored as encrypted JSON (so a credential can be a string OR a structured
 object like {"username","password"}). References use `secret://proj/<name>`; the
 tenant + project scope comes from the caller (never the ref), so refs can't cross
-tenants. Reads are audited (Doc 2 §12) - TODO: wire audit_log.
+tenants. Every successful read is audited at this choke point (Doc 2 §12), so
+callers cannot accidentally bypass the audit trail.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from sqlalchemy import select
 from forge.db.base import SessionLocal
 from forge.models import Secret
 from forge.secrets.fernet import decrypt, encrypt
+from forge.services.audit import AuditService
 
 
 class SecretNotFound(KeyError):
@@ -82,4 +84,16 @@ class SecretStore:
             if secret.last_used_at is None or now - secret.last_used_at > self._LAST_USED_WRITE_WINDOW:
                 secret.last_used_at = now
                 await session.commit()
-            return json.loads(decrypt(secret.encrypted_value))
+            value = json.loads(decrypt(secret.encrypted_value))
+        # Audit in AuditService's independent session after the secret session has
+        # released its transaction. This avoids SQLite writer contention in dev/tests
+        # and still keeps auditing best-effort so it can never expose or block a secret.
+        await AuditService.log(
+            tenant_id=tenant_id,
+            action="secret.read",
+            project_id=project_id,
+            resource_type="secret",
+            resource_id=name,
+            meta={"scheme": scheme},
+        )
+        return value

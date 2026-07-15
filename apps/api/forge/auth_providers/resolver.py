@@ -89,16 +89,6 @@ class AuthResolver:
         if not force and (cached := self._cache.get(key)) and not cached.expired:
             return cached
 
-        # Audit the secret resolution for this tool-auth (finding g). Logged once per real
-        # resolution (not on cache hits). This is the primary on-behalf-of secret-consumption
-        # path; the exhaustive choke point is SecretStore.read_ref - see the note in that file.
-        from forge.services.audit import AuditService
-
-        await AuditService.log(
-            tenant_id=tenant_id, action="secret.read", project_id=project_id,
-            resource_type="auth_provider", resource_id=provider_id, meta={"kind": provider.kind},
-        )
-
         async def read(ref: str | None) -> Any:
             if not ref:
                 return None
