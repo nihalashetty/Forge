@@ -204,6 +204,13 @@ export function WorkflowsScreen({ project, onOpen }: { project: any; onOpen: (w:
 }
 
 /* ============ CANVAS ============ */
+export function guardCanvasBeforeUnload(dirty: boolean, event: BeforeUnloadEvent): boolean {
+  if (!dirty) return false;
+  event.preventDefault();
+  event.returnValue = "";
+  return true;
+}
+
 export function WorkflowCanvas(props: { project: any; workflowId?: string; onWorkflowChange?: (workflow: Workflow) => void; onBack: () => void; onRun: () => void; onRegisterFlush?: (fn: (() => Promise<void>) | null) => void }) {
   return (
     <ReactFlowProvider>
@@ -288,7 +295,7 @@ function CanvasInner({ project, workflowId, onWorkflowChange, onBack, onRun, onR
 
   // Warn before closing/reloading the tab with unsaved edits.
   useEffect(() => {
-    const h = (e: BeforeUnloadEvent) => { if (dirtyRef.current) { e.preventDefault(); e.returnValue = ""; } };
+    const h = (e: BeforeUnloadEvent) => { guardCanvasBeforeUnload(dirtyRef.current, e); };
     window.addEventListener("beforeunload", h);
     return () => window.removeEventListener("beforeunload", h);
   }, []);
