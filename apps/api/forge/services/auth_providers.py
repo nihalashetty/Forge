@@ -80,3 +80,36 @@ class AuthProviderService:
             "params": {k: _mask(v) for k, v in resolved.params.items()},
             "expires_in_seconds": None if resolved.expires_at is None else max(0, int(resolved.expires_at - __import__("time").monotonic())),
         }
+
+    # --- Per-user connected credentials -----------------------------------------------------
+    # A provider of kind `oauth2_authorization_code` with config per_user_context_keys:
+    # ["end_user_id"] keys its OAuth token bundle PER end user. The methods below store/read the
+    # bundle under the exact secret name the AuthResolver reads at run time (keyed by end_user_id),
+    # so a tool call acts as the authenticated user WITHOUT the MCP token being passed downstream
+    # (no token passthrough). The app owner's own "connect account" flow calls set_user_connection
+    # after its user authorizes - Forge only stores the resulting bundle.
+    @staticmethod
+    def _bundle_name(provider_id: str, end_user_id: str) -> str:
+        return AuthResolver.bundle_secret_name(provider_id, {"end_user_id": end_user_id}, ["end_user_id"])
+
+    @staticmethod
+    async def set_user_connection(session, tenant_id: str, project_id: str, provider: AuthProvider,
+                                  end_user_id: str, *, bundle: dict) -> None:
+        name = AuthProviderService._bundle_name(provider.id, end_user_id)
+        await SecretStore().write(session, tenant_id=tenant_id, project_id=project_id, name=name, value=bundle, kind="oauth")
+
+    @staticmethod
+    async def get_user_connection(tenant_id: str, project_id: str, provider: AuthProvider, end_user_id: str) -> dict:
+        name = AuthProviderService._bundle_name(provider.id, end_user_id)
+        try:
+            bundle = await SecretStore().read_ref(tenant_id=tenant_id, project_id=project_id, ref=f"secret://proj/{name}")
+        except Exception:  # noqa: BLE001 - a missing/undecodable secret just reads as "not connected"
+            bundle = None
+        connected = isinstance(bundle, dict) and bool(bundle.get("access_token"))
+        return {"connected": connected, "expires_at": (bundle or {}).get("expires_at") if connected else None}
+
+    @staticmethod
+    async def clear_user_connection(session, tenant_id: str, project_id: str, provider: AuthProvider, end_user_id: str) -> None:
+        # Overwrite with an empty bundle (revoked); the resolver then treats the user as not connected.
+        name = AuthProviderService._bundle_name(provider.id, end_user_id)
+        await SecretStore().write(session, tenant_id=tenant_id, project_id=project_id, name=name, value={}, kind="oauth")

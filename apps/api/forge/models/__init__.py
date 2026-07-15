@@ -13,6 +13,7 @@ from forge.models.entities import (
     McpClient,
     Memory,
     ModelPrice,
+    OAuthClient,
     Project,
     QaPair,
     Run,
@@ -21,6 +22,8 @@ from forge.models.entities import (
     Tenant,
     Thread,
     Tool,
+    ToolSet,
+    ToolSetMember,
     Trace,
     Trigger,
     User,
@@ -33,7 +36,7 @@ from forge.models.evals import EvalResult, EvalRun
 
 __all__ = [
     "Tenant", "User", "Project", "Workflow", "Thread", "Run", "Trace", "Span",
-    "Tool", "AuthProvider", "Secret", "McpClient", "Agent", "KbSource", "QaPair",
+    "Tool", "ToolSet", "ToolSetMember", "AuthProvider", "Secret", "McpClient", "Agent", "KbSource", "QaPair",
     "AuditLog", "Trigger", "Channel", "Component", "HandoffRequest", "Dataset", "ModelPrice", "Memory",
-    "EntityVersion", "EvalRun", "EvalResult",
+    "EntityVersion", "EvalRun", "EvalResult", "OAuthClient",
 ]

@@ -23,7 +23,10 @@ from forge.security import (
     verify_totp,
 )
 
-ROLES = ("owner", "admin", "editor", "viewer")
+# "connector" is the least-privileged role: an MCP-only user who can authenticate and manage their
+# own MCP tokens, but not view/edit project resources or settings. Mutations are blocked by
+# require_role (needs editor+); the web console additionally shows connectors only their token page.
+ROLES = ("owner", "admin", "editor", "viewer", "connector")
 _RANK = {r: i for i, r in enumerate(ROLES)}  # higher index = fewer privileges
 
 

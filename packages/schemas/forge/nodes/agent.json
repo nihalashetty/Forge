@@ -46,6 +46,7 @@
       }
     },
     "tools": { "type": "array", "items": { "type": "string" }, "description": "Tool ids (incl. MCP tool ids) available to the agent.", "x-ui": { "widget": "chips", "refType": "tool", "section": "Tools", "order": 4 } },
+    "toolsets": { "type": "array", "items": { "type": "string" }, "description": "Tool set ids granted to the agent - every tool in each set becomes available (in addition to any individually-listed tools).", "x-ui": { "widget": "chips", "refType": "tool_set", "section": "Tools", "order": 4.5 } },
     "knowledge": {
       "type": "object",
       "description": "Built-in knowledge-base access for the agent (no separate Tool needed). Compiles to agent-callable tools: RAG over documents and/or curated Q&A lookup, each scoped by folders/kinds. Prefer this over a fixed retrieval node for conversational or multi-part agents.",
@@ -126,6 +127,7 @@
             "description": { "type": "string", "x-ui": { "modelView": true } },
             "system_prompt": { "type": "string", "x-ui": { "widget": "textarea" } },
             "tools": { "type": "array", "items": { "type": "string" }, "x-ui": { "widget": "chips", "refType": "tool" } },
+            "toolsets": { "type": "array", "items": { "type": "string" }, "x-ui": { "widget": "chips", "refType": "tool_set" } },
             "model": { "$ref": "forge/common#/$defs/ModelRef" },
             "middleware": { "type": "array", "items": { "$ref": "forge/middleware#/$defs/MiddlewareEntry" } }
           }

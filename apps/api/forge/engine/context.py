@@ -41,6 +41,11 @@ class CompileContext:
     # agent via config["components"], the same way tools are (Feature 2 - generative UI).
     component_registry: dict[str, Any] = field(default_factory=dict)
 
+    # Tool-set membership (tool_set_id -> [tool_id, ...]) for the project, populated by the
+    # runtime assembler. Lets an agent be granted a whole set via config.toolsets and have it
+    # resolve to the set's member tools at compile time (see resolve_tool_ids).
+    toolset_members: dict[str, list[str]] = field(default_factory=dict)
+
     # Cross-cutting services.
     auth_resolver: Any = None
     sandbox: Any = None
@@ -93,6 +98,23 @@ class CompileContext:
             tool = self.tool_registry.get(i)
             if tool is not None:
                 out.append(tool)
+        return out
+
+    def resolve_tool_ids(self, tool_ids: Sequence[str] | None, set_ids: Sequence[str] | None = None) -> list[str]:
+        """Combine explicit tool ids with the members of any referenced tool sets into one
+        order-stable, de-duplicated id list. Unknown set ids contribute nothing (tolerant,
+        like tools_for), so an agent can be granted individual tools AND whole sets at once."""
+        seen: set[str] = set()
+        out: list[str] = []
+        for tid in tool_ids or []:
+            if tid not in seen:
+                seen.add(tid)
+                out.append(tid)
+        for sid in set_ids or []:
+            for tid in self.toolset_members.get(sid, []):
+                if tid not in seen:
+                    seen.add(tid)
+                    out.append(tid)
         return out
 
     def components_for(self, ids: Sequence[str]) -> list[Any]:

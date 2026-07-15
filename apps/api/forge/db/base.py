@@ -92,6 +92,8 @@ def _ensure_new_columns(conn) -> None:
         "triggers": {"metadata": "JSON DEFAULT '{}'"},
         "agents": {"created_by": "VARCHAR(36)", "created_by_email": "VARCHAR(320)"},
         "mcp_clients": {"disabled_tools": "JSON DEFAULT '[]'"},
+        "api_keys": {"user_id": "VARCHAR(36)", "project_id": "VARCHAR(36)"},
+        "tool_sets": {"exposed": "BOOLEAN NOT NULL DEFAULT 1"},
         "projects": {"embed_key": "VARCHAR(64)"},
         "spans": {"input": "JSON", "output": "JSON"},
         "runs": {"source": "VARCHAR(40) NOT NULL DEFAULT 'playground'"},

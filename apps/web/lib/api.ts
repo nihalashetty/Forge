@@ -56,6 +56,30 @@ export interface Tool {
   config: Record<string, any>;
 }
 
+export interface ToolSet {
+  id: string;
+  project_id: string;
+  name: string;
+  slug: string;
+  description: string;
+  icon?: string | null;
+  is_default: boolean;
+  exposed: boolean;
+  tool_ids: string[];
+}
+
+export interface McpToken {
+  id: string;
+  name: string;
+  prefix: string;
+  project_id?: string | null;
+  status: string;
+  created_at?: string | null;
+  last_used_at?: string | null;
+  expires_at?: string | null;
+  token?: string | null;
+}
+
 export interface ComponentT {
   id: string;
   name: string;
@@ -292,6 +316,24 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ args, context }),
     }),
+  // tool sets (describable groups of tools; organize the Tools screen + publish over MCP)
+  listToolSets: (pid: string) => json<ToolSet[]>(`/v1/projects/${pid}/tool-sets`),
+  createToolSet: (pid: string, body: { name: string; description?: string; icon?: string | null; is_default?: boolean; exposed?: boolean; tool_ids?: string[] }) =>
+    json<ToolSet>(`/v1/projects/${pid}/tool-sets`, { method: "POST", body: JSON.stringify(body) }),
+  updateToolSet: (pid: string, sid: string, body: Partial<{ name: string; description: string; icon: string | null; is_default: boolean; exposed: boolean; tool_ids: string[] }>) =>
+    json<ToolSet>(`/v1/projects/${pid}/tool-sets/${sid}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteToolSet: (pid: string, sid: string) =>
+    fetch(`${BASE}/v1/projects/${pid}/tool-sets/${sid}`, { method: "DELETE", headers: authHeader() }),
+  addToolToSet: (pid: string, sid: string, tid: string) =>
+    fetch(`${BASE}/v1/projects/${pid}/tool-sets/${sid}/tools/${tid}`, { method: "POST", headers: authHeader() }),
+  removeToolFromSet: (pid: string, sid: string, tid: string) =>
+    fetch(`${BASE}/v1/projects/${pid}/tool-sets/${sid}/tools/${tid}`, { method: "DELETE", headers: authHeader() }),
+  // MCP personal access tokens (per-user MCP auth; the plaintext is returned once on create)
+  listMcpTokens: (pid: string) => json<McpToken[]>(`/v1/projects/${pid}/mcp-tokens`),
+  createMcpToken: (pid: string, body: { name?: string; ttl_days?: number }) =>
+    json<McpToken>(`/v1/projects/${pid}/mcp-tokens`, { method: "POST", body: JSON.stringify(body) }),
+  revokeMcpToken: (pid: string, tid: string) =>
+    fetch(`${BASE}/v1/projects/${pid}/mcp-tokens/${tid}`, { method: "DELETE", headers: authHeader() }),
   // components (Feature 2 - generative UI widgets)
   listComponents: (pid: string) => json<ComponentT[]>(`/v1/projects/${pid}/components`),
   getComponent: (pid: string, cid: string) => json<ComponentT>(`/v1/projects/${pid}/components/${cid}`),

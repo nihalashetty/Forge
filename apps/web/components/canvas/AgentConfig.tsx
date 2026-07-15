@@ -5,12 +5,12 @@ import { Icon } from "../icons";
 import { Field, Modal, Segmented, Tile, Toggle } from "../primitives";
 import { FieldsForm, MW_FIELDS, MultiSelectChips } from "./ConfigForm";
 import { MODELS, MIDDLEWARE_CATALOG, MW_META } from "@/lib/data";
-import type { Agent, ComponentT, McpClientT, Tool } from "@/lib/api";
+import type { Agent, ComponentT, McpClientT, Tool, ToolSet } from "@/lib/api";
 
 type Cfg = Record<string, any>;
 type MW = { type: string; enabled?: boolean; config?: Record<string, any> };
 
-export function AgentConfig({ config, onChange, tools = [], agents = [], folders = [], kinds = [], mcpServers = [], components = [] }: { config: Cfg; onChange: (c: Cfg) => void; tools?: Tool[]; agents?: Agent[]; folders?: string[]; kinds?: string[]; mcpServers?: McpClientT[]; components?: ComponentT[] }) {
+export function AgentConfig({ config, onChange, tools = [], toolSets = [], agents = [], folders = [], kinds = [], mcpServers = [], components = [] }: { config: Cfg; onChange: (c: Cfg) => void; tools?: Tool[]; toolSets?: ToolSet[]; agents?: Agent[]; folders?: string[]; kinds?: string[]; mcpServers?: McpClientT[]; components?: ComponentT[] }) {
   const set = (patch: Cfg) => onChange({ ...config, ...patch });
   const flavor = config.flavor || "agent";
   const selectedTools: string[] = config.tools || [];
@@ -19,6 +19,21 @@ export function AgentConfig({ config, onChange, tools = [], agents = [], folders
 
   const toggleTool = (id: string) =>
     set({ tools: selectedTools.includes(id) ? selectedTools.filter((t) => t !== id) : [...selectedTools, id] });
+  const selectedToolSets: string[] = config.toolsets || [];
+  const toggleToolSet = (id: string) =>
+    set({ toolsets: selectedToolSets.includes(id) ? selectedToolSets.filter((s) => s !== id) : [...selectedToolSets, id] });
+  // Tools are picked BY tool set (accordion), not from a flat list.
+  const [openSets, setOpenSets] = useState<Set<string>>(new Set());
+  const toggleOpen = (id: string) =>
+    setOpenSets((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+  const toolById = new Map(tools.map((t) => [t.id, t]));
+  const groupedIds = new Set(toolSets.flatMap((s) => s.tool_ids));
+  const ungrouped = tools.filter((t) => !groupedIds.has(t.id));
+  // Effective count: individually-picked tools ∪ every tool of a whole-set grant.
+  const grantedCount = new Set([
+    ...selectedTools,
+    ...toolSets.filter((s) => selectedToolSets.includes(s.id)).flatMap((s) => s.tool_ids),
+  ]).size;
   const toggleComponent = (id: string) =>
     set({ components: selectedComponents.includes(id) ? selectedComponents.filter((c) => c !== id) : [...selectedComponents, id] });
 
@@ -96,18 +111,65 @@ export function AgentConfig({ config, onChange, tools = [], agents = [], folders
         <textarea className="textarea" rows={4} value={config.system_prompt || ""} placeholder="You are a helpful support agent…" onChange={(e) => set({ system_prompt: e.target.value })} />
       </Section>
 
-      <CollapsibleSection label="Tools" badge={selectedTools.length ? `${selectedTools.length} selected` : undefined}
-        hint={tools.length ? undefined : "No tools in this project yet - add them on the Tools screen."}>
-        <div className="row gap2 wrap">
-          {tools.map((t) => {
-            const on = selectedTools.includes(t.id);
+      <CollapsibleSection label="Tools" badge={grantedCount ? `${grantedCount} selected` : undefined}
+        hint="Tools are organized by tool set — open a set and tick the tools this agent should use, or grant the whole set. Manage sets on the Tools screen.">
+        <div className="col gap1">
+          {toolSets.map((s) => {
+            const open = openSets.has(s.id);
+            const whole = selectedToolSets.includes(s.id);
+            const members = s.tool_ids.map((id) => toolById.get(id)).filter(Boolean) as Tool[];
+            const sel = whole ? members.length : members.filter((t) => selectedTools.includes(t.id)).length;
             return (
-              <button key={t.id} className="chip" onClick={() => toggleTool(t.id)}
-                style={{ cursor: "pointer", borderColor: on ? "var(--accent)" : "var(--line)", color: on ? "var(--accent)" : "var(--fg-1)", background: on ? "var(--accent-glow)" : "var(--bg-3)" }}>
-                {on && <Icon name="check" size={12} />}<span className="mono-sm">{t.name}</span>
-              </button>
+              <div key={s.id} className="card" style={{ padding: 0, overflow: "hidden" }}>
+                <div className="row spread" style={{ padding: "8px 10px", cursor: "pointer" }} onClick={() => toggleOpen(s.id)}>
+                  <div className="row gap2" style={{ alignItems: "center", minWidth: 0 }}>
+                    <Icon name={open ? "chevdown" : "chevright"} size={14} style={{ color: "var(--fg-2)", flex: "none" }} />
+                    <span className="mono-sm truncate">{s.name}</span>
+                    <span className="t-caption fg-2">{sel}/{members.length}</span>
+                  </div>
+                  <label className="row gap1" style={{ alignItems: "center", cursor: "pointer", flex: "none" }} onClick={(e) => e.stopPropagation()} title="Grant the whole set (auto-includes tools added to it later)">
+                    <input type="checkbox" checked={whole} onChange={() => toggleToolSet(s.id)} />
+                    <span className="t-caption fg-2">Whole set</span>
+                  </label>
+                </div>
+                {open && (
+                  <div className="col gap1" style={{ padding: "6px 12px 10px 30px", borderTop: "1px solid var(--line)" }}>
+                    {members.length === 0 && <div className="t-caption fg-2">No tools in this set yet.</div>}
+                    {members.map((t) => (
+                      <label key={t.id} className="row gap2" style={{ alignItems: "center", cursor: whole ? "default" : "pointer", opacity: whole ? 0.55 : 1 }}>
+                        <input type="checkbox" disabled={whole} checked={whole || selectedTools.includes(t.id)} onChange={() => toggleTool(t.id)} />
+                        <span className="mono-sm">{t.name}</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </div>
             );
           })}
+          {ungrouped.length > 0 && (
+            <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+              <div className="row spread" style={{ padding: "8px 10px", cursor: "pointer" }} onClick={() => toggleOpen("__ungrouped")}>
+                <div className="row gap2" style={{ alignItems: "center" }}>
+                  <Icon name={openSets.has("__ungrouped") ? "chevdown" : "chevright"} size={14} style={{ color: "var(--fg-2)", flex: "none" }} />
+                  <span className="mono-sm fg-2">Ungrouped</span>
+                  <span className="t-caption fg-2">{ungrouped.filter((t) => selectedTools.includes(t.id)).length}/{ungrouped.length}</span>
+                </div>
+              </div>
+              {openSets.has("__ungrouped") && (
+                <div className="col gap1" style={{ padding: "6px 12px 10px 30px", borderTop: "1px solid var(--line)" }}>
+                  {ungrouped.map((t) => (
+                    <label key={t.id} className="row gap2" style={{ alignItems: "center", cursor: "pointer" }}>
+                      <input type="checkbox" checked={selectedTools.includes(t.id)} onChange={() => toggleTool(t.id)} />
+                      <span className="mono-sm">{t.name}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+          {toolSets.length === 0 && ungrouped.length === 0 && (
+            <div className="t-caption fg-2">No tools yet — create some on the Tools screen.</div>
+          )}
         </div>
       </CollapsibleSection>
 

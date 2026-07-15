@@ -119,6 +119,12 @@ async def build_compile_context(
     ctx.tool_registry = registry
     ctx.tool_specs = specs
 
+    # Tool-set membership (set_id -> [tool_id]) so an agent node can reference a whole set via
+    # config.toolsets and resolve it to member tools at compile time. One query per run.
+    from forge.services.tool_sets import ToolSetService
+
+    ctx.toolset_members = await ToolSetService.members_map(session, tenant_id, project_id)
+
     # User-defined UI components → widget-tools (Feature 2). Each becomes a tool the agent
     # can call to render a saved html/css template client-side (the tool args are the props).
     from forge.models import Component

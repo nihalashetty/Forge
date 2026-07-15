@@ -42,7 +42,7 @@ class User(PkTimestamp, Base):
     tenant_id: Mapped[str] = mapped_column(String(36), ForeignKey("tenants.id"), index=True)
     email: Mapped[str] = mapped_column(String(320), index=True)
     password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    role: Mapped[str] = mapped_column(String(30), default="owner")  # owner|admin|editor|viewer
+    role: Mapped[str] = mapped_column(String(30), default="owner")  # owner|admin|editor|viewer|connector
     status: Mapped[str] = mapped_column(String(20), default="active")
     last_login_at: Mapped[datetime | None] = mapped_column(nullable=True)
 
@@ -84,6 +84,42 @@ class Tool(PkTimestamp, Base):
     auth_provider_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     last_tested: Mapped[str | None] = mapped_column(String(20), nullable=True)  # pass|fail|untested
+
+
+class ToolSet(PkTimestamp, Base):
+    """A named, describable group of tools ("tool set"). Tool sets are the unit of
+    organization in the Tools screen (they render as folders) AND the unit of exposure: an
+    agent can be granted a whole set (agent config.toolsets) and the MCP server can publish
+    a set as a GitHub-style toolset. Membership is many-to-many via ToolSetMember, so a tool
+    may live in several sets (label-style, not a single home folder). `description` is what
+    an MCP client / the model reads to decide when to enable the set; `is_default` marks a
+    set that's published by default when a project exposes its tools over MCP."""
+
+    __tablename__ = "tool_sets"
+    __table_args__ = (UniqueConstraint("tenant_id", "project_id", "slug", name="uq_tool_set_slug"),)
+    tenant_id: Mapped[str] = mapped_column(String(36), index=True)
+    project_id: Mapped[str] = mapped_column(String(36), index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    slug: Mapped[str] = mapped_column(String(120), index=True)  # url-safe id, unique per project
+    description: Mapped[str] = mapped_column(Text, default="")
+    icon: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Publish this set (and its enabled tools) over MCP. The MCP surface is EXACTLY the enabled
+    # tools of exposed sets - there are no loose "directly exposed" tools (GitHub-toolset model).
+    exposed: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class ToolSetMember(PkTimestamp, Base):
+    """Many-to-many membership linking a Tool to a ToolSet (a tool can belong to several
+    sets). No DB-level cascade (matching the rest of the schema); ToolSetService and
+    ToolService delete the membership rows explicitly when a set or tool is removed."""
+
+    __tablename__ = "tool_set_members"
+    __table_args__ = (UniqueConstraint("tool_set_id", "tool_id", name="uq_tool_set_member"),)
+    tenant_id: Mapped[str] = mapped_column(String(36), index=True)
+    project_id: Mapped[str] = mapped_column(String(36), index=True)
+    tool_set_id: Mapped[str] = mapped_column(String(36), index=True)
+    tool_id: Mapped[str] = mapped_column(String(36), index=True)
 
 
 class Component(PkTimestamp, Base):
@@ -437,6 +473,12 @@ class ApiKey(PkTimestamp, Base):
     last_used_at: Mapped[datetime | None] = mapped_column(nullable=True)
     expires_at: Mapped[datetime | None] = mapped_column(nullable=True)  # optional hard expiry
     created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    # Personal access token (MCP): when `user_id` is set this row is a per-user PAT (plaintext
+    # prefix forge_pat_, minted by ApiKeyService.create_personal) used to authenticate an
+    # individual over a project's MCP server AS an end_user, optionally scoped to one `project_id`.
+    # A PAT is deliberately NOT a general-API principal - get_current_user only honors forge_sk_.
+    user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    project_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
 
 class ProjectMember(PkTimestamp, Base):
@@ -450,6 +492,19 @@ class ProjectMember(PkTimestamp, Base):
     project_id: Mapped[str] = mapped_column(String(36), index=True)
     user_id: Mapped[str] = mapped_column(String(36), index=True)
     role: Mapped[str] = mapped_column(String(30), default="viewer")  # owner|admin|editor|viewer
+
+
+class OAuthClient(PkTimestamp, Base):
+    """A dynamically-registered OAuth 2.1 client (RFC 7591) for the MCP authorization server.
+    Public clients (no secret), identified by `client_id` with an exact-match redirect_uri
+    allow-list. Registered open / pre-auth (any MCP client may register); the USER identity is
+    established later at the authorize step. Global (no tenant_id) - it is a client registry, not
+    tenant data. Only used when settings.mcp_oauth_enabled is on."""
+
+    __tablename__ = "oauth_clients"
+    client_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    client_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    redirect_uris: Mapped[list] = mapped_column(JSON, default=list)
 
 
 class UserSecurity(PkTimestamp, Base):

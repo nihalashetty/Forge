@@ -270,6 +270,23 @@ def create_session_token(*, tenant_id: str, project_id: str, end_user: dict, ori
     )
 
 
+def create_mcp_authorization_code(*, claims: dict, ttl_minutes: int = 5) -> str:
+    """Short-lived OAuth 2.1 authorization code (MCP auth server). Carries the bound client_id,
+    redirect_uri, PKCE challenge, requested resource, and the authenticated user - so /token can
+    verify the exchange statelessly. Never returned to the model; only to the redirect_uri."""
+    return _encode(claims, timedelta(minutes=ttl_minutes), "mcp_auth_code")
+
+
+def create_mcp_access_token(*, claims: dict, ttl_minutes: int = 60) -> str:
+    """OAuth 2.1 access token for a Forge MCP resource. `aud` is bound to the project's canonical
+    MCP URL (RFC 8707); the MCP resource server validates the audience before honoring it."""
+    return _encode(claims, timedelta(minutes=ttl_minutes), "mcp_access")
+
+
+def create_mcp_refresh_token(*, claims: dict, ttl_days: int = 30) -> str:
+    return _encode(claims, timedelta(days=ttl_days), "mcp_refresh")
+
+
 def decode_token(token: str, *, expected_type: str | None = None, check_revoked: bool = True) -> dict:
     # Accept the current signing key plus any configured previous keys (rotation overlap).
     keys = [settings.jwt_secret, *(settings.jwt_secret_previous or [])]

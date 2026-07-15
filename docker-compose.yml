@@ -72,6 +72,13 @@ services:
       FORGE_PUBLIC_BASE_URL: ${FORGE_PUBLIC_BASE_URL:-http://localhost:8000}
       FORGE_PUBLIC_CONSOLE_URL: ${FORGE_PUBLIC_CONSOLE_URL:-http://localhost:3000}
       FORGE_CORS_ORIGINS: '["http://localhost:3000"]'
+      # Expose the MCP OAuth 2.1 authorization server so MCP clients can authenticate a user by
+      # logging in (in addition to API keys / personal access tokens). Uses FORGE_PUBLIC_BASE_URL
+      # for its discovery + redirect URLs. SECURITY: the consent/login screen is intentionally
+      # minimal and not yet hardened (minimal consent UX, no per-client consent memory, MFA
+      # accounts refused) - see forge/routers/mcp_oauth.py. Override to "false" for a real prod
+      # deploy until it's reviewed.
+      FORGE_MCP_OAUTH_ENABLED: ${FORGE_MCP_OAUTH_ENABLED:-true}
       # Static bearer that authenticates a trusted server-to-server caller (e.g. an app backend
       # driving runs on behalf of its users) as a least-privilege service identity. Empty =
       # disabled. Generate a long random secret and set FORGE_SERVICE_API_TOKEN in .env.

@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "../icons";
 import { Field, Modal, Segmented, StatusPill, Tabs, Tile, TokenMeter, Toggle } from "../primitives";
 import { VersionHistory } from "../version-history";
-import { api, AuthProviderT, Tool, ToolTestResult } from "@/lib/api";
+import { api, AuthProviderT, Tool, ToolSet, ToolTestResult } from "@/lib/api";
 import { KIND_ICON, KIND_LABEL } from "@/lib/data";
 
 const estTokens = (o: any) => (o == null ? 0 : Math.max(1, JSON.stringify(o).length >> 2));
@@ -21,15 +21,26 @@ const DEFAULT_SAMPLE = {
 };
 
 /* ============ TOOLS LIST ============ */
+/* last_tested → [dot colour, label]. Untested reads amber (needs attention) per the design. */
+const STATUS = (s?: string | null): [string, string] =>
+  s === "pass" ? ["var(--ok)", "Passing"] : s === "fail" ? ["var(--err)", "Failing"] : ["var(--warn)", "Untested"];
+
 export function ToolsScreen({ project, onOpen }: { project: any; onOpen: (t: Tool) => void }) {
   const [tools, setTools] = useState<Tool[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [view, setView] = useState<"grid" | "list">("grid");
   const [open, setOpen] = useState(false);
+  const [toolSets, setToolSets] = useState<ToolSet[]>([]);
+  const [filterSet, setFilterSet] = useState<string>("all"); // "all" | "ungrouped" | <setId>
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [drawerSel, setDrawerSel] = useState<string | null>(null); // null = create a new set
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [query, setQuery] = useState("");
 
   const reload = useCallback(() => {
     if (!project?.id) return;
     api.listTools(project.id).then(setTools).catch((e) => setErr(String(e.message || e)));
+    api.listToolSets(project.id).then(setToolSets).catch(() => {});
   }, [project?.id]);
   useEffect(() => { reload(); }, [reload]);
 
@@ -55,91 +66,352 @@ export function ToolsScreen({ project, onOpen }: { project: any; onOpen: (t: Too
     try { await api.updateTool(project.id, t.id, { enabled: !t.enabled }); } catch { reload(); }
   }
 
+  async function toggleToolInSet(setId: string, toolId: string, isMember: boolean) {
+    try {
+      if (isMember) await api.removeToolFromSet(project.id, setId, toolId);
+      else await api.addToolToSet(project.id, setId, toolId);
+    } finally {
+      reload();
+    }
+  }
+
+  const memberOf = useMemo(() => {
+    const m = new Set<string>();
+    toolSets.forEach((s) => s.tool_ids.forEach((id) => m.add(id)));
+    return m;
+  }, [toolSets]);
+  const ungroupedCount = useMemo(() => tools.filter((t) => !memberOf.has(t.id)).length, [tools, memberOf]);
+  const countFor = useCallback((s: ToolSet) => { const ids = new Set(s.tool_ids); return tools.filter((t) => ids.has(t.id)).length; }, [tools]);
+
+  const shown = useMemo(() => {
+    let list = tools;
+    if (filterSet === "ungrouped") list = tools.filter((t) => !memberOf.has(t.id));
+    else if (filterSet !== "all") { const ids = new Set(toolSets.find((x) => x.id === filterSet)?.tool_ids || []); list = tools.filter((t) => ids.has(t.id)); }
+    const q = query.trim().toLowerCase();
+    if (q) list = list.filter((t) => t.name.toLowerCase().includes(q) || String((t.config as any)?.description || "").toLowerCase().includes(q));
+    return list;
+  }, [tools, toolSets, filterSet, memberOf, query]);
+
+  const showCheckbox = filterSet === "all" || filterSet === "ungrouped";
+  const headingLabel = filterSet === "all" ? "Tools" : filterSet === "ungrouped" ? "Ungrouped tools" : (toolSets.find((s) => s.id === filterSet)?.name || "Tools");
+
+  function selectFilter(key: string) { setFilterSet(key); setSelected(new Set()); }
+  function toggleSelect(id: string) { setSelected((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; }); }
+  function openManage() { setDrawerSel(filterSet !== "all" && filterSet !== "ungrouped" ? filterSet : (toolSets[0]?.id ?? null)); setDrawerOpen(true); }
+  function openNewSet() { setDrawerSel(null); setDrawerOpen(true); }
+
+  // Bulk-assign the current selection to a set (skipping tools already in it), then clear.
+  async function addSelectedToSet(setId: string) {
+    const already = new Set(toolSets.find((s) => s.id === setId)?.tool_ids || []);
+    const toAdd = Array.from(selected).filter((id) => !already.has(id));
+    try { await Promise.all(toAdd.map((id) => api.addToolToSet(project.id, setId, id))); }
+    finally { setSelected(new Set()); reload(); }
+  }
+
   return (
-    <div className="scroll-y" style={{ flex: 1, padding: "22px 28px" }}>
-      <div className="fade-up" style={{ maxWidth: 1600, margin: "0 auto" }}>
-        <div className="row spread" style={{ marginBottom: 18 }}>
-          <div>
-            <div className="t-display" style={{ fontSize: 21 }}>Tools</div>
-            <div className="fg-1" style={{ marginTop: 3, maxWidth: 560 }}>External capabilities - REST, GraphQL, code, SQL, or builtins - with response projection.</div>
-          </div>
-          <div className="row gap2">
-            <Segmented options={[{ value: "grid", label: "Grid" }, { value: "list", label: "List" }]} value={view} onChange={(v) => setView(v as any)} />
-            <button className="btn btn-primary" onClick={() => setOpen(true)}><Icon name="plus" size={15} />New tool</button>
+    <div style={{ flex: 1, minHeight: 0, display: "flex" }}>
+      <ToolsSidebar tools={tools} toolSets={toolSets} countFor={countFor} ungroupedCount={ungroupedCount} filterSet={filterSet} onFilter={selectFilter} onNewSet={openNewSet} onManage={openManage} />
+
+      <div className="col" style={{ flex: 1, minWidth: 0 }}>
+        <div className="scroll-y" style={{ flex: 1, padding: "24px 28px 120px" }}>
+          <div className="fade-up" style={{ maxWidth: 1500, margin: "0 auto" }}>
+            <div className="row spread wrap gap3" style={{ marginBottom: 22, alignItems: "flex-start" }}>
+              <div>
+                <div className="t-display" style={{ fontSize: 21 }}>{headingLabel}</div>
+                <div className="fg-2" style={{ marginTop: 4, maxWidth: 560 }}>External capabilities - REST, GraphQL, code, SQL, or builtins - with response projection.</div>
+              </div>
+              <div className="row gap2">
+                <input className="input" style={{ width: 190 }} placeholder="Search tools" value={query} onChange={(e) => setQuery(e.target.value)} />
+                <button className="btn btn-primary" onClick={() => setOpen(true)}><Icon name="plus" size={15} />New tool</button>
+                <Segmented options={[{ value: "grid", label: "Grid" }, { value: "list", label: "List" }]} value={view} onChange={(v) => setView(v as any)} />
+              </div>
+            </div>
+            {err && <div className="card" style={{ padding: 14, color: "var(--err)", marginBottom: 12 }}>{err}</div>}
+
+            {tools.length === 0 && !err ? (
+              <div className="card col center" style={{ padding: 44, gap: 8 }}><Tile icon="tools" color="var(--accent)" size={48} glow /><div className="t-h2">No tools yet</div><div className="fg-1">Create one, or ask the Forge Assistant to build it.</div></div>
+            ) : shown.length === 0 ? (
+              <div className="col center" style={{ padding: "60px 0", color: "var(--fg-2)", textAlign: "center" }}>
+                {filterSet === "ungrouped" ? "All tools are assigned to at least one toolset." : query ? "No tools match your search." : "No tools in this set yet."}
+              </div>
+            ) : view === "grid" ? (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))", gap: 16 }}>
+                {shown.map((t) => <ToolCard key={t.id} t={t} sets={toolSets} selectable={showCheckbox} selected={selected.has(t.id)} onToggleSelect={() => toggleSelect(t.id)} memberSetIds={new Set(toolSets.filter((s) => s.tool_ids.includes(t.id)).map((s) => s.id))} onToggleSet={(sid, isMember) => toggleToolInSet(sid, t.id, isMember)} onOpen={() => onOpen(t)} onDelete={(e) => del(e, t)} onDuplicate={(e) => duplicate(e, t)} onToggle={() => toggleEnabled(t)} />)}
+              </div>
+            ) : (
+              <div className="card" style={{ overflow: "hidden" }}>
+                <table className="tbl">
+                  <thead><tr>{showCheckbox && <th style={{ width: 34 }}></th>}<th>Tool</th><th>Kind</th><th>Auth</th><th>Projection</th><th>Status</th><th></th></tr></thead>
+                  <tbody>
+                    {shown.map((t) => {
+                      const lt = (t.config as any)?._last_test;
+                      return (
+                        <tr key={t.id} className="row" style={{ cursor: "pointer" }} onClick={() => onOpen(t)}>
+                          {showCheckbox && <td onClick={(e) => { e.stopPropagation(); toggleSelect(t.id); }}><Checkbox checked={selected.has(t.id)} /></td>}
+                          <td><div className="row gap2"><Icon name={KIND_ICON[t.kind] || "k_rest"} size={15} style={{ color: "var(--accent)" }} /><span className="mono-sm" style={{ fontWeight: 600 }}>{t.name}</span></div></td>
+                          <td><span className="chip chip-mono">{KIND_LABEL[t.kind] || t.kind}</span></td>
+                          <td>{t.auth_provider_id ? <span className="chip chip-mono"><Icon name="auth" size={12} />{t.auth_provider_id.slice(0, 8)}</span> : <span className="fg-2">-</span>}</td>
+                          <td>{lt ? <TokenMeter compact raw={lt.raw_tokens} projected={lt.projected_tokens} animateKey={t.id} /> : <span className="fg-2">-</span>}</td>
+                          <td><StatusPill status={t.last_tested || "untested"} /></td>
+                          <td style={{ textAlign: "right" }}>
+                            <div className="row gap1" style={{ justifyContent: "flex-end" }}>
+                              <Toggle on={t.enabled} onChange={() => toggleEnabled(t)} />
+                              <button className="iconbtn" title="Duplicate tool" onClick={(e) => duplicate(e, t)}><Icon name="copy" size={14} /></button>
+                              <button className="iconbtn" title="Delete tool" onClick={(e) => { e.stopPropagation(); del(e, t); }}><Icon name="trash" size={14} /></button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         </div>
-        {err && <div className="card" style={{ padding: 14, color: "var(--err)", marginBottom: 12 }}>{err}</div>}
-
-        {tools.length === 0 && !err && (
-          <div className="card col center" style={{ padding: 44, gap: 8 }}><Tile icon="tools" color="var(--accent)" size={48} glow /><div className="t-h2">No tools yet</div><div className="fg-1">Create one, or ask the Forge Assistant to build it.</div></div>
-        )}
-
-        {view === "grid" ? (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(300px,1fr))", gap: 14 }}>
-            {tools.map((t) => <ToolCard key={t.id} t={t} onOpen={() => onOpen(t)} onDelete={(e) => del(e, t)} onDuplicate={(e) => duplicate(e, t)} onToggle={() => toggleEnabled(t)} />)}
-          </div>
-        ) : (
-          <div className="card" style={{ overflow: "hidden" }}>
-            <table className="tbl">
-              <thead><tr><th>Tool</th><th>Kind</th><th>Auth</th><th>Projection</th><th>Status</th><th></th></tr></thead>
-              <tbody>
-                {tools.map((t) => {
-                  const lt = (t.config as any)?._last_test;
-                  return (
-                    <tr key={t.id} className="row" style={{ cursor: "pointer" }} onClick={() => onOpen(t)}>
-                      <td><div className="row gap2"><Icon name={KIND_ICON[t.kind] || "k_rest"} size={15} style={{ color: "var(--accent)" }} /><span className="mono-sm" style={{ fontWeight: 600 }}>{t.name}</span></div></td>
-                      <td><span className="chip chip-mono">{KIND_LABEL[t.kind] || t.kind}</span></td>
-                      <td>{t.auth_provider_id ? <span className="chip chip-mono"><Icon name="auth" size={12} />{t.auth_provider_id.slice(0, 8)}</span> : <span className="fg-2">-</span>}</td>
-                      <td>{lt ? <TokenMeter compact raw={lt.raw_tokens} projected={lt.projected_tokens} animateKey={t.id} /> : <span className="fg-2">-</span>}</td>
-                      <td><StatusPill status={t.last_tested || "untested"} /></td>
-                      <td style={{ textAlign: "right" }}>
-                        <div className="row gap1" style={{ justifyContent: "flex-end" }}>
-                          <Toggle on={t.enabled} onChange={() => toggleEnabled(t)} />
-                          <button className="iconbtn" title="Duplicate tool" onClick={(e) => duplicate(e, t)}><Icon name="copy" size={14} /></button>
-                          <button className="iconbtn" title="Delete tool" onClick={(e) => { e.stopPropagation(); del(e, t); }}><Icon name="trash" size={14} /></button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
       </div>
+
+      {selected.size > 0 && <SelectionBar count={selected.size} toolSets={toolSets} onAddTo={addSelectedToSet} onClear={() => setSelected(new Set())} />}
 
       <NewToolModal project={project} open={open} onClose={() => setOpen(false)} onOpenTool={onOpen} onReload={reload} />
+      <ManageToolsetsDrawer project={project} tools={tools} toolSets={toolSets} open={drawerOpen} initialSel={drawerSel} onClose={() => setDrawerOpen(false)} onChanged={reload} />
     </div>
   );
 }
 
-function ToolCard({ t, onOpen, onDelete, onDuplicate, onToggle }: { t: Tool; onOpen: () => void; onDelete: (e: React.MouseEvent) => void; onDuplicate: (e: React.MouseEvent) => void; onToggle: () => void }) {
-  const proj = (t.config as any)?.response?.projection_jmespath || (t.config as any)?.response?.projection;
+/* ============ TOOLS SIDEBAR (All / Ungrouped / colour-coded toolsets) ============ */
+function Checkbox({ checked }: { checked: boolean }) {
   return (
-    <div className="card card-hover" style={{ padding: 15, opacity: t.enabled ? 1 : 0.6 }} onClick={onOpen}>
-      <div className="row spread" style={{ marginBottom: 10 }}>
-        <span className="chip chip-mono">{KIND_LABEL[t.kind] || t.kind}</span>
-        <div className="row gap2" style={{ alignItems: "center" }}>
-          <StatusPill status={t.last_tested || "untested"} />
-          <ToolCardMenu enabled={t.enabled} onToggle={onToggle} onDuplicate={onDuplicate} onDelete={onDelete} />
+    <div style={{ width: 16, height: 16, borderRadius: 4, flex: "none", border: `1.5px solid ${checked ? "var(--accent)" : "var(--line-strong)"}`, background: checked ? "var(--accent)" : "var(--bg-1)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}>
+      {checked && <Icon name="check" size={11} style={{ color: "var(--fg-on-accent)" }} />}
+    </div>
+  );
+}
+
+function SideItem({ label, count, active, onClick, alert }: { label: string; count: number; active: boolean; onClick: () => void; alert?: boolean }) {
+  return (
+    <div onClick={onClick} className="sidenav-item" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 10px", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 13.5, background: active ? "var(--accent-glow)" : undefined, color: active ? "var(--accent)" : "var(--fg-0)" }}>
+      <span style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+        <span className="truncate">{label}</span>
+        {alert && <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--warn)", flex: "none" }} />}
+      </span>
+      <span style={{ fontSize: 12, fontWeight: 500, color: "var(--fg-2)", flex: "none" }}>{count}</span>
+    </div>
+  );
+}
+
+function ToolsSidebar({ tools, toolSets, countFor, ungroupedCount, filterSet, onFilter, onNewSet, onManage }: { tools: Tool[]; toolSets: ToolSet[]; countFor: (s: ToolSet) => number; ungroupedCount: number; filterSet: string; onFilter: (k: string) => void; onNewSet: () => void; onManage: () => void }) {
+  return (
+    <div className="col" style={{ width: 236, flex: "0 0 236px", background: "var(--bg-1)", borderRight: "1px solid var(--line)", padding: "20px 14px", gap: 22, overflowY: "auto" }}>
+      <div className="t-h1" style={{ padding: "0 8px" }}>MCP Tools</div>
+
+      <div className="col" style={{ gap: 2 }}>
+        <SideItem label="All tools" count={tools.length} active={filterSet === "all"} onClick={() => onFilter("all")} />
+        <SideItem label="Ungrouped" count={ungroupedCount} active={filterSet === "ungrouped"} onClick={() => onFilter("ungrouped")} alert={ungroupedCount > 0} />
+      </div>
+
+      <div className="col" style={{ gap: 6 }}>
+        <div className="row spread" style={{ padding: "0 10px" }}>
+          <span className="t-micro">Toolsets</span>
+          <button className="iconbtn" title="New toolset" onClick={onNewSet} style={{ width: 22, height: 22 }}><Icon name="plus" size={14} /></button>
+        </div>
+        {toolSets.map((s) => (
+          <SideItem key={s.id} label={s.name} count={countFor(s)} active={filterSet === s.id} onClick={() => onFilter(s.id)} />
+        ))}
+        {toolSets.length === 0 && <div className="fg-2 t-caption" style={{ padding: "2px 10px" }}>No toolsets yet.</div>}
+        <button onClick={onManage} className="btn btn-ghost btn-sm" style={{ marginTop: 4, justifyContent: "center", border: "1px dashed var(--line-strong)" }}>Manage toolsets</button>
+      </div>
+
+      <div style={{ marginTop: "auto", padding: 10, background: "var(--bg-3)", borderRadius: 8, fontSize: 12, color: "var(--fg-2)", lineHeight: 1.5 }}>
+        A tool can belong to any number of toolsets - assign it from its card, bulk-select, or Manage toolsets.
+      </div>
+    </div>
+  );
+}
+
+/* Bulk-action bar (fixed, bottom-centre) shown while tools are multi-selected. */
+function SelectionBar({ count, toolSets, onAddTo, onClear }: { count: number; toolSets: ToolSet[]; onAddTo: (setId: string) => void; onClear: () => void }) {
+  const [menu, setMenu] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!menu) return;
+    const h = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setMenu(false); };
+    window.addEventListener("mousedown", h);
+    return () => window.removeEventListener("mousedown", h);
+  }, [menu]);
+  return (
+    <div className="fade-up row gap3" style={{ position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", background: "var(--fg-0)", color: "var(--bg-1)", borderRadius: 12, padding: "10px 14px", boxShadow: "var(--sh-pop)", zIndex: 5000 }}>
+      <span style={{ fontSize: 13, fontWeight: 600 }}>{count} selected</span>
+      <div ref={ref} style={{ position: "relative" }}>
+        <button onClick={() => setMenu((m) => !m)} style={{ fontSize: 13, fontWeight: 600, padding: "7px 12px", borderRadius: 8, background: "var(--bg-hover)", color: "var(--fg-0)", border: "none", cursor: "pointer", fontFamily: "var(--font-ui)" }}>Add to toolset ▾</button>
+        {menu && (
+          <div className="card" style={{ position: "absolute", bottom: "calc(100% + 8px)", left: 0, minWidth: 200, padding: 6, boxShadow: "var(--sh-pop)" }}>
+            {toolSets.length === 0 && <div className="fg-2 t-caption" style={{ padding: "8px 10px" }}>No toolsets yet.</div>}
+            {toolSets.map((s) => (
+              <button key={s.id} onClick={() => { setMenu(false); onAddTo(s.id); }} className="truncate" style={{ width: "100%", textAlign: "left", padding: "8px 10px", border: "none", background: "none", borderRadius: 6, cursor: "pointer", fontSize: 13, color: "var(--fg-0)", fontFamily: "var(--font-ui)" }}>{s.name}</button>
+            ))}
+          </div>
+        )}
+      </div>
+      <button onClick={onClear} style={{ fontSize: 13, fontWeight: 600, color: "var(--fg-2)", background: "none", border: "none", cursor: "pointer", fontFamily: "var(--font-ui)" }}>Cancel</button>
+    </div>
+  );
+}
+
+/* ============ MANAGE TOOLSETS (right drawer: set list + editor) ============ */
+function ManageToolsetsDrawer({ project, tools, toolSets, open, initialSel, onClose, onChanged }: { project: any; tools: Tool[]; toolSets: ToolSet[]; open: boolean; initialSel: string | null; onClose: () => void; onChanged: () => void }) {
+  const [sel, setSel] = useState<string | null>(initialSel); // null = creating a new set
+  const [name, setName] = useState("");
+  const [desc, setDesc] = useState("");
+  const [memberIds, setMemberIds] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [addOpen, setAddOpen] = useState(false);
+  const addRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => { if (open) setSel(initialSel); }, [open, initialSel]);
+  useEffect(() => {
+    if (sel == null) { setName(""); setDesc(""); setMemberIds([]); return; }
+    const s = toolSets.find((x) => x.id === sel);
+    if (s) { setName(s.name); setDesc(s.description || ""); setMemberIds(s.tool_ids); }
+  }, [sel, toolSets]);
+  useEffect(() => {
+    if (!addOpen) return;
+    const h = (e: MouseEvent) => { if (addRef.current && !addRef.current.contains(e.target as Node)) setAddOpen(false); };
+    window.addEventListener("mousedown", h);
+    return () => window.removeEventListener("mousedown", h);
+  }, [addOpen]);
+
+  const saved = toolSets.find((x) => x.id === sel)?.tool_ids || [];
+  // The list shows only tools that belong to the set - plus any member you just unchecked,
+  // kept visible (unchecked) until you Save, at which point it drops off. Unrelated tools
+  // are never listed here; add them from the "Add tools" picker.
+  const visibleIds = useMemo(() => new Set([...saved, ...memberIds]), [saved, memberIds]);
+  const memberList = tools.filter((t) => visibleIds.has(t.id));
+  const addable = tools.filter((t) => !visibleIds.has(t.id));
+  const addMember = (tid: string) => setMemberIds((m) => (m.includes(tid) ? m : [...m, tid]));
+  const toggleMember = (tid: string) => setMemberIds((m) => (m.includes(tid) ? m.filter((x) => x !== tid) : [...m, tid]));
+
+  async function save() {
+    setBusy(true);
+    try {
+      if (sel == null) { const s = await api.createToolSet(project.id, { name: name.trim() || "new_toolset", description: desc, tool_ids: memberIds }); setSel(s.id); }
+      else await api.updateToolSet(project.id, sel, { name, description: desc, tool_ids: memberIds });
+      onChanged();
+    } finally { setBusy(false); }
+  }
+  async function del() {
+    if (sel == null) return;
+    if (!window.confirm("Delete this tool set? The tools themselves are not deleted.")) return;
+    await api.deleteToolSet(project.id, sel);
+    setSel(null); onChanged();
+  }
+
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 7000, pointerEvents: open ? "auto" : "none" }}>
+      <div onClick={onClose} style={{ position: "absolute", inset: 0, background: "rgba(8,10,14,.4)", opacity: open ? 1 : 0, transition: "opacity var(--dur)" }} />
+      <div className="row" style={{ position: "absolute", top: 0, right: 0, bottom: 0, width: 640, maxWidth: "96vw", background: "var(--bg-1)", borderLeft: "1px solid var(--line)", boxShadow: "var(--sh-pop)", transform: open ? "none" : "translateX(100%)", transition: "transform var(--dur-slow) var(--ease)", alignItems: "stretch" }}>
+        <div className="col" style={{ width: 210, flex: "0 0 210px", borderRight: "1px solid var(--line)", padding: "20px 12px", gap: 4, overflowY: "auto" }}>
+          <div className="t-h1" style={{ padding: "4px 8px 12px" }}>Toolsets</div>
+          {toolSets.map((s) => {
+            const active = sel === s.id;
+            return (
+              <div key={s.id} onClick={() => setSel(s.id)} className="sidenav-item" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 10px", borderRadius: 8, cursor: "pointer", background: active ? "var(--accent-glow)" : undefined }}>
+                <span className="truncate" style={{ minWidth: 0, fontSize: 13, fontWeight: 600, color: active ? "var(--accent)" : "var(--fg-0)" }}>{s.name}</span>
+                <span className="fg-2 t-caption">{s.tool_ids.length}</span>
+              </div>
+            );
+          })}
+          <button onClick={() => setSel(null)} className="btn btn-ghost btn-sm" style={{ marginTop: 6, justifyContent: "flex-start", color: sel == null ? "var(--accent)" : "var(--fg-1)" }}><Icon name="plus" size={13} />New toolset</button>
+        </div>
+
+        {/* Right editor pane: header + fields + list header stay put; only the member list
+            scrolls, and the action row is pinned to the bottom. */}
+        <div className="col grow" style={{ minWidth: 0, minHeight: 0 }}>
+          <div style={{ position: "relative", zIndex: 3, padding: "22px 24px 0" }}>
+            <div className="row spread" style={{ marginBottom: 16 }}>
+              <div className="t-h1">{sel == null ? "New toolset" : name || "Toolset"}</div>
+              <button className="iconbtn" onClick={onClose}><Icon name="x" size={17} /></button>
+            </div>
+            <Field label="Name"><input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="quoting_tools" /></Field>
+            <Field label="Description" help="Shown to MCP clients/agents to describe what the set is for."><input className="input" value={desc} onChange={(e) => setDesc(e.target.value)} /></Field>
+
+            <div className="row spread" style={{ margin: "6px 0 8px", alignItems: "center" }}>
+              <span className="t-micro">Tools in this set - {memberIds.length}</span>
+              <div ref={addRef} style={{ position: "relative" }}>
+                <button className="btn btn-ghost btn-sm" onClick={() => setAddOpen((o) => !o)} disabled={addable.length === 0}><Icon name="plus" size={13} />Add tools</button>
+                {addOpen && addable.length > 0 && (
+                  <div className="card fade-in" style={{ position: "absolute", top: "calc(100% + 4px)", right: 0, zIndex: 10, minWidth: 260, maxHeight: 280, overflowY: "auto", padding: 4, boxShadow: "var(--sh-pop)" }}>
+                    {addable.map((t) => (
+                      <button key={t.id} onClick={() => addMember(t.id)} className="row spread gap2" style={{ width: "100%", padding: "7px 9px", border: "none", background: "none", borderRadius: 6, cursor: "pointer", fontFamily: "var(--font-ui)" }}>
+                        <span className="mono-sm truncate" style={{ fontWeight: 600 }}>{t.name}</span>
+                        <span className="chip chip-mono">{KIND_LABEL[t.kind] || t.kind}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="scroll-y" style={{ flex: 1, minHeight: 0, padding: "0 24px 8px" }}>
+            <div className="col" style={{ border: "1px solid var(--line)", borderRadius: 10, overflow: "hidden" }}>
+              {memberList.map((t, i) => (
+                <div key={t.id} onClick={() => toggleMember(t.id)} className="row gap2" style={{ padding: "10px 12px", borderBottom: i < memberList.length - 1 ? "1px solid var(--line)" : "none", cursor: "pointer" }}>
+                  <Checkbox checked={memberIds.includes(t.id)} />
+                  <span className="mono-sm" style={{ fontWeight: 600, flex: 1, minWidth: 0 }}>{t.name}</span>
+                  <span className="chip chip-mono">{KIND_LABEL[t.kind] || t.kind}</span>
+                </div>
+              ))}
+              {memberList.length === 0 && <div className="fg-2 t-caption" style={{ padding: 14 }}>No tools in this set yet — use “Add tools”.</div>}
+            </div>
+          </div>
+
+          <div className="row spread" style={{ padding: "12px 24px", borderTop: "1px solid var(--line)", flex: "none" }}>
+            {sel != null ? <button className="btn btn-ghost btn-sm" style={{ color: "var(--err)" }} onClick={del}><Icon name="trash" size={13} />Delete set</button> : <span />}
+            <div className="row gap2">
+              <button className="btn btn-ghost btn-sm" onClick={onClose}>Close</button>
+              <button className="btn btn-primary btn-sm" onClick={save} disabled={busy}>{busy ? "Saving…" : "Save set"}</button>
+            </div>
+          </div>
         </div>
       </div>
-      <div className="mono" style={{ fontWeight: 600, fontSize: 13.5, color: "var(--fg-0)", overflowWrap: "anywhere", wordBreak: "break-word" }}>{t.name}</div>
-      <div className="fg-2 t-caption" style={{ marginTop: 3, height: 32, overflow: "hidden" }}>{(t.config as any)?.description || "No description."}</div>
-      <div className="divider" style={{ margin: "10px 0" }} />
-      <div className="row spread" style={{ fontSize: 10.5, color: "var(--fg-2)", minHeight: 20, alignItems: "center" }}>
-        <span className="row gap1"><Icon name={proj ? "check" : "minus"} size={12} />{proj ? "Response projection set" : "No projection"}</span>
-        {t.auth_provider_id && <span className="row gap1 truncate" style={{ maxWidth: 130 }}><Icon name="auth" size={11} />{t.auth_provider_id.slice(0, 10)}</span>}
-      </div>
     </div>
   );
 }
 
-/* Overflow menu on each tool card - enable/disable toggle, duplicate, delete.
-   Drops DOWN from the trigger, right-aligned so it never runs off-screen. */
-function ToolCardMenu({ enabled, onToggle, onDuplicate, onDelete }: { enabled: boolean; onToggle: () => void; onDuplicate: (e: React.MouseEvent) => void; onDelete: (e: React.MouseEvent) => void }) {
+function ToolCard({ t, sets, selectable, selected, onToggleSelect, memberSetIds, onToggleSet, onOpen, onDelete, onDuplicate, onToggle }: { t: Tool; sets: ToolSet[]; selectable: boolean; selected: boolean; onToggleSelect: () => void; memberSetIds: Set<string>; onToggleSet: (setId: string, isMember: boolean) => void; onOpen: () => void; onDelete: (e: React.MouseEvent) => void; onDuplicate: (e: React.MouseEvent) => void; onToggle: () => void }) {
+  const [statusColor, statusLabel] = STATUS(t.last_tested);
+  const [menuOpen, setMenuOpen] = useState(false);
+  return (
+    // While its ••• menu is open the card is lifted above its grid siblings, so the dropdown
+    // (which overflows the card bounds) isn't painted under the neighbouring cards.
+    <div className="card card-hover" style={{ padding: 16, position: "relative", zIndex: menuOpen ? 30 : undefined, opacity: t.enabled ? 1 : 0.6, borderColor: selected ? "var(--accent)" : undefined }} onClick={onOpen}>
+      <div className="row spread" style={{ marginBottom: 12 }}>
+        <div className="row gap2">
+          {selectable && <div onClick={(e) => { e.stopPropagation(); onToggleSelect(); }}><Checkbox checked={selected} /></div>}
+          <span className="chip chip-mono">{KIND_LABEL[t.kind] || t.kind}</span>
+        </div>
+        <div className="row gap2" style={{ alignItems: "center" }}>
+          <span style={{ width: 7, height: 7, borderRadius: "50%", background: statusColor, flex: "none" }} />
+          <span className="t-caption fg-1">{statusLabel}</span>
+          <ToolCardMenu enabled={t.enabled} sets={sets} memberSetIds={memberSetIds} onToggleSet={onToggleSet} onToggle={onToggle} onDuplicate={onDuplicate} onDelete={onDelete} onOpenChange={setMenuOpen} />
+        </div>
+      </div>
+      <div className="mono" style={{ fontWeight: 700, fontSize: 14, color: "var(--fg-0)", overflowWrap: "anywhere", wordBreak: "break-word", marginBottom: 6 }}>{t.name}</div>
+      {/* Clamp to 2 lines with a fixed height so cards stay uniform regardless of how long
+          a tool's description is (grid rows otherwise stretch to the tallest card). */}
+      <div className="fg-1 t-caption" style={{ lineHeight: "18px", height: 36, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>{(t.config as any)?.description || "No description."}</div>
+    </div>
+  );
+}
+
+/* Overflow menu on each tool card - enable/disable toggle, per-set membership toggles
+   (colour-coded to match the sidebar), duplicate, delete. Drops DOWN from the trigger,
+   right-aligned so it never runs off-screen. */
+function ToolCardMenu({ enabled, sets, memberSetIds, onToggleSet, onToggle, onDuplicate, onDelete, onOpenChange }: { enabled: boolean; sets: ToolSet[]; memberSetIds: Set<string>; onToggleSet: (setId: string, isMember: boolean) => void; onToggle: () => void; onDuplicate: (e: React.MouseEvent) => void; onDelete: (e: React.MouseEvent) => void; onOpenChange?: (open: boolean) => void }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => { onOpenChange?.(open); }, [open, onOpenChange]);
   useEffect(() => {
     if (!open) return;
     const h = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
@@ -151,11 +423,22 @@ function ToolCardMenu({ enabled, onToggle, onDuplicate, onDelete }: { enabled: b
     <div ref={ref} style={{ position: "relative" }} onClick={(e) => e.stopPropagation()}>
       <button className={"iconbtn" + (open ? " active" : "")} title="More actions" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((o) => !o)}><Icon name="more" size={16} /></button>
       {open && (
-        <div className="card fade-in" role="menu" style={{ position: "absolute", top: "100%", right: 0, marginTop: 6, zIndex: 6000, minWidth: 172, padding: 4, boxShadow: "var(--sh-pop)" }}>
+        <div className="card fade-in" role="menu" style={{ position: "absolute", top: "100%", right: 0, marginTop: 6, zIndex: 6000, minWidth: 190, padding: 4, boxShadow: "var(--sh-pop)" }}>
           <div style={{ ...item, justifyContent: "space-between", color: "var(--fg-1)", cursor: "default" }}>
             <span className="row gap2"><Icon name="bolt" size={15} style={{ color: enabled ? "var(--signal)" : "var(--fg-2)" }} />{enabled ? "Enabled" : "Disabled"}</span>
             <Toggle on={enabled} onChange={onToggle} />
           </div>
+          <div className="divider" style={{ margin: "4px 0" }} />
+          <div className="t-micro" style={{ padding: "4px 9px 2px" }}>Tool sets</div>
+          {sets.length > 0 ? sets.map((s) => {
+            const member = memberSetIds.has(s.id);
+            return (
+              <button key={s.id} role="menuitemcheckbox" aria-checked={member} style={{ ...item, color: "var(--fg-1)", justifyContent: "space-between" }} onClick={() => onToggleSet(s.id, member)}>
+                <span className="truncate">{s.name}</span>
+                {member && <Icon name="check" size={14} style={{ color: "var(--accent)" }} />}
+              </button>
+            );
+          }) : <div style={{ padding: "2px 9px 6px", color: "var(--fg-2)", fontSize: 12 }}>Not in any toolset</div>}
           <div className="divider" style={{ margin: "4px 0" }} />
           <button role="menuitem" style={{ ...item, color: "var(--fg-1)" }} onClick={(e) => { setOpen(false); onDuplicate(e); }}><Icon name="copy" size={15} />Duplicate</button>
           <button role="menuitem" style={{ ...item, color: "var(--err)" }} onClick={(e) => { setOpen(false); onDelete(e); }}><Icon name="trash" size={15} />Delete</button>

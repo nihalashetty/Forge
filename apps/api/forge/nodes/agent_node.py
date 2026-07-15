@@ -99,8 +99,8 @@ def build_subagents(subagents_cfg: list[dict], ctx: CompileContext) -> list[dict
         spec: dict[str, Any] = {"name": sa["name"], "description": sa.get("description", "")}
         if sa.get("system_prompt"):
             spec["system_prompt"] = sa["system_prompt"]
-        if sa.get("tools"):
-            spec["tools"] = ctx.tools_for(sa["tools"])
+        if sa.get("tools") or sa.get("toolsets"):
+            spec["tools"] = ctx.tools_for(ctx.resolve_tool_ids(sa.get("tools"), sa.get("toolsets")))
         if sa.get("model"):
             spec["model"] = resolve_model(sa["model"], ctx)
         if sa.get("middleware"):
@@ -218,7 +218,7 @@ def _dynamic_field_middleware(config: dict, ctx: CompileContext, base_prompt: st
 
 
 def _common_kwargs(config: dict, ctx: CompileContext) -> dict:
-    tools = list(ctx.tools_for(config.get("tools", [])))
+    tools = list(ctx.tools_for(ctx.resolve_tool_ids(config.get("tools"), config.get("toolsets"))))
     # Built-in knowledge access (RAG / Q&A) attached straight to the agent via its
     # `knowledge` config - no separate Tool row needed (see tools/builtin.py).
     if config.get("knowledge"):
