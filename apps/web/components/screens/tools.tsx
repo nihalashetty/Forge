@@ -115,14 +115,15 @@ export function ToolsScreen({ project, onOpen }: { project: any; onOpen: (t: Too
       <div className="col" style={{ flex: 1, minWidth: 0 }}>
         <div className="scroll-y" style={{ flex: 1, padding: "24px 28px 120px" }}>
           <div className="fade-up" style={{ maxWidth: 1500, margin: "0 auto" }}>
-            <div className="row spread wrap gap3" style={{ marginBottom: 22, alignItems: "flex-start" }}>
+            <div style={{ marginBottom: 22 }}>
               <div>
                 <div className="t-display" style={{ fontSize: 21 }}>{headingLabel}</div>
                 <div className="fg-2" style={{ marginTop: 4, maxWidth: 560 }}>External capabilities - REST, GraphQL, code, SQL, or builtins - with response projection.</div>
               </div>
-              <div className="row gap2">
-                <input className="input" style={{ width: 190 }} placeholder="Search tools" value={query} onChange={(e) => setQuery(e.target.value)} />
+              <div className="row gap2 wrap" style={{ marginTop: 16, alignItems: "center" }}>
+                <input className="input" style={{ width: 220 }} placeholder="Search tools" value={query} onChange={(e) => setQuery(e.target.value)} />
                 <button className="btn btn-primary" onClick={() => setOpen(true)}><Icon name="plus" size={15} />New tool</button>
+                <div style={{ flex: 1, minWidth: 8 }} />
                 <Segmented options={[{ value: "grid", label: "Grid" }, { value: "list", label: "List" }]} value={view} onChange={(v) => setView(v as any)} />
               </div>
             </div>
