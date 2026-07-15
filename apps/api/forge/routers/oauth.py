@@ -116,8 +116,10 @@ async def oauth_callback(
         return HTMLResponse("<h3>Missing code/state</h3>", status_code=400)
     try:
         claims = decode_token(state, expected_type="oauth_state")
-    except TokenError as e:
-        return HTMLResponse(f"<h3>Invalid or expired state</h3><p>{escape(str(e))}</p>", status_code=400)
+    except TokenError:
+        # Don't reflect the decode error detail on this public callback page; the generic
+        # message is enough for the user and the specifics aren't security-relevant to them.
+        return HTMLResponse("<h3>Invalid or expired state</h3>", status_code=400)
     tenant_id, project_id, ap_id = claims["tid"], claims["pid"], claims["ap"]
     ap = await _load(session, tenant_id, project_id, ap_id)
     cfg = ap.config or {}

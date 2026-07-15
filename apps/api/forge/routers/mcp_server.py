@@ -163,7 +163,9 @@ async def mcp_rpc(project_id: str, request: Request):
         try:
             result = await tool.ainvoke(args)
             return _rpc(rid, {"content": [{"type": "text", "text": str(result)}], "isError": False})
-        except Exception as e:  # noqa: BLE001
-            return _rpc(rid, {"content": [{"type": "text", "text": f"error: {e}"}], "isError": True})
+        except Exception:  # noqa: BLE001
+            # Don't leak internal error/stack detail to the external MCP client; log it server-side.
+            log.exception("mcp tool invocation failed (project=%s, tool=%s)", project_id, name)
+            return _rpc(rid, {"content": [{"type": "text", "text": "error: tool invocation failed"}], "isError": True})
 
     return _rpc(rid, error={"code": -32601, "message": f"method not found: {method}"})

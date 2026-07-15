@@ -148,7 +148,13 @@ export function ConnectScreen({ project }: { project: any }) {
     await api.updateProject(project.id, { config: { ...(p.config || {}), mcp_api_key: next || undefined } });
     setSave("saved"); setTimeout(() => setSave("idle"), 1200);
   }
-  const genKey = () => saveKey("fmcp_" + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2));
+  const genKey = () => {
+    // A shared MCP API key is a credential, so use the CSPRNG (crypto.getRandomValues),
+    // never Math.random() - the latter is predictable and unsafe for secret material.
+    const bytes = new Uint8Array(24);
+    crypto.getRandomValues(bytes);
+    saveKey("fmcp_" + Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join(""));
+  };
 
   const activeMeta = CONN_SECTIONS.find((s) => s.id === section)!;
   return (
