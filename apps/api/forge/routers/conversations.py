@@ -32,13 +32,15 @@ async def list_conversations(
     actor: str | None = Query(None, description="Filter by user name (e.g. 'System', 'Unknown user')"),
     source: str | None = Query(None, description="Filter by origin (playground|api|embed|channel_*|…)"),
     status: str | None = Query(None, description="'error' or 'success'/'done'"),
+    search: str | None = Query(None, description="Match user/AI message text (any turn)"),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
     session: AsyncSession = Depends(get_session),
     tenant_id: str = Depends(current_tenant_id),
 ):
     convos = await ConversationService.list(
-        session, tenant_id, project_id, actor=actor, source=source, status=status, limit=limit, offset=offset,
+        session, tenant_id, project_id, actor=actor, source=source, status=status,
+        search=search, limit=limit, offset=offset,
     )
     return [ConversationOut.model_validate(c) for c in convos]
 

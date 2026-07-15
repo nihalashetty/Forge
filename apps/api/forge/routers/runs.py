@@ -141,7 +141,12 @@ async def rerun(
 
     from forge.models import Run
 
-    orig = (await session.execute(select(Run).where(Run.tenant_id == tenant_id, Run.id == run_id))).scalar_one_or_none()
+    orig = (await session.execute(select(Run).where(
+        Run.tenant_id == tenant_id,
+        Run.project_id == project_id,
+        Run.workflow_id == workflow_id,
+        Run.id == run_id,
+    ))).scalar_one_or_none()
     if orig is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "run not found")
     run = await run_service.create_run(

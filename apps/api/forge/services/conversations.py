@@ -15,7 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import defer
 
@@ -71,7 +71,8 @@ def summarize(key: str, traces: list[Trace]) -> Conversation:
 class ConversationService:
     @staticmethod
     async def _scan(session: AsyncSession, tenant_id: str, project_id: str, *,
-                    actor: str | None, source: str | None) -> list[Trace]:
+                    actor: str | None, source: str | None,
+                    thread_ids: list[str] | None = None) -> list[Trace]:
         # Defer `ai_response` (the largest TEXT column) - the list view only needs aggregates
         # and the first user_message for the preview, so there's no reason to pull every
         # response body across the whole scan window. `summarize` never touches it.
@@ -82,16 +83,35 @@ class ConversationService:
             stmt = stmt.where(Trace.actor == actor)
         if source:
             stmt = stmt.where(Trace.source == source)
+        if thread_ids is not None:
+            stmt = stmt.where(Trace.thread_id.in_(thread_ids))
         stmt = stmt.order_by(Trace.started_at.desc()).limit(settings.conversation_scan_limit)
         return list((await session.execute(stmt)).scalars())
 
     @staticmethod
     async def list(session: AsyncSession, tenant_id: str, project_id: str, *,
                    actor: str | None = None, source: str | None = None, status: str | None = None,
-                   limit: int = 100, offset: int = 0) -> list[Conversation]:
+                   search: str | None = None, limit: int = 100, offset: int = 0) -> list[Conversation]:
         """Conversations (grouped by thread), newest activity first. `status` filters the
-        WHOLE conversation: 'error' = any turn errored, 'success'/'done' = none errored."""
-        traces = await ConversationService._scan(session, tenant_id, project_id, actor=actor, source=source)
+        WHOLE conversation: 'error' = any turn errored, 'success'/'done' = none errored.
+        `search` keeps conversations with ANY turn whose user/AI message matches - resolved to
+        the matching thread ids first so each conversation is still summarized from ALL its
+        turns (not just the matching ones)."""
+        thread_ids: list[str] | None = None
+        if search and search.strip():
+            like = f"%{search.strip()}%"
+            rows = (await session.execute(
+                select(Trace.thread_id).where(
+                    Trace.tenant_id == tenant_id, Trace.project_id == project_id,
+                    or_(Trace.user_message.ilike(like), Trace.ai_response.ilike(like)),
+                ).distinct().limit(settings.conversation_scan_limit)
+            )).scalars().all()
+            thread_ids = [tid for tid in rows if tid]
+            if not thread_ids:
+                return []
+        traces = await ConversationService._scan(
+            session, tenant_id, project_id, actor=actor, source=source, thread_ids=thread_ids,
+        )
         groups: dict[str, list[Trace]] = {}
         for t in traces:
             groups.setdefault(t.thread_id or f"trace:{t.id}", []).append(t)

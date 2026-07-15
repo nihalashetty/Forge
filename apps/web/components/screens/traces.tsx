@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "../icons";
 import { StatusPill } from "../primitives";
-import { api, Conversation, ConversationDetail, Facets, Span, Turn } from "@/lib/api";
+import { api, Conversation, ConversationDetail, Facets, openSSE, Span, Turn } from "@/lib/api";
 import { fmtUSD } from "@/lib/data";
 
 // Conversations are paged in on scroll (newest-activity first) so the Traces view never
@@ -14,17 +14,30 @@ const PAGE = 20;
 // Friendly labels for the raw run source.
 const SOURCE_LABEL: Record<string, string> = {
   playground: "Playground", api: "API", embed: "Embed", assistant: "Forge Assistant",
-  channel_email: "Email", channel_teams: "Teams", webhook: "Webhook", schedule: "Schedule",
-  chat: "Chat", app_event: "App event",
+  channel_email: "Email", webhook: "Webhook", schedule: "Schedule", app_event: "App event",
 };
 const srcLabel = (s: string) => SOURCE_LABEL[s] || s || "—";
 const fmtWhen = (iso?: string | null) => (iso ? iso.slice(0, 16).replace("T", " ") : "");
+
+// Trigger a client-side file download of `data` as pretty JSON (used by the Traces export).
+function downloadJSON(filename: string, data: unknown) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
 
 export function TracesScreen({ project }: { project: any }) {
   const [convos, setConvos] = useState<Conversation[]>([]);
   const [facets, setFacets] = useState<Facets>({ actors: [], sources: [] });
   const [actor, setActor] = useState("");
+  const [source, setSource] = useState("");
   const [status, setStatus] = useState("");
+  const [searchInput, setSearchInput] = useState("");
+  const [search, setSearch] = useState("");
   const [sel, setSel] = useState<string | null>(null);
   const [detail, setDetail] = useState<ConversationDetail | null>(null);
   const [nextOffset, setNextOffset] = useState(0);
@@ -36,11 +49,14 @@ export function TracesScreen({ project }: { project: any }) {
   // only holds one 20-row window - the full actor set can't be derived from it.
   useEffect(() => { if (project?.id) api.conversationFacets(project.id).then(setFacets).catch(() => {}); }, [project?.id]);
 
+  // Debounce the search box so we don't fire a request per keystroke.
+  useEffect(() => { const t = setTimeout(() => setSearch(searchInput.trim()), 350); return () => clearTimeout(t); }, [searchInput]);
+
   // First page - and a reload whenever the project or a filter changes.
   useEffect(() => {
     if (!project?.id) { setConvos([]); setHasMore(false); setNextOffset(0); return; }
     let live = true;
-    api.listConversations(project.id, { actor: actor || undefined, status: status || undefined, limit: PAGE, offset: 0 })
+    api.listConversations(project.id, { actor: actor || undefined, source: source || undefined, status: status || undefined, search: search || undefined, limit: PAGE, offset: 0 })
       .then((c) => {
         if (!live) return;
         setConvos(c);
@@ -51,13 +67,13 @@ export function TracesScreen({ project }: { project: any }) {
       })
       .catch(() => { if (live) { setConvos([]); setHasMore(false); setNextOffset(0); } });
     return () => { live = false; };
-  }, [project?.id, actor, status]);
+  }, [project?.id, actor, source, status, search]);
 
   const loadMore = useCallback(async () => {
     if (!project?.id || loadingMore || !hasMore) return;
     setLoadingMore(true);
     try {
-      const next = await api.listConversations(project.id, { actor: actor || undefined, status: status || undefined, limit: PAGE, offset: nextOffset });
+      const next = await api.listConversations(project.id, { actor: actor || undefined, source: source || undefined, status: status || undefined, search: search || undefined, limit: PAGE, offset: nextOffset });
       // De-dupe by thread_id in case the scan window shifted between pages.
       setConvos((prev) => {
         const seen = new Set(prev.map((x) => x.thread_id));
@@ -66,7 +82,7 @@ export function TracesScreen({ project }: { project: any }) {
       setNextOffset((o) => o + next.length);
       setHasMore(next.length === PAGE);
     } catch { /* keep what we have */ } finally { setLoadingMore(false); }
-  }, [project?.id, actor, status, nextOffset, hasMore, loadingMore]);
+  }, [project?.id, actor, source, status, search, nextOffset, hasMore, loadingMore]);
 
   const onListScroll = () => {
     const el = listRef.current;
@@ -84,11 +100,17 @@ export function TracesScreen({ project }: { project: any }) {
       const { removed } = await api.purgeConversations(project.id, n);
       window.alert(`Removed ${removed} conversation turn(s) older than ${n} days.`);
       // Reset back to the first page after a purge.
-      const first = await api.listConversations(project.id, { actor: actor || undefined, status: status || undefined, limit: PAGE, offset: 0 });
+      const first = await api.listConversations(project.id, { actor: actor || undefined, source: source || undefined, status: status || undefined, search: search || undefined, limit: PAGE, offset: 0 });
       setConvos(first);
       setNextOffset(first.length);
       setHasMore(first.length === PAGE);
     } catch { window.alert("Purge failed — this action requires an admin role."); }
+  };
+
+  // Export the loaded conversation summaries as JSON (respects the active filters/search).
+  const exportConvos = () => {
+    if (!convos.length) return;
+    downloadJSON(`conversations-${project?.slug || project?.id || "export"}.json`, convos);
   };
 
   return (
@@ -98,13 +120,23 @@ export function TracesScreen({ project }: { project: any }) {
       <div className="col" style={{ width: 340, flex: "none", borderRight: "1px solid var(--line)", minHeight: 0, height: "100%" }}>
         <div className="row spread" style={{ padding: "16px 16px 8px", flex: "none" }}>
           <div className="t-h2">Conversations</div>
-          <button className="t-caption fg-2" onClick={purge} title="Delete old conversations" style={{ background: "none", border: "none", cursor: "pointer" }}>Clean up…</button>
+          <div className="row gap2">
+            <button className="t-caption fg-2" onClick={exportConvos} disabled={convos.length === 0} title="Download the loaded conversations as JSON" style={{ background: "none", border: "none", cursor: convos.length ? "pointer" : "default", opacity: convos.length ? 1 : 0.5 }}>Export</button>
+            <button className="t-caption fg-2" onClick={purge} title="Delete old conversations" style={{ background: "none", border: "none", cursor: "pointer" }}>Clean up…</button>
+          </div>
         </div>
         <div className="col gap2" style={{ padding: "0 16px 10px", flex: "none" }}>
-          <select value={actor} onChange={(e) => setActor(e.target.value)} className="input" style={{ width: "100%", fontSize: 13 }}>
-            <option value="">All users</option>
-            {facets.actors.map((a) => <option key={a} value={a}>{a}</option>)}
-          </select>
+          <input value={searchInput} onChange={(e) => setSearchInput(e.target.value)} placeholder="Search messages…" className="input" style={{ width: "100%", fontSize: 13 }} />
+          <div className="row gap1">
+            <select value={actor} onChange={(e) => setActor(e.target.value)} className="input" style={{ flex: 1, minWidth: 0, fontSize: 13 }}>
+              <option value="">All users</option>
+              {facets.actors.map((a) => <option key={a} value={a}>{a}</option>)}
+            </select>
+            <select value={source} onChange={(e) => setSource(e.target.value)} className="input" style={{ flex: 1, minWidth: 0, fontSize: 13 }}>
+              <option value="">All sources</option>
+              {facets.sources.map((s) => <option key={s} value={s}>{srcLabel(s)}</option>)}
+            </select>
+          </div>
           <div className="row gap1">
             {[["", "All"], ["success", "Success"], ["error", "Error"]].map(([v, label]) => (
               <button key={v} onClick={() => setStatus(v)} className="t-caption"
@@ -148,12 +180,31 @@ function ConversationView({ project, detail }: { project: any; detail: Conversat
   const c = detail.conversation;
   const [openTurn, setOpenTurn] = useState<string | null>(null);
   const [traces, setTraces] = useState<Record<string, { spans: Span[] }>>({});
+  const [rerunning, setRerunning] = useState<string | null>(null);
 
   const toggle = async (trid: string) => {
     if (openTurn === trid) { setOpenTurn(null); return; }
     setOpenTurn(trid);
     if (!traces[trid]) {
       try { const d = await api.getTrace(project.id, trid); setTraces((t) => ({ ...t, [trid]: { spans: d.spans } })); } catch { /* ignore */ }
+    }
+  };
+
+  const rerun = async (turn: Turn) => {
+    if (!c.workflow_id || rerunning) return;
+    setRerunning(turn.run_id);
+    try {
+      const run = await api.rerunRun(project.id, c.workflow_id, turn.run_id);
+      let outcome = "completed";
+      await openSSE(api.runStreamUrl(project.id, c.workflow_id, run.id), (frame) => {
+        if (frame.event === "error") outcome = "failed";
+        else if (frame.event === "interrupt") outcome = "paused for input";
+      });
+      window.alert(`Re-run ${outcome}. Open its new conversation from the list.`);
+    } catch (error) {
+      window.alert(error instanceof Error ? `Re-run failed: ${error.message}` : "Re-run failed.");
+    } finally {
+      setRerunning(null);
     }
   };
 
@@ -182,14 +233,30 @@ function ConversationView({ project, detail }: { project: any; detail: Conversat
               <div style={{ maxWidth: "78%", background: "var(--accent)", color: "var(--fg-on-accent)", padding: "9px 13px", borderRadius: "12px 12px 3px 12px", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{turn.user_message}</div>
             </div>
           )}
-          <AITurn turn={turn} open={openTurn === turn.trace_id} spans={traces[turn.trace_id]?.spans} onToggle={() => toggle(turn.trace_id)} />
+          <AITurn
+            turn={turn}
+            open={openTurn === turn.trace_id}
+            spans={traces[turn.trace_id]?.spans}
+            onToggle={() => toggle(turn.trace_id)}
+            onRerun={() => rerun(turn)}
+            rerunning={rerunning === turn.run_id}
+            canRerun={!!c.workflow_id}
+          />
         </div>
       ))}
     </div>
   );
 }
 
-function AITurn({ turn, open, spans, onToggle }: { turn: Turn; open: boolean; spans?: Span[]; onToggle: () => void }) {
+function AITurn({ turn, open, spans, onToggle, onRerun, rerunning, canRerun }: {
+  turn: Turn;
+  open: boolean;
+  spans?: Span[];
+  onToggle: () => void;
+  onRerun: () => void;
+  rerunning: boolean;
+  canRerun: boolean;
+}) {
   const errored = turn.status === "error" || !!turn.error;
   return (
     <div className="row" style={{ justifyContent: "flex-start" }}>
@@ -208,6 +275,17 @@ function AITurn({ turn, open, spans, onToggle }: { turn: Turn; open: boolean; sp
             </span>
           </div>
         </button>
+        <div className="row" style={{ justifyContent: "flex-end", padding: "5px 4px 0" }}>
+          <button
+            className="t-caption"
+            onClick={onRerun}
+            disabled={!canRerun || rerunning}
+            title={canRerun ? "Run this turn again with the same input" : "The original workflow is unavailable"}
+            style={{ color: "var(--accent)", background: "none", border: "none", cursor: canRerun && !rerunning ? "pointer" : "default", opacity: canRerun ? 1 : 0.5 }}
+          >
+            {rerunning ? "Running again…" : "Run again"}
+          </button>
+        </div>
         {turn.error && <div className="mono-sm" style={{ color: "var(--err)", padding: "6px 4px", wordBreak: "break-word" }}>{turn.error}</div>}
         {open && (spans ? <div style={{ marginTop: 8 }}><SpanWaterfall spans={spans} /></div> : <div className="fg-2 t-caption" style={{ padding: "10px 4px" }}>Loading trace…</div>)}
       </div>

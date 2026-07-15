@@ -370,16 +370,22 @@ export const api = {
   // traces + conversations (Traces view)
   listTraces: (pid: string) => json<Trace[]>(`/v1/projects/${pid}/traces`),
   getTrace: (pid: string, trid: string) => json<{ trace: Trace; spans: Span[] }>(`/v1/projects/${pid}/traces/${trid}`),
-  listConversations: (pid: string, opts?: { actor?: string; source?: string; status?: string; limit?: number; offset?: number }) => {
+  listConversations: (pid: string, opts?: { actor?: string; source?: string; status?: string; search?: string; limit?: number; offset?: number }) => {
     const q = new URLSearchParams();
     if (opts?.actor) q.set("actor", opts.actor);
     if (opts?.source) q.set("source", opts.source);
     if (opts?.status) q.set("status", opts.status);
+    if (opts?.search) q.set("search", opts.search);
     if (opts?.limit != null) q.set("limit", String(opts.limit));
     if (opts?.offset != null) q.set("offset", String(opts.offset));
     const qs = q.toString();
     return json<Conversation[]>(`/v1/projects/${pid}/conversations${qs ? `?${qs}` : ""}`);
   },
+  // Re-run a past run with the same input (fresh thread). Used by the Traces "re-run" button.
+  rerunRun: (pid: string, wid: string, rid: string) =>
+    json<{ id: string; status: string; thread_id: string }>(
+      `/v1/projects/${pid}/workflows/${wid}/runs/${rid}/rerun`, { method: "POST" },
+    ),
   getConversation: (pid: string, threadId: string) =>
     json<ConversationDetail>(`/v1/projects/${pid}/conversations/${encodeURIComponent(threadId)}`),
   conversationFacets: (pid: string) => json<Facets>(`/v1/projects/${pid}/conversations/facets`),
@@ -463,7 +469,7 @@ export const api = {
 };
 
 export interface InviteResult extends TeamMember { email_sent: boolean; invite_url?: string; }
-export interface Channel { id: string; type: string; name: string; workflow_id?: string | null; enabled: boolean; config: Record<string, any>; key?: string | null; inbound_url?: string; messaging_endpoint?: string; }
+export interface Channel { id: string; type: string; name: string; workflow_id?: string | null; enabled: boolean; config: Record<string, any>; key?: string | null; inbound_url?: string; }
 export interface Trigger { id: string; workflow_id: string; node_id: string; kind: string; enabled: boolean; config: Record<string, any>; webhook_url?: string; last_fired_at?: string | null; }
 export interface Dataset { id: string; name: string; workflow_id?: string | null; score_mode: string; items: any[]; n_items: number; last_pass_rate?: number | null; }
 export interface EvalReport { summary: { total: number; passed: number; pass_rate: number }; results: { input: string; expected: string; answer: string; passed: boolean; reason?: string | null }[]; }
