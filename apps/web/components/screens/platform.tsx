@@ -277,34 +277,74 @@ export function DatasetsScreen({ project }: { project: any }) {
 export function HandoffScreen({ project }: { project: any }) {
   const [items, setItems] = useState<Handoff[]>([]);
   const [reply, setReply] = useState<Record<string, string>>({});
-  const reload = useCallback(() => { if (project?.id) api.listHandoffs(project.id, "open").then(setItems).catch(() => setItems([])); }, [project?.id]);
-  useEffect(() => { reload(); }, [reload]);
+  const [filter, setFilter] = useState<"open" | "closed">("open");
+  const [openCount, setOpenCount] = useState(0);
+  const reload = useCallback(async () => {
+    if (!project?.id) return;
+    try {
+      const current = await api.listHandoffs(project.id, filter);
+      setItems(current);
+      if (filter === "open") setOpenCount(current.length);
+      else setOpenCount((await api.listHandoffs(project.id, "open")).length);
+    } catch { /* keep the last good queue visible during a transient refresh failure */ }
+  }, [project?.id, filter]);
+  useEffect(() => {
+    reload();
+    const timer = window.setInterval(reload, 10_000);
+    return () => window.clearInterval(timer);
+  }, [reload]);
 
   async function send(h: Handoff) {
     const msg = (reply[h.id] || "").trim();
     if (!msg) return;
     await api.replyHandoff(project.id, h.id, msg);
-    setReply((r) => ({ ...r, [h.id]: "" })); reload();
+    setReply((r) => ({ ...r, [h.id]: "" }));
+    window.dispatchEvent(new CustomEvent("forge:counts-changed"));
+    reload();
   }
 
   return (
     <Shell>
-      <Header title="Agent inbox" subtitle="Conversations escalated to a human. Replying resumes the paused run and delivers your message over its channel." />
+      <Header
+        title="Agent inbox"
+        subtitle="Conversations escalated to a human. Replying resumes the paused run and delivers your message over its channel."
+        action={(
+          <div className="row gap2">
+            <span className="badge" title="Open handoffs">{openCount} unread</span>
+            {(["open", "closed"] as const).map((value) => (
+              <button
+                key={value}
+                className={filter === value ? "btn btn-secondary btn-sm" : "btn btn-ghost btn-sm"}
+                onClick={() => setFilter(value)}
+              >
+                {value === "open" ? "Open" : "Closed"}
+              </button>
+            ))}
+          </div>
+        )}
+      />
       <div className="col gap2">
         {items.map((h) => (
           <div key={h.id} className="card" style={{ padding: 14 }}>
             <div className="row spread" style={{ marginBottom: 8 }}>
               <div className="row gap2"><Icon name="user" size={15} /><span className="t-h3">{h.customer || "Customer"}</span></div>
-              <span className="fg-2 t-caption">{h.reason}</span>
+              <div className="row gap2">
+                <span className="fg-2 t-caption">{h.reason}</span>
+                {filter === "closed" && <span className="pill">{h.status}</span>}
+              </div>
             </div>
             {h.customer_message && <div style={{ background: "var(--bg-3)", padding: "8px 11px", borderRadius: 10, fontSize: 13, marginBottom: 8 }}>{h.customer_message}</div>}
-            <div className="row gap2">
-              <input className="input" placeholder="Type your reply…" value={reply[h.id] || ""} onChange={(e) => setReply((r) => ({ ...r, [h.id]: e.target.value }))} onKeyDown={(e) => e.key === "Enter" && send(h)} style={{ flex: 1 }} />
-              <button className="btn btn-primary btn-sm" onClick={() => send(h)}><Icon name="bolt" size={13} />Reply &amp; resume</button>
-            </div>
+            {filter === "open" ? (
+              <div className="row gap2">
+                <input className="input" placeholder="Type your reply…" value={reply[h.id] || ""} onChange={(e) => setReply((r) => ({ ...r, [h.id]: e.target.value }))} onKeyDown={(e) => e.key === "Enter" && send(h)} style={{ flex: 1 }} />
+                <button className="btn btn-primary btn-sm" onClick={() => send(h)} disabled={!(reply[h.id] || "").trim()}><Icon name="bolt" size={13} />Reply &amp; resume</button>
+              </div>
+            ) : (
+              <div className="t-caption fg-2">Closed {h.at ? `· opened ${new Date(h.at).toLocaleString()}` : ""}</div>
+            )}
           </div>
         ))}
-        {items.length === 0 && <div className="fg-2 t-caption">No open handoffs. Add a Human Handoff node to a workflow to route conversations here.</div>}
+        {items.length === 0 && <div className="fg-2 t-caption">{filter === "open" ? "No open handoffs. Add a Human Handoff node to a workflow to route conversations here." : "No closed handoffs yet."}</div>}
       </div>
     </Shell>
   );

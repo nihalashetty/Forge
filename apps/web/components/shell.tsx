@@ -98,10 +98,11 @@ export function ProjectSidebar({ project, active, onNav, onBack, refreshKey }: {
     const pid = project?.id;
     if (!pid) return;
     let live = true;
-    (async () => {
+    const refresh = async () => {
       // One cheap counts call (COUNT(*) per resource) instead of fetching six full lists
       // just to read their `.length`. Re-runs on create/delete via countsBump so badges
-      // stay in sync; the screens themselves lazily load the actual lists on tab click.
+      // stay in sync. A short poll also keeps the agent-inbox badge current when a workflow
+      // opens a handoff while the operator is on another screen.
       const { api } = await import("@/lib/api");
       try {
         const c = await api.projectCounts(pid);
@@ -109,8 +110,10 @@ export function ProjectSidebar({ project, active, onNav, onBack, refreshKey }: {
       } catch {
         if (live) setCounts({});
       }
-    })();
-    return () => { live = false; };
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 15_000);
+    return () => { live = false; window.clearInterval(timer); };
   }, [project?.id, refreshKey, countsBump]);
   return (
     <div style={{ width: 224, flex: "none", background: "var(--bg-1)", borderRight: "1px solid var(--line)", display: "flex", flexDirection: "column" }}>

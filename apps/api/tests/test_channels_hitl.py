@@ -202,6 +202,35 @@ async def test_handoff_reply_claims_row_toctou():
         assert out2["ok"] is False and out2["status"] == "answered"
 
 
+async def test_handoff_closed_filter_includes_all_terminal_outcomes():
+    tenant_id, project_id = "t_closed_queue", "p_closed_queue"
+    async with SessionLocal() as s:
+        open_item = await HandoffService.create(
+            s, channel=None, tenant_id=tenant_id, project_id=project_id, workflow_id=None,
+            run_id="run-open", thread_id=None, customer="Open", customer_message=None,
+            reason="waiting", reply_context={},
+        )
+        answered = await HandoffService.create(
+            s, channel=None, tenant_id=tenant_id, project_id=project_id, workflow_id=None,
+            run_id="run-answered", thread_id=None, customer="Answered", customer_message=None,
+            reason="done", reply_context={},
+        )
+        failed = await HandoffService.create(
+            s, channel=None, tenant_id=tenant_id, project_id=project_id, workflow_id=None,
+            run_id="run-failed", thread_id=None, customer="Failed", customer_message=None,
+            reason="delivery", reply_context={},
+        )
+        answered.status = "answered"
+        failed.status = "delivery_failed"
+        await s.commit()
+
+        open_rows = await HandoffService.list(s, tenant_id, project_id, status="open")
+        closed_rows = await HandoffService.list(s, tenant_id, project_id, status="closed")
+
+    assert [row.id for row in open_rows] == [open_item.id]
+    assert {row.id for row in closed_rows} == {answered.id, failed.id}
+
+
 async def test_handoff_reply_coerces_free_text_decision():
     wf = await _mk_wf(_HITL_ONE, "t_coerce", "p_coerce")
     rs = RunService(checkpointer=InMemorySaver())

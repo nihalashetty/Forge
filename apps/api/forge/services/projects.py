@@ -67,6 +67,14 @@ class ProjectService:
                 )
             )
             out[key] = int(n or 0)
+        open_handoffs = await session.scalar(
+            select(func.count()).select_from(HandoffRequest).where(
+                HandoffRequest.tenant_id == tenant_id,
+                HandoffRequest.project_id == project_id,
+                HandoffRequest.status == "open",
+            )
+        )
+        out["handoffs"] = int(open_handoffs or 0)
         return out
 
     @staticmethod

@@ -361,7 +361,7 @@ export const PROJECT_NAV: NavEntry[] = [
   { section: "Observe", items: [
     { id: "traces", label: "Traces", icon: "traces", help: "Per-run span waterfall with model calls, tokens, latency, and cost." },
     { id: "datasets", label: "Evaluations", icon: "validate", help: "Test datasets (input + expected) scored against a workflow to catch regressions." },
-    { id: "handoff", label: "Agent inbox", icon: "user", help: "Live conversations escalated to a human - reply here to resume the run." },
+    { id: "handoff", label: "Agent inbox", icon: "user", countKey: "handoffs", help: "Live conversations escalated to a human - reply here to resume the run." },
   ] },
   { id: "settings", label: "Settings", icon: "settings", help: "Model defaults, provider keys, secrets, team & roles, and the audit log." },
 ];

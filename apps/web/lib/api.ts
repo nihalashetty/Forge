@@ -143,7 +143,7 @@ export interface ProjectStats {
 // Sidebar badge counts (keys match countKey in data.ts PROJECT_NAV). One cheap call
 // replaces six full-list fetches that were only ever read for their `.length`.
 export interface ProjectCounts {
-  workflows: number; agents: number; tools: number; components: number; knowledge: number; auth: number;
+  workflows: number; agents: number; tools: number; components: number; knowledge: number; auth: number; handoffs: number;
 }
 
 export interface DashboardStats {

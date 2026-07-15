@@ -157,7 +157,11 @@ class HandoffService:
         q = select(HandoffRequest).where(
             HandoffRequest.tenant_id == tenant_id, HandoffRequest.project_id == project_id
         )
-        if status:
+        if status == "closed":
+            # The console presents one Closed queue for every terminal outcome, including a
+            # successful answer, an operator/system close, and a failed outbound delivery.
+            q = q.where(HandoffRequest.status.not_in(("open", "answering")))
+        elif status:
             q = q.where(HandoffRequest.status == status)
         return list((await session.execute(q.order_by(HandoffRequest.created_at.desc()))).scalars())
 

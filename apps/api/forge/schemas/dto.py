@@ -30,6 +30,7 @@ class ProjectCountsOut(BaseModel):
     components: int
     knowledge: int
     auth: int
+    handoffs: int
 
 
 class ProjectCreate(BaseModel):
