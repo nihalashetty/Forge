@@ -31,6 +31,7 @@ export function VersionHistory({
   onRestored,
   buttonClassName = "btn btn-secondary btn-sm",
   buttonLabel = "History",
+  allowRestore = true,
 }: {
   entityType: EntityType;
   entityId?: string | null;
@@ -38,6 +39,9 @@ export function VersionHistory({
   onRestored?: () => void;
   buttonClassName?: string;
   buttonLabel?: string;
+  // Some entities (e.g. knowledge sources) version only their config metadata, not the
+  // embedded content, so a "restore" would be misleading - show read-only history instead.
+  allowRestore?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [rows, setRows] = useState<EntityVersion[] | null>(null);
@@ -134,15 +138,17 @@ export function VersionHistory({
                     <button className="iconbtn" title="Inspect snapshot" onClick={() => peek(v.version_no)}>
                       <Icon name={isOpen ? "eyeoff" : "eye"} size={14} />
                     </button>
-                    <button
-                      className="btn btn-secondary btn-sm"
-                      disabled={isLatest || restoring != null}
-                      title={isLatest ? "This is the current version" : `Restore v${v.version_no}`}
-                      onClick={() => restore(v.version_no)}
-                    >
-                      <Icon name="rotate" size={13} />
-                      {restoring === v.version_no ? "…" : "Restore"}
-                    </button>
+                    {allowRestore && (
+                      <button
+                        className="btn btn-secondary btn-sm"
+                        disabled={isLatest || restoring != null}
+                        title={isLatest ? "This is the current version" : `Restore v${v.version_no}`}
+                        onClick={() => restore(v.version_no)}
+                      >
+                        <Icon name="rotate" size={13} />
+                        {restoring === v.version_no ? "…" : "Restore"}
+                      </button>
+                    )}
                   </div>
                 </div>
                 {isOpen && (

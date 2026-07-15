@@ -18,6 +18,7 @@ from forge.schemas.dto import (
     RechunkIn,
 )
 from forge.services.knowledge import KnowledgeService, _strip_html
+from forge.services.versions import safe_snapshot
 from forge.util.tasks import spawn
 
 router = APIRouter(prefix="/v1/projects/{project_id}/knowledge", tags=["knowledge"])
@@ -145,8 +146,9 @@ async def list_sources(project_id: str, session: AsyncSession = Depends(get_sess
 
 
 @router.post("/sources", response_model=KbSourceOut, status_code=201)
-async def add_source(project_id: str, body: KbSourceCreate, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id), _: CurrentUser = Depends(require_role("editor"))):
+async def add_source(project_id: str, body: KbSourceCreate, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id), user: CurrentUser = Depends(require_role("editor"))):
     src = await KnowledgeService.create_source(session, tenant_id, project_id, kind=body.kind, name=body.name, uri=body.uri, text=body.text, folder=body.folder, chunking_strategy=body.chunking_strategy, meta=body.meta)
+    await safe_snapshot(session, "kb_source", src, author=user)
     # Ingest (fetch/chunk/embed) off the request: a real embedder takes seconds+ for a large
     # source, which would time out the HTTP call. The source returns as "queued"; the UI polls.
     await _queue_ingest(session, tenant_id, src)
@@ -161,7 +163,7 @@ async def upload_source(
     chunking_strategy: str = Form(""),
     session: AsyncSession = Depends(get_session),
     tenant_id: str = Depends(current_tenant_id),
-    _: CurrentUser = Depends(require_role("editor")),
+    user: CurrentUser = Depends(require_role("editor")),
 ):
     """Upload a document file (.txt/.md/.pdf and other text formats) into the knowledge base."""
     # Bound the in-memory read so an oversized upload can't exhaust memory (audit M3): read one byte
@@ -193,6 +195,7 @@ async def upload_source(
         # Strip HTML, parse CSV/JSON into per-record text, and reject binaries with a clear 422.
         text = _decode_upload(name, raw)
     src = await KnowledgeService.create_source(session, tenant_id, project_id, kind="file", name=name, text=text, folder=folder, chunking_strategy=(chunking_strategy or None))
+    await safe_snapshot(session, "kb_source", src, author=user)
     # The file bytes are fully read above; only the chunk+embed runs in the background so a
     # large upload doesn't block (and time out) the request. Returns "queued"; the UI polls.
     await _queue_ingest(session, tenant_id, src)
@@ -215,7 +218,7 @@ async def embedding_health(project_id: str, session: AsyncSession = Depends(get_
 async def reingest_source(project_id: str, source_id: str, body: RechunkIn | None = None,
                           session: AsyncSession = Depends(get_session),
                           tenant_id: str = Depends(current_tenant_id),
-                          _: CurrentUser = Depends(require_role("editor"))):
+                          user: CurrentUser = Depends(require_role("editor"))):
     """Re-fetch + re-embed a source (re-crawl a site, or re-embed under the current model).
     An optional body overrides the chunking (strategy / size / overlap) before re-ingest."""
     from sqlalchemy import select
@@ -224,7 +227,8 @@ async def reingest_source(project_id: str, source_id: str, body: RechunkIn | Non
     src = (await session.execute(select(KbSource).where(KbSource.tenant_id == tenant_id, KbSource.id == source_id))).scalar_one_or_none()
     if src is None:
         raise HTTPException(status_code=404, detail="source not found")
-    if body and (body.chunking_strategy or body.chunk_size is not None or body.chunk_overlap is not None):
+    overrode = bool(body and (body.chunking_strategy or body.chunk_size is not None or body.chunk_overlap is not None))
+    if overrode:
         KnowledgeService._apply_chunk_overrides(
             src, chunking_strategy=body.chunking_strategy,
             chunk_size=body.chunk_size, chunk_overlap=body.chunk_overlap,
@@ -232,6 +236,9 @@ async def reingest_source(project_id: str, source_id: str, body: RechunkIn | Non
     # Mark pending + persist overrides, then re-embed off the request (see add_source).
     src.status = "queued"
     await session.commit()
+    # Only the chunking config (in meta) is versionable, so snapshot when it actually changed.
+    if overrode:
+        await safe_snapshot(session, "kb_source", src, author=user)
     await _queue_ingest(session, tenant_id, src, reingest=True, label="reingest")
     return {"id": src.id, "status": src.status, "chunks": src.chunks}
 
@@ -239,7 +246,7 @@ async def reingest_source(project_id: str, source_id: str, body: RechunkIn | Non
 @router.post("/sources/rechunk")
 async def rechunk_sources(project_id: str, body: RechunkBulkIn, session: AsyncSession = Depends(get_session),
                           tenant_id: str = Depends(current_tenant_id),
-                          _: CurrentUser = Depends(require_role("editor"))):
+                          user: CurrentUser = Depends(require_role("editor"))):
     """Re-chunk a multi-selected set of sources with one shared set of overrides
     (strategy / size / overlap), then re-embed each (in the background). Tenant/project-scoped."""
     from sqlalchemy import select
@@ -261,12 +268,13 @@ async def rechunk_sources(project_id: str, body: RechunkBulkIn, session: AsyncSe
         src.status = "queued"
     await session.commit()  # persist overrides + queued status for the whole batch at once
     for src in rows:
+        await safe_snapshot(session, "kb_source", src, author=user)
         await _queue_ingest(session, tenant_id, src, reingest=True, label="rechunk")
     return [{"id": src.id, "status": src.status, "chunks": src.chunks} for src in rows]
 
 
 @router.patch("/sources/{source_id}", response_model=KbSourceOut)
-async def update_source(project_id: str, source_id: str, body: dict, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id), _: CurrentUser = Depends(require_role("editor"))):
+async def update_source(project_id: str, source_id: str, body: dict, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id), user: CurrentUser = Depends(require_role("editor"))):
     """Move a source between folders (the only mutable field; content requires re-ingest)."""
     from sqlalchemy import select
 
@@ -277,6 +285,7 @@ async def update_source(project_id: str, source_id: str, body: dict, session: As
     if "folder" in body:
         src.folder = str(body["folder"] or "")
     await session.commit()
+    await safe_snapshot(session, "kb_source", src, author=user)
     await session.refresh(src)
     return src
 

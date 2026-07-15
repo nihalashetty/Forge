@@ -6,6 +6,7 @@ import { Icon } from "../icons";
 import { Field, Modal, Segmented, StatusPill } from "../primitives";
 import { api, KbSource, QaPair, SearchHit } from "@/lib/api";
 import { ChunkMap } from "./chunk-map";
+import { VersionHistory } from "../version-history";
 
 const VTABS = [
   { value: "files", label: "Files", icon: "knowledge" },
@@ -332,6 +333,8 @@ function Files({ project }: { project: any }) {
                   </td>
                   <td style={{ textAlign: "right" }}>
                     <div className="row gap1" style={{ justifyContent: "flex-end" }}>
+                      {/* Config history only (folder/name/chunking); content isn't versioned, so read-only. */}
+                      <VersionHistory entityType="kb_source" entityId={s.id} entityLabel={s.name} buttonClassName="iconbtn" buttonLabel="" allowRestore={false} />
                       <button className="iconbtn" title="Re-chunk & re-embed" onClick={() => openRechunk([s.id])}><Icon name="layers" size={14} /></button>
                       <button className="iconbtn" title="Re-embed (reuse current chunking)" onClick={() => reingest(s.id)}><Icon name="refresh" size={14} /></button>
                       <button className="iconbtn" title="Delete" onClick={async () => { await api.deleteSource(project.id, s.id); reload(); }}><Icon name="trash" size={15} /></button>

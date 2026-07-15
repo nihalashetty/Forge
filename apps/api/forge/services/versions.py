@@ -27,6 +27,7 @@ from forge.models import (
     EntityVersion,
     KbSource,
     Project,
+    Tenant,
     Tool,
     Workflow,
 )
@@ -115,14 +116,20 @@ class VersionService:
         )
         session.add(ev)
         await session.flush()
-        # Resolve the per-project retention override (console Settings > Versioning writes it to
-        # project.config); falls back to tenant settings then the global default in _limit_for.
+        # Resolve retention overrides so the documented precedence (project.config ->
+        # tenant.settings -> global default in _limit_for) actually applies even on the
+        # safe_snapshot path, which never passes tenant_settings. Fetch both from the DB here.
         project_config = None
         if project_id:
             proj = (await session.execute(
                 select(Project).where(Project.tenant_id == tenant_id, Project.id == project_id)
             )).scalar_one_or_none()
             project_config = proj.config if proj else None
+        if tenant_settings is None:
+            tenant = (await session.execute(
+                select(Tenant).where(Tenant.id == tenant_id)
+            )).scalar_one_or_none()
+            tenant_settings = tenant.settings if tenant else None
         await VersionService._prune(session, tenant_id, entity_type, entity_id, tenant_settings, project_config)
         return ev
 

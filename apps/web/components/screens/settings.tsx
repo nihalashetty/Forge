@@ -8,6 +8,7 @@ import { Icon } from "../icons";
 import { EmptyState, Field, Modal, Segmented, Toggle } from "../primitives";
 import { api, AuditEntry, clearTokens, InviteResult, MeResult, Secret, TeamMember } from "@/lib/api";
 import { MODELS } from "@/lib/data";
+import { VersionHistory } from "../version-history";
 
 const ROLES = ["owner", "admin", "editor", "viewer"];
 
@@ -132,11 +133,16 @@ export function SettingsScreen({ project }: { project: any }) {
           <div className="fade-up" style={{ maxWidth: 720, margin: "0 auto", padding: "24px 28px" }}>
             <div className="row spread" style={{ marginBottom: 18 }}>
               <div className="t-display">{activeMeta.label}</div>
-              {activeMeta.savesConfig && (
-                <button className="btn btn-primary btn-sm" onClick={persist} disabled={save === "saving"}>
-                  <Icon name={save === "saved" ? "check" : "save"} size={14} />{save === "saving" ? "Saving…" : save === "saved" ? "Saved" : "Save"}
-                </button>
-              )}
+              <div className="row gap2">
+                {section === "general" && (
+                  <VersionHistory entityType="project" entityId={project?.id} entityLabel={meta.name || project?.name} onRestored={() => window.location.reload()} />
+                )}
+                {activeMeta.savesConfig && (
+                  <button className="btn btn-primary btn-sm" onClick={persist} disabled={save === "saving"}>
+                    <Icon name={save === "saved" ? "check" : "save"} size={14} />{save === "saving" ? "Saving…" : save === "saved" ? "Saved" : "Save"}
+                  </button>
+                )}
+              </div>
             </div>
 
             {section === "general" && (
