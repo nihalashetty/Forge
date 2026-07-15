@@ -140,19 +140,16 @@ export function ToolsScreen({ project, onOpen }: { project: any; onOpen: (t: Too
                 {shown.map((t) => <ToolCard key={t.id} t={t} sets={toolSets} selectable={showCheckbox} selected={selected.has(t.id)} onToggleSelect={() => toggleSelect(t.id)} memberSetIds={new Set(toolSets.filter((s) => s.tool_ids.includes(t.id)).map((s) => s.id))} onToggleSet={(sid, isMember) => toggleToolInSet(sid, t.id, isMember)} onOpen={() => onOpen(t)} onDelete={(e) => del(e, t)} onDuplicate={(e) => duplicate(e, t)} onToggle={() => toggleEnabled(t)} />)}
               </div>
             ) : (
-              <div className="card" style={{ overflow: "hidden" }}>
+              <div className="card" style={{ overflowX: "auto" }}>
                 <table className="tbl">
-                  <thead><tr>{showCheckbox && <th style={{ width: 34 }}></th>}<th>Tool</th><th>Kind</th><th>Auth</th><th>Projection</th><th>Status</th><th></th></tr></thead>
+                  <thead><tr>{showCheckbox && <th style={{ width: 34 }}></th>}<th>Tool</th><th>Kind</th><th>Status</th><th></th></tr></thead>
                   <tbody>
                     {shown.map((t) => {
-                      const lt = (t.config as any)?._last_test;
                       return (
                         <tr key={t.id} className="row" style={{ cursor: "pointer" }} onClick={() => onOpen(t)}>
                           {showCheckbox && <td onClick={(e) => { e.stopPropagation(); toggleSelect(t.id); }}><Checkbox checked={selected.has(t.id)} /></td>}
                           <td><div className="row gap2"><Icon name={KIND_ICON[t.kind] || "k_rest"} size={15} style={{ color: "var(--accent)" }} /><span className="mono-sm" style={{ fontWeight: 600 }}>{t.name}</span></div></td>
                           <td><span className="chip chip-mono">{KIND_LABEL[t.kind] || t.kind}</span></td>
-                          <td>{t.auth_provider_id ? <span className="chip chip-mono"><Icon name="auth" size={12} />{t.auth_provider_id.slice(0, 8)}</span> : <span className="fg-2">-</span>}</td>
-                          <td>{lt ? <TokenMeter compact raw={lt.raw_tokens} projected={lt.projected_tokens} animateKey={t.id} /> : <span className="fg-2">-</span>}</td>
                           <td><StatusPill status={t.last_tested || "untested"} /></td>
                           <td style={{ textAlign: "right" }}>
                             <div className="row gap1" style={{ justifyContent: "flex-end" }}>

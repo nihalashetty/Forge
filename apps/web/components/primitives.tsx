@@ -275,10 +275,10 @@ export function CodeBlock({ code, copyable = true, maxHeight }: { code: string; 
 
 /* ---------------- Tile ---------------- */
 export function Tile({ icon, color = "var(--accent)", size = 36 }: { icon: string; color?: string; size?: number; glow?: boolean }) {
-  // Flat tinted chip - no border, no glow (matches the minimal design).
+  // Bare icon - no background, no border (minimal look, applied app-wide).
   return (
-    <div style={{ width: size, height: size, flex: "none", borderRadius: size * 0.28, display: "flex", alignItems: "center", justifyContent: "center", background: `color-mix(in srgb, ${color} 12%, var(--bg-1))`, color }}>
-      <Icon name={icon} size={size * 0.5} />
+    <div style={{ width: size, height: size, flex: "none", display: "flex", alignItems: "center", justifyContent: "center", color }}>
+      <Icon name={icon} size={Math.round(size * 0.58)} />
     </div>
   );
 }
