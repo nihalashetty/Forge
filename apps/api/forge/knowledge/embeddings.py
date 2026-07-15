@@ -169,7 +169,9 @@ _FALLBACK_WARNED: set[str] = set()
 def _key_fp(api_key: str | None) -> str:
     if not api_key:
         return "env"
-    return hashlib.sha256(api_key.encode()).hexdigest()[:16]
+    # Not a security hash: this only namespaces the in-process embedder cache by key, so the
+    # plaintext key never becomes a dict key. usedforsecurity=False documents that intent.
+    return hashlib.sha256(api_key.encode(), usedforsecurity=False).hexdigest()[:16]
 
 
 def _warn_once(model: str, msg: str) -> None:

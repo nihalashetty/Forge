@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
 
+# Least privilege: CI only reads the checked-out code; it never writes back to the repo.
+permissions:
+  contents: read
+
 jobs:
   api:
     name: API - lint + tests
