@@ -326,7 +326,7 @@ export function OverviewScreen({ project, onNav, onDeleteProject }: { project: a
           <div className="card" style={{ padding: 18 }}>
             <div className="t-h1" style={{ marginBottom: 14 }}>Deployment</div>
             <div className="col gap3">
-              {[["msg", "Channels", "Email / Microsoft Teams", "var(--fg-2)", "channels"], ["connect", "MCP Server", "Not exposed", "var(--fg-2)", "connect"], ["playground", "Playground", "Test your workflow", "var(--fg-2)", "playground"]].map((d, i) => (
+              {[["msg", "Channels", "Email", "var(--fg-2)", "channels"], ["connect", "MCP Server", "Not exposed", "var(--fg-2)", "connect"], ["playground", "Playground", "Test your workflow", "var(--fg-2)", "playground"]].map((d, i) => (
                 <button key={i} className="row gap3" onClick={() => onNav(d[4])} style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid var(--line)", background: "var(--bg-1)", cursor: "pointer", textAlign: "left" }}>
                   <Tile icon={d[0]} color={d[3]} size={30} />
                   <div className="grow"><div style={{ fontWeight: 600, fontSize: 13 }}>{d[1]}</div><div className="fg-2 t-caption">{d[2]}</div></div>

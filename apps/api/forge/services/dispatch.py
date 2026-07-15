@@ -25,12 +25,12 @@ def _channel_thread_key(conversation_key: str) -> str:
 # Canonical run source per trigger kind, for the Traces conversation view.
 _TRIGGER_SOURCE = {
     "webhook_in": "webhook", "schedule": "schedule",
-    "email_in": "channel_email", "chat_in": "chat", "app_event": "app_event",
+    "email_in": "channel_email", "app_event": "app_event",
 }
 
 
 async def _find_channel_thread(s, tenant_id: str, workflow_id: str, conversation_key: str) -> str | None:
-    """Find the persisted Thread for a channel conversation so multi-turn email/Teams
+    """Find the persisted Thread for a channel conversation so multi-turn email
     conversations keep history through the checkpointer (audit F6)."""
     row = (await s.execute(
         select(Thread).where(
@@ -77,7 +77,7 @@ async def dispatch_message(
     text: str, thread_id: str | None = None, conversation_key: str | None = None,
     source: str = "channel",
 ) -> dict:
-    """Run `workflow_id` with a single user `text` (used by channels: email/teams).
+    """Run `workflow_id` with a single user `text` (used by email channels).
 
     `conversation_key` (the provider's stable conversation id) maps the inbound message to
     a persisted Thread so a multi-turn conversation keeps its history via the checkpointer

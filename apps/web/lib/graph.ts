@@ -97,9 +97,9 @@ export function canvasToExecutable(
   edges: FlowEdge[],
   meta: { id: string; version?: number; state?: Record<string, any> },
 ): Record<string, any> {
-  // Entry: a Start marker, else a trigger node (webhook/schedule/email/chat/app_event),
+  // Entry: a Start marker, else a trigger node (webhook/schedule/email/app_event),
   // else a node with no incoming edge, else the first node.
-  const TRIGGERS = new Set(["webhook_in", "schedule", "email_in", "chat_in", "app_event"]);
+  const TRIGGERS = new Set(["webhook_in", "schedule", "email_in", "app_event"]);
   const hasIncoming = new Set(edges.map((e) => e.target));
   const start =
     nodes.find((n) => n.data.nodeType === "start") ||

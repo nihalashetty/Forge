@@ -91,7 +91,7 @@ flowchart TB
         UI["Interactive run (SSE)"]
         WH["Webhook"]
         SCH["Schedule (cron)"]
-        CH["Email / Teams / chat channels"]
+        CH["Email channel"]
         MCPin["MCP server surface"]
     end
 
@@ -206,4 +206,4 @@ sequenceDiagram
     B->>U: render streamed answer
 ```
 
-> **Non-interactive triggers** (webhook / schedule / email / Teams) skip the browser and the SSE stream: they enter through the **Dispatch service** and call `RunService.run_to_completion()` instead of `stream()` — but the compile → LangGraph → ForgeTracer → Trace/Span path is identical, which is what keeps observability consistent across every entry point.
+> **Non-interactive triggers** (webhook / schedule / email) skip the browser and the SSE stream: they enter through the **Dispatch service** and call `RunService.run_to_completion()` instead of `stream()` — but the compile → LangGraph → ForgeTracer → Trace/Span path is identical, which is what keeps observability consistent across every entry point.

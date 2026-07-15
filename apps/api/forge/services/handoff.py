@@ -125,10 +125,6 @@ async def _deliver(channel: Channel, reply_ctx: dict, text: str) -> bool:
             from forge.channels import email as email_ch
 
             await email_ch.send_reply(channel, reply_ctx, text)
-        elif channel.type == "teams":
-            from forge.channels import teams as teams_ch
-
-            await teams_ch.send_reply(channel, reply_ctx, text)
         return True
     except Exception:  # noqa: BLE001 - a delivery failure must be recorded, not swallowed
         log.warning("handoff delivery over %s channel failed", channel.type, exc_info=True)

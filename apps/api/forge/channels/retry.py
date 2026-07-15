@@ -1,6 +1,6 @@
 """Bounded retry + backoff for outbound channel delivery (audit E).
 
-Outbound email (SMTP) and Teams (Bot Connector REST) deliveries are transient-failure prone
+Outbound email (SMTP) deliveries are transient-failure prone
 (a relay hiccup, a 429, a 5xx). Previously a single failure was swallowed and the reply was
 lost - and worse, a handoff was still marked 'answered'. `retry_send` gives every outbound
 delivery a small, jittered exponential backoff and re-raises the last error when exhausted so
@@ -30,7 +30,7 @@ T = TypeVar("T")
 
 class ChannelDeliveryError(Exception):
     """A retryable outbound-delivery failure. `retry_after` (seconds), when set, overrides the
-    computed backoff for the next attempt - used to honor a Teams/HTTP `Retry-After` on a 429."""
+    computed backoff for the next attempt - used to honor an HTTP `Retry-After` on a 429."""
 
     def __init__(self, message: str, *, retry_after: float | None = None) -> None:
         super().__init__(message)

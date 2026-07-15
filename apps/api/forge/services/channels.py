@@ -1,6 +1,6 @@
 """ChannelService - CRUD for deployment surfaces + inbound routing.
 
-A Channel binds a project workflow to a surface (email/teams). Inbound events look the
+A Channel binds a project workflow to an email surface. Inbound events look the
 channel up by its public `key`, resolve the workflow, dispatch a run, and the
 channel-specific adapter sends the answer back.
 """
@@ -13,7 +13,7 @@ from sqlalchemy import select
 
 from forge.models import Channel, Workflow
 
-CHANNEL_TYPES = ("email", "teams")
+CHANNEL_TYPES = ("email",)
 
 
 class ChannelService:

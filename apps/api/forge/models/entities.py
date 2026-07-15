@@ -223,7 +223,7 @@ class Run(PkTimestamp, Base):
     workflow_id: Mapped[str] = mapped_column(String(36), index=True)
     thread_id: Mapped[str] = mapped_column(String(36), index=True)
     # Where this run originated, for the Traces conversation view. Set at create_run by each
-    # caller: playground|api|embed|channel_email|channel_teams|webhook|schedule (assistant runs
+    # caller: playground|api|embed|channel_email|webhook|schedule (assistant runs
     # have no Run row). Copied onto the Trace at finalize.
     source: Mapped[str] = mapped_column(String(40), default="playground")
     status: Mapped[str] = mapped_column(String(20), default="queued")  # queued|running|interrupted|done|error
@@ -275,7 +275,7 @@ class Trigger(PkTimestamp, Base):
     project_id: Mapped[str] = mapped_column(String(36), index=True)
     workflow_id: Mapped[str] = mapped_column(String(36), index=True)
     node_id: Mapped[str] = mapped_column(String(64))
-    kind: Mapped[str] = mapped_column(String(20))  # webhook_in|schedule|email_in|chat_in|app_event
+    kind: Mapped[str] = mapped_column(String(20))  # webhook_in|schedule|email_in|app_event
     key: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)  # webhook URL key
     config: Mapped[dict] = mapped_column(JSON, default=dict)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -286,15 +286,15 @@ class Trigger(PkTimestamp, Base):
 
 
 class Channel(PkTimestamp, Base):
-    """A deployment surface that feeds a workflow: email mailbox or Microsoft Teams bot.
-    `config` holds type-specific settings (secret refs for SMTP/IMAP or Teams app creds).
-    `key` is the public, unguessable id used in inbound endpoint URLs (teams/email-inbound)."""
+    """An email deployment surface that feeds a workflow.
+    `config` holds SMTP/IMAP settings and secret refs. `key` is the public,
+    unguessable id used in inbound endpoint URLs."""
 
     __tablename__ = "channels"
     tenant_id: Mapped[str] = mapped_column(String(36), index=True)
     project_id: Mapped[str] = mapped_column(String(36), index=True)
     workflow_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    type: Mapped[str] = mapped_column(String(20))  # email|teams
+    type: Mapped[str] = mapped_column(String(20))  # email
     name: Mapped[str] = mapped_column(String(120))
     key: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
     config: Mapped[dict] = mapped_column(JSON, default=dict)

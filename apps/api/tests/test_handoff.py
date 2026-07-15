@@ -30,7 +30,7 @@ async def test_handoff_node_interrupts_then_resumes():
         s.add(wf)
         await s.commit()
         await s.refresh(wf)
-        ch = await ChannelService.create(s, "t_h", "p_h", type_="teams", name="W", workflow_id=wf.id)
+        ch = await ChannelService.create(s, "t_h", "p_h", type_="email", name="W", workflow_id=wf.id)
 
     # shared checkpointer so the run can be resumed by id
     rs = RunService(checkpointer=InMemorySaver())

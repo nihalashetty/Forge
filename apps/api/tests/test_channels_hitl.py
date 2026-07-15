@@ -2,7 +2,7 @@
 
 Covers: the semantic_cache middleware (short-circuit on hit), handoff TOCTOU claim +
 delivery-status gating + chained-interrupt re-open + decision coercion, HITL timeout expiry,
-run cancel, email HTML fallback + threading, Teams card actions, and pluggable webhook
+run cancel, email HTML fallback + threading, and pluggable webhook
 signatures. Uses the shared checkpointer pattern (InMemorySaver) so runs can be resumed by id.
 """
 
@@ -18,7 +18,6 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
 from forge.channels import email as email_ch
-from forge.channels import teams as teams_ch
 from forge.db.base import SessionLocal
 from forge.models import HandoffRequest, Run, Workflow
 from forge.routers import hooks
@@ -212,7 +211,7 @@ async def test_handoff_reply_reopens_on_chained_interrupt():
     result = await dispatch_message(rs, tenant_id="t_chain", project_id="p_chain", workflow_id=wf.id, text="start")
     assert result["interrupted"] is True
     async with SessionLocal() as s:
-        ch = await ChannelService.create(s, "t_chain", "p_chain", type_="teams", name="T", workflow_id=wf.id)
+        ch = await ChannelService.create(s, "t_chain", "p_chain", type_="email", name="E", workflow_id=wf.id)
         h = await HandoffService.create(
             s, channel=ch, tenant_id="t_chain", project_id="p_chain", workflow_id=wf.id,
             run_id=result["run_id"], thread_id=result["thread_id"], customer="u",
@@ -267,7 +266,7 @@ async def test_hitl_timeout_expires_interrupted_run(monkeypatch):
     result = await dispatch_message(rs, tenant_id="t_exp", project_id="p_exp", workflow_id=wf.id, text="please")
     run_id = result["run_id"]
     async with SessionLocal() as s:
-        ch = await ChannelService.create(s, "t_exp", "p_exp", type_="teams", name="T", workflow_id=wf.id)
+        ch = await ChannelService.create(s, "t_exp", "p_exp", type_="email", name="E", workflow_id=wf.id)
         h = await HandoffService.create(
             s, channel=ch, tenant_id="t_exp", project_id="p_exp", workflow_id=wf.id,
             run_id=run_id, thread_id=result["thread_id"], customer="u", customer_message="please",
@@ -330,38 +329,6 @@ def test_email_reply_preserves_references_and_sets_message_id():
     assert msg["In-Reply-To"] == "<m2>"
     assert msg["References"].split() == ["<m0>", "<m1>", "<m2>"]
     assert msg["Message-ID"]  # explicit id set on the outbound reply
-
-
-# --- (d) Teams card actions + card build + JWT gate ---------------------------------------
-
-
-def test_teams_card_action_text():
-    parsed = teams_ch.parse_activity({
-        "type": "message", "value": {"action": "refund", "text": "Approve refund"},
-        "from": {"id": "u"}, "conversation": {"id": "c"}, "serviceUrl": "https://smba.x/",
-    })
-    assert parsed["text"] == ""  # a card submit has no typed text
-    assert teams_ch.inbound_text(parsed) == "Approve refund"
-
-
-def test_teams_build_card_activity():
-    incoming = teams_ch.parse_activity({
-        "type": "message", "id": "a1", "from": {"id": "u"}, "recipient": {"id": "b"},
-        "conversation": {"id": "c1"}, "serviceUrl": "https://smba.x/",
-    })
-    card = {"type": "AdaptiveCard", "body": []}
-    act = teams_ch.build_card_activity(incoming, card, text="fallback")
-    att = act["attachments"][0]
-    assert att["contentType"] == "application/vnd.microsoft.card.adaptive"
-    assert att["content"] == card and act["conversation"]["id"] == "c1"
-
-
-async def test_teams_verify_jwt_rejects_missing_and_malformed():
-    # No network needed: missing token / malformed token fail before any JWKS fetch.
-    assert await teams_ch.verify_bot_jwt(None, app_id="app") is False
-    assert await teams_ch.verify_bot_jwt("Bearer not-a-jwt", app_id="app") is False
-
-
 # --- (i) pluggable webhook signatures -----------------------------------------------------
 
 

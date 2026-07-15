@@ -35,8 +35,8 @@ planned item are welcome - see [Contributing](../README.md#contributing).
 - Grounded answers: calibrated relevance floor, hybrid cosine thresholding + rerank floor, chunk citations, crawl provenance, and MMR diversity.
 
 ### Deploy
-- Channels: **Email** and **Microsoft Teams**.
-- Triggers: webhook, schedule (interval/cron), inbound email, chat, and polling app-events.
+- Channels: **Email**.
+- Triggers: webhook, schedule (interval/cron), inbound email, and polling app-events.
 - An **embeddable web widget** (origin-locked), the run API, and an **MCP server** to expose tools - including exposing an entire **workflow as a single MCP tool** - plus consumption of external MCP servers.
 - Human-in-the-loop: approval pauses and live handoff to an Agent inbox.
 

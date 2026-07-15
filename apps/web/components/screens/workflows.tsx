@@ -1021,10 +1021,6 @@ const NODE_FIELDS: Record<string, FieldSpec[]> = {
     { key: "include_subject", label: "Include subject", widget: "toggle", help: "Prepend the email subject to the message." },
     { key: "reply", label: "Reply to sender", widget: "toggle", help: "Send the workflow's answer back as a threaded email." },
   ],
-  chat_in: [
-    { key: "channel", label: "Channel", widget: "select", options: ["any", "widget", "teams"].map((m) => ({ value: m, label: m })), help: "Which chat surface feeds this workflow (web widget / Microsoft Teams)." },
-    { key: "greeting", label: "Greeting", widget: "text", placeholder: "Hi! How can I help?" },
-  ],
   app_event: [
     { key: "poll_url", label: "Poll URL", widget: "text", placeholder: "https://api.example.com/events", help: "Polled on each interval; new items fire the workflow." },
     { key: "method", label: "Method", widget: "select", options: ["GET", "POST"].map((m) => ({ value: m, label: m })) },

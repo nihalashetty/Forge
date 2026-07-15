@@ -74,10 +74,8 @@ export function ChannelsScreen({ project }: { project: any }) {
   const reload = useCallback(() => { if (project?.id) api.listChannels(project.id).then(setChannels).catch(() => setChannels([])); }, [project?.id]);
   useEffect(() => { reload(); }, [reload]);
 
-  const setCfg = (patch: any) => setForm((f) => ({ ...f, config: { ...f.config, ...patch } }));
   const setSmtp = (patch: any) => setForm((f) => ({ ...f, config: { ...f.config, smtp: { ...(f.config.smtp || {}), ...patch } } }));
-  const c = form.config || {};
-  const smtp = c.smtp || {};
+  const smtp = (form.config || {}).smtp || {};
 
   async function save() {
     if (!form.name.trim()) return;
@@ -87,11 +85,11 @@ export function ChannelsScreen({ project }: { project: any }) {
   }
   function edit(ch: Channel) { setForm({ id: ch.id, type: ch.type, name: ch.name, workflow_id: ch.workflow_id || "", config: ch.config || {} }); setOpen(true); }
   async function remove(id: string) { if (window.confirm("Delete this channel?")) { await api.deleteChannel(project.id, id); reload(); } }
-  const urlOf = (ch: Channel) => ch.inbound_url || ch.messaging_endpoint;
+  const urlOf = (ch: Channel) => ch.inbound_url;
 
   return (
     <Shell>
-      <Header title="Channels" subtitle="Deploy a workflow to a surface: email or Microsoft Teams."
+      <Header title="Channels" subtitle="Deploy a workflow to an email surface."
         action={<button className="btn btn-primary btn-sm" onClick={() => { setForm(BLANK_CHANNEL); setOpen(true); }}><Icon name="plus" size={14} />New channel</button>} />
       <div className="col gap2">
         {channels.map((ch) => (
@@ -107,7 +105,6 @@ export function ChannelsScreen({ project }: { project: any }) {
       </div>
       <Modal open={open} onClose={() => setOpen(false)} title={form.id ? "Configure channel" : "New channel"} width={500}
         footer={<><button className="btn btn-ghost" onClick={() => setOpen(false)}>Cancel</button><button className="btn btn-primary" onClick={save}>{form.id ? "Save" : "Create"}</button></>}>
-        {!form.id && <Field label="Type"><select className="select" value={form.type} onChange={(e) => setForm((f) => ({ ...f, type: e.target.value }))}><option value="email">Email</option><option value="teams">Microsoft Teams</option></select></Field>}
         <Field label="Name"><input className="input" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} placeholder="Support channel" /></Field>
         <Field label="Workflow" help="Which workflow handles messages on this channel."><select className="select" value={form.workflow_id} onChange={(e) => setForm((f) => ({ ...f, workflow_id: e.target.value }))}><option value="">First active workflow</option>{wfs.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}</select></Field>
 
@@ -123,14 +120,6 @@ export function ChannelsScreen({ project }: { project: any }) {
               <Field label="From address"><input className="input mono" value={smtp.from || ""} onChange={(e) => setSmtp({ from: e.target.value })} placeholder="support@yourco.com" /></Field>
             </div>
             <Field label="Password secret ref" help="A secret holding the SMTP password (Settings → Secrets)."><input className="input mono" value={smtp.password_ref || ""} onChange={(e) => setSmtp({ password_ref: e.target.value })} placeholder="secret://proj/smtp_password" /></Field>
-          </>
-        )}
-
-        {form.type === "teams" && (
-          <>
-            <div className="field-help" style={{ marginTop: 0 }}>From your Azure Bot registration. Point the bot&apos;s messaging endpoint at the channel&apos;s endpoint URL (shown after save).</div>
-            <Field label="Azure app id"><input className="input mono" value={c.app_id || ""} onChange={(e) => setCfg({ app_id: e.target.value })} /></Field>
-            <Field label="App password secret ref" help="Secret holding the bot app password."><input className="input mono" value={c.app_password_ref || ""} onChange={(e) => setCfg({ app_password_ref: e.target.value })} placeholder="secret://proj/teams_app_password" /></Field>
           </>
         )}
       </Modal>

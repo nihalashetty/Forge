@@ -1,15 +1,14 @@
-"""Channel CRUD + public inbound endpoints (email inbound-parse, Teams bot)."""
+"""Channel CRUD + the public email inbound endpoint."""
 
 from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from forge.channels import email as email_ch
-from forge.channels import teams as teams_ch
 from forge.config import settings
 from forge.db.base import SessionLocal
 from forge.deps import CurrentUser, current_tenant_id, get_run_service, get_session, require_role
@@ -51,8 +50,6 @@ def _out(ch) -> dict:
             "enabled": ch.enabled, "config": ch.config, "key": ch.key}
     if ch.type == "email":
         item["inbound_url"] = f"{base}/v1/channels/email/{ch.key}/inbound"
-    elif ch.type == "teams":
-        item["messaging_endpoint"] = f"{base}/v1/channels/teams/{ch.key}/messages"
     return item
 
 
@@ -113,7 +110,7 @@ async def _resolve(type_: str, key: str):
 
 async def _maybe_open_handoff(ch, result: dict, *, customer, customer_message, reply_context) -> str | None:
     """If the run paused at an interrupt, open a HandoffRequest and return a customer-facing
-    acknowledgement. A text channel (email/Teams) can't resume an HITL pause inline, so ANY
+    acknowledgement. Email can't resume an HITL pause inline, so ANY
     interrupt - explicit handoff OR an approval/input pause - must be tracked and acknowledged
     rather than falling through to a stale/empty partial answer (audit F8)."""
     if not result.get("interrupted"):
@@ -167,45 +164,5 @@ async def email_inbound(key: str, request: Request, run_service: RunService = De
             delivered = await email_ch.send_reply(ch, parsed, reply_text)
         except Exception:  # noqa: BLE001 - reply delivery failure shouldn't 500 the webhook
             log.warning("email reply delivery failed for channel %s", ch.id, exc_info=True)
-            delivered = False
-    return {"ok": True, "handoff": bool(ack), "delivered": delivered}
-
-
-@public.post("/v1/channels/teams/{key}/messages")
-async def teams_messages(key: str, request: Request, run_service: RunService = Depends(get_run_service),
-                         authorization: str | None = Header(default=None)):
-    ch, workflow_id = await _resolve("teams", key)
-    activity = await request.json()
-    # Authenticate the inbound Bot Framework activity (audit D): the public messaging endpoint is
-    # otherwise driveable by anyone. When the channel has an app_id and verify_jwt isn't disabled,
-    # require a valid connector JWT (audience == app_id). Without an app_id the audience can't be
-    # validated, so we can only warn - configure app_id to enable authentication.
-    cfg = ch.config or {}
-    app_id = cfg.get("app_id")
-    if app_id and cfg.get("verify_jwt", True):
-        if not await teams_ch.verify_bot_jwt(authorization, app_id=app_id):
-            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid Bot Framework token")
-    elif not app_id:
-        log.warning("Teams inbound for channel %s is UNAUTHENTICATED (no app_id configured to verify the JWT)", ch.id)
-    parsed = teams_ch.parse_activity(activity)
-    # Accept a typed message OR a card action (Action.Submit) - a button press has no `text`, its
-    # data rides in `value`; inbound_text derives an input string from either (audit D).
-    text = teams_ch.inbound_text(parsed)
-    if parsed.get("type") not in ("message",) or not text:
-        return {"ok": True}  # ignore non-message activities (typing, conversationUpdate, …)
-    if not rate_limiter.allow(f"teams:{key}", rate=120, per=60):
-        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "rate limit exceeded")
-    result = await dispatch_message(run_service, tenant_id=ch.tenant_id, project_id=ch.project_id,
-                                    workflow_id=workflow_id, text=text,
-                                    conversation_key=parsed.get("conversation_id"),
-                                    source="channel_teams")
-    ack = await _maybe_open_handoff(ch, result, customer=parsed.get("from_name"), customer_message=text, reply_context=parsed)
-    reply_text = ack or result.get("answer")
-    delivered = None
-    if reply_text:
-        try:
-            delivered = await teams_ch.send_reply(ch, parsed, reply_text)
-        except Exception:  # noqa: BLE001 - reply delivery failure shouldn't 500 the webhook
-            log.warning("teams reply delivery failed for channel %s", ch.id, exc_info=True)
             delivered = False
     return {"ok": True, "handoff": bool(ack), "delivered": delivered}

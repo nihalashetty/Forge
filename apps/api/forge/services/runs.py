@@ -341,7 +341,7 @@ class RunService:
     ) -> Run:
         set_current_tenant(tenant_id)  # bind tenant for the Postgres RLS GUC (no-op on SQLite)
         # Enforce the tenant's daily spend ceiling on EVERY run-creation path - webhook / email /
-        # Teams / app_event / MCP / playground - not just the embed widget (audit M2). create_run
+        # Email / app_event / MCP / playground - not just the embed widget (audit M2). create_run
         # is the single run factory, so this is the universal floor. The embed path additionally
         # wraps this in run_admission for atomic burst-safety. No-op unless a quota is configured.
         from forge.services.quota import check_run_quota
@@ -777,7 +777,7 @@ class RunService:
                     graph = compile_workflow(wf.executable, ctx)
                     # Drive with the custom stream (not ainvoke) so `component` frames emitted by
                     # widget-tools are captured for channels that consume run_to_completion
-                    # (webhook/schedule/email/Teams/evals) - ainvoke discards custom-stream items
+                    # (webhook/schedule/email/evals) - ainvoke discards custom-stream items
                     # entirely (audit H1).
                     components: list = []
                     # Cooperative cancel + wall-clock timeout on the non-SSE path too (audit H).
@@ -819,13 +819,13 @@ class RunService:
                     if getattr(t, "interrupts", None)
                 ] if interrupted else []
                 # Strip component-placement markers: this path feeds text-only channels
-                # (email/Teams/webhook/schedule/evals) that can't render a widget and would
+                # (email/webhook/schedule/evals) that can't render a widget and would
                 # otherwise show the literal [[forge:component:…]] token. The structured
                 # `components` list is still returned for richer consumers.
                 from forge.tools.components import strip_component_markers
 
                 answer = strip_component_markers(_last_ai_text(getattr(snapshot, "values", {}) or {}))
-                # Text-only surfaces (email/Teams/webhook) can't render a widget - make sure a
+                # Text-only surfaces (email/webhook) can't render a widget - make sure a
                 # component-only reply still sends something rather than an empty message (H1).
                 if not answer.strip() and components:
                     names = ", ".join(str((c or {}).get("name") or "result") for c in components if c)

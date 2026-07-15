@@ -34,7 +34,7 @@ def component_marker(instance_id: str) -> str:
 
 
 def strip_component_markers(text: str) -> str:
-    """Remove component markers from a reply for text-only surfaces (email/Teams/webhook/SMS),
+    """Remove component markers from a reply for text-only surfaces (email/webhook/SMS),
     which can't render a widget and would otherwise show the literal `[[forge:component:…]]`.
     Tidies the whitespace/blank lines the removal leaves behind."""
     if not text:

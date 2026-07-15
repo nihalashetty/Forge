@@ -1,1 +1,1 @@
-"""Channel adapters: email, teams."""
+"""Channel adapters."""

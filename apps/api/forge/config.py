@@ -213,7 +213,7 @@ class Settings(BaseSettings):
     hitl_approval_timeout_seconds: int = 0
     # Hard per-run wall-clock ceiling (cooperative, checked between stream frames). 0 = unlimited.
     run_wall_clock_timeout_seconds: int = 0
-    # Outbound channel delivery (email SMTP / Teams) retry policy.
+    # Outbound channel delivery (email SMTP) retry policy.
     channel_send_max_attempts: int = 3
     channel_send_backoff_base_seconds: float = 0.5
 
