@@ -264,7 +264,7 @@ export function OverviewScreen({ project, onNav }: { project: any; onNav: (s: st
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 14, marginBottom: 18 }}>
           {health.map((h, i) => (
             <button key={i} className="card card-hover" style={{ padding: 16, textAlign: "left", background: "var(--bg-1)" }} onClick={() => onNav(h.screen)}>
-              <div className="row spread"><Tile icon={h.icon} color="var(--fg-2)" size={34} /><Icon name="chevright" size={16} style={{ color: "var(--fg-2)" }} /></div>
+              <div className="row spread"><Icon name={h.icon} size={20} style={{ color: "var(--fg-2)" }} /><Icon name="chevright" size={16} style={{ color: "var(--fg-2)" }} /></div>
               <div className="t-display" style={{ fontSize: 28, marginTop: 12 }}>{h.value}</div>
               <div className="fg-2 t-caption">{h.label}</div>
             </button>
@@ -291,7 +291,7 @@ export function OverviewScreen({ project, onNav }: { project: any; onNav: (s: st
               <div className="col gap2">
                 {workflows.map((w) => (
                   <button key={w.id} className="row gap3" onClick={() => onNav("workflow-canvas")} style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid var(--line)", background: "var(--bg-1)", cursor: "pointer", textAlign: "left" }}>
-                    <Tile icon="workflows" color="var(--accent)" size={30} />
+                    <Icon name="workflows" size={18} style={{ color: "var(--accent)", flex: "none" }} />
                     <div className="grow"><div style={{ fontWeight: 600, fontSize: 13 }}>{w.name}</div><div className="fg-2 t-caption">v{w.active_version}</div></div>
                     <StatusPill status={w.status === "active" ? "active" : "draft"} />
                   </button>
@@ -304,7 +304,7 @@ export function OverviewScreen({ project, onNav }: { project: any; onNav: (s: st
             <div className="col gap3">
               {[["msg", "Channels", "Email", "var(--fg-2)", "channels"], ["connect", "MCP Server", "Not exposed", "var(--fg-2)", "connect"], ["playground", "Playground", "Test your workflow", "var(--fg-2)", "playground"]].map((d, i) => (
                 <button key={i} className="row gap3" onClick={() => onNav(d[4])} style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid var(--line)", background: "var(--bg-1)", cursor: "pointer", textAlign: "left" }}>
-                  <Tile icon={d[0]} color={d[3]} size={30} />
+                  <Icon name={d[0]} size={18} style={{ color: d[3], flex: "none" }} />
                   <div className="grow"><div style={{ fontWeight: 600, fontSize: 13 }}>{d[1]}</div><div className="fg-2 t-caption">{d[2]}</div></div>
                   <Icon name="chevright" size={16} style={{ color: "var(--fg-2)" }} />
                 </button>
