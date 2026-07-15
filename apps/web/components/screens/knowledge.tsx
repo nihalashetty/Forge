@@ -412,6 +412,9 @@ function QA({ project }: { project: any }) {
   const [kind, setKind] = useState<string | null>(null); // null = All pairs
   const [newKind, setNewKind] = useState<string | null>(null); // non-null = naming a new kind
   const [form, setForm] = useState({ question: "", answer: "", kind: "faq", tags: "" });
+  const [editing, setEditing] = useState<string | null>(null);
+  const [edit, setEdit] = useState({ question: "", answer: "", kind: "faq", tags: "" });
+  const [saving, setSaving] = useState(false);
   const reload = useCallback(() => { if (project?.id) api.listQa(project.id).then(setRows).catch(() => {}); }, [project?.id]);
   useEffect(() => { reload(); }, [reload]);
 
@@ -433,6 +436,28 @@ function QA({ project }: { project: any }) {
     const tags = form.tags.split(",").map((t) => t.trim()).filter(Boolean);
     await api.addQa(project.id, { question: form.question, answer: form.answer, kind: effectiveKind, tags });
     setForm({ question: "", answer: "", kind: form.kind, tags: "" }); reload();
+  }
+
+  function startEdit(q: QaPair) {
+    setEditing(q.id);
+    setEdit({ question: q.question, answer: q.answer, kind: q.kind || "faq", tags: (q.tags || []).join(", ") });
+  }
+
+  async function saveEdit() {
+    if (!editing || !edit.question.trim() || saving) return;
+    setSaving(true);
+    try {
+      const updated = await api.updateQa(project.id, editing, {
+        question: edit.question.trim(),
+        answer: edit.answer,
+        kind: edit.kind.trim() || "faq",
+        tags: edit.tags.split(",").map((tag) => tag.trim()).filter(Boolean),
+      });
+      setRows((current) => current.map((row) => row.id === updated.id ? updated : row));
+      setEditing(null);
+    } finally {
+      setSaving(false);
+    }
   }
 
   function KindRow({ value, label, count }: { value: string | null; label: string; count: number }) {
@@ -511,13 +536,27 @@ function QA({ project }: { project: any }) {
         <div className="card" style={{ overflow: "hidden" }}>
           <table className="tbl"><thead><tr><th>Question</th><th>Answer</th>{showKindCol && <th>Kind</th>}<th>Tags</th><th /></tr></thead>
             <tbody>
-              {visible.map((q) => (
+              {visible.map((q) => editing === q.id ? (
+                <tr key={q.id}>
+                  <td><input autoFocus className="input" value={edit.question} onChange={(e) => setEdit((v) => ({ ...v, question: e.target.value }))} /></td>
+                  <td><textarea className="textarea" rows={2} value={edit.answer} onChange={(e) => setEdit((v) => ({ ...v, answer: e.target.value }))} /></td>
+                  {showKindCol && <td><input className="input" list="qa-kinds" value={edit.kind} onChange={(e) => setEdit((v) => ({ ...v, kind: e.target.value }))} /></td>}
+                  <td><input className="input" value={edit.tags} placeholder="tag, tag" onChange={(e) => setEdit((v) => ({ ...v, tags: e.target.value }))} /></td>
+                  <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                    <button className="iconbtn" title="Save" onClick={saveEdit} disabled={!edit.question.trim() || saving}><Icon name="check" size={15} /></button>
+                    <button className="iconbtn" title="Cancel" onClick={() => setEditing(null)} disabled={saving}><Icon name="x" size={15} /></button>
+                  </td>
+                </tr>
+              ) : (
                 <tr key={q.id}>
                   <td style={{ fontWeight: 600, maxWidth: 260 }} className="truncate">{q.question}</td>
                   <td className="fg-1 truncate" style={{ maxWidth: 280 }}>{q.answer}</td>
                   {showKindCol && <td><span className="typechip">{q.kind}</span></td>}
                   <td className="fg-2 t-caption truncate" style={{ maxWidth: 140 }}>{(q.tags || []).join(", ") || "-"}</td>
-                  <td style={{ textAlign: "right" }}><button className="iconbtn" onClick={async () => { await api.deleteQa(project.id, q.id); reload(); }}><Icon name="trash" size={15} /></button></td>
+                  <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                    <button className="iconbtn" title="Edit" onClick={() => startEdit(q)}><Icon name="edit" size={15} /></button>
+                    <button className="iconbtn" title="Delete" onClick={async () => { await api.deleteQa(project.id, q.id); reload(); }}><Icon name="trash" size={15} /></button>
+                  </td>
                 </tr>
               ))}
               {visible.length === 0 && <tr><td colSpan={showKindCol ? 5 : 4}><div className="fg-2" style={{ padding: 22, textAlign: "center" }}>{rows.length === 0 ? "No Q&A pairs yet." : "No pairs of this kind yet."}</div></td></tr>}

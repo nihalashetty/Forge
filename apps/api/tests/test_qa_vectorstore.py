@@ -42,3 +42,24 @@ async def test_lazy_reindex_backfills_existing_rows():
     async with SessionLocal() as s:
         hits = await KnowledgeService.top_qa(s, "t_bf", "p_bf", "change my billing card", top_k=1, threshold=0.0)
     assert hits and "Billing" in hits[0]["answer"]
+
+
+async def test_update_qa_replaces_question_and_retrieval_metadata():
+    tenant_id, project_id = "t_qa_edit", "p_qa_edit"
+    async with SessionLocal() as s:
+        qa = await KnowledgeService.create_qa(
+            s, tenant_id, project_id, question="Where is the old handbook?",
+            answer="On the old portal.", kind="legacy", tags=["old"],
+        )
+        updated = await KnowledgeService.update_qa(
+            s, qa, question="Where is the employee handbook?",
+            answer="Open People, then Documents.", kind="hr", tags=["people"],
+        )
+        hits = await KnowledgeService.top_qa(
+            s, tenant_id, project_id, "employee handbook", top_k=1, threshold=0.0,
+        )
+
+    assert updated.question == "Where is the employee handbook?"
+    assert updated.kind == "hr" and updated.tags == ["people"]
+    assert hits and hits[0]["answer"] == "Open People, then Documents."
+    assert hits[0]["kind"] == "hr"

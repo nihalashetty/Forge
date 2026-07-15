@@ -13,6 +13,7 @@ from forge.schemas.dto import (
     KnowledgeSearchIn,
     QaPairCreate,
     QaPairOut,
+    QaPairUpdate,
     RechunkBulkIn,
     RechunkIn,
 )
@@ -341,12 +342,34 @@ async def add_qa(project_id: str, body: QaPairCreate, session: AsyncSession = De
     return await KnowledgeService.create_qa(session, tenant_id, project_id, question=body.question, answer=body.answer, kind=body.kind, tags=body.tags)
 
 
+@qa_router.patch("/{qa_id}", response_model=QaPairOut)
+async def update_qa(project_id: str, qa_id: str, body: QaPairUpdate,
+                    session: AsyncSession = Depends(get_session),
+                    tenant_id: str = Depends(current_tenant_id),
+                    _: CurrentUser = Depends(require_role("editor"))):
+    from sqlalchemy import select
+
+    from forge.models import QaPair
+
+    qa = (await session.execute(select(QaPair).where(
+        QaPair.tenant_id == tenant_id, QaPair.project_id == project_id, QaPair.id == qa_id,
+    ))).scalar_one_or_none()
+    if qa is None:
+        raise HTTPException(404, "Q&A pair not found")
+    changes = body.model_dump(exclude_unset=True)
+    if changes.get("question") is not None and not changes["question"].strip():
+        raise HTTPException(422, "Question cannot be empty")
+    return await KnowledgeService.update_qa(session, qa, **changes)
+
+
 @qa_router.delete("/{qa_id}", status_code=204)
 async def delete_qa(project_id: str, qa_id: str, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id), _: CurrentUser = Depends(require_role("editor"))):
     from sqlalchemy import select
 
     from forge.models import QaPair
-    qa = (await session.execute(select(QaPair).where(QaPair.tenant_id == tenant_id, QaPair.id == qa_id))).scalar_one_or_none()
+    qa = (await session.execute(select(QaPair).where(
+        QaPair.tenant_id == tenant_id, QaPair.project_id == project_id, QaPair.id == qa_id,
+    ))).scalar_one_or_none()
     if qa is None:
         raise HTTPException(404, "Q&A pair not found")
     await KnowledgeService.delete_qa(session, qa)

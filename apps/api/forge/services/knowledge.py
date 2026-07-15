@@ -840,6 +840,52 @@ class KnowledgeService:
         return qa
 
     @staticmethod
+    async def update_qa(session, qa: QaPair, **changes) -> QaPair:
+        """Update a curated Q&A pair and replace its vector-store entry.
+
+        Question edits require a fresh embedding; answer/kind edits still require a metadata
+        upsert so retrieval never serves the old curated response.
+        """
+        next_question = changes.get("question")
+        next_answer = changes.get("answer")
+        question = qa.question if next_question is None else str(next_question).strip()
+        answer = qa.answer if next_answer is None else str(next_answer)
+        kind = str(changes.get("kind", qa.kind) or "faq").strip() or "faq"
+        tags = changes.get("tags", qa.tags)
+        embedder = await KnowledgeService.embedder_for_project(session, qa.tenant_id, qa.project_id)
+        if question != qa.question or not qa.q_embedding:
+            emb = await embedder.aembed_query(question)
+        else:
+            emb = qa.q_embedding
+
+        qa.question = question
+        qa.answer = answer
+        qa.kind = kind
+        qa.tags = list(tags or [])
+        qa.q_embedding = emb
+        await session.commit()
+        await session.refresh(qa)
+
+        # Remove old copies from every known dimension before indexing the replacement. This
+        # also handles a project changing embedding models between create and edit.
+        for collection in _dim_collections("forge_qa"):
+            try:
+                make_store(collection=collection).delete_ids([qa.id])
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            KnowledgeService._qa_store(embedder).upsert(
+                ids=[qa.id], embeddings=[emb], documents=[question],
+                metadatas=[{
+                    "tenant_id": qa.tenant_id, "project_id": qa.project_id,
+                    "kind": kind, "answer": answer,
+                }],
+            )
+        except Exception:  # noqa: BLE001 - lazy indexing retries if the store is unavailable
+            log.warning("update_qa: failed to reindex Q&A pair %s", qa.id, exc_info=True)
+        return qa
+
+    @staticmethod
     async def delete_qa(session, qa: QaPair) -> None:
         # Sweep EVERY dim-keyed Q&A collection (not a hardcoded subset) - the default embedder
         # is 384-dim, so a subset that omitted 384 left the vector behind and the deleted FAQ

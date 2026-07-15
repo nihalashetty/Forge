@@ -366,6 +366,8 @@ export const api = {
   listQaKinds: (pid: string) => json<string[]>(`/v1/projects/${pid}/qa-pairs/kinds`),
   addQa: (pid: string, body: { question: string; answer: string; kind?: string; tags?: string[] }) =>
     json<QaPair>(`/v1/projects/${pid}/qa-pairs`, { method: "POST", body: JSON.stringify(body) }),
+  updateQa: (pid: string, qid: string, body: { question?: string; answer?: string; kind?: string; tags?: string[] }) =>
+    json<QaPair>(`/v1/projects/${pid}/qa-pairs/${qid}`, { method: "PATCH", body: JSON.stringify(body) }),
   deleteQa: (pid: string, qid: string) => fetch(`${BASE}/v1/projects/${pid}/qa-pairs/${qid}`, { method: "DELETE", headers: authHeader() }),
   // traces + conversations (Traces view)
   listTraces: (pid: string) => json<Trace[]>(`/v1/projects/${pid}/traces`),

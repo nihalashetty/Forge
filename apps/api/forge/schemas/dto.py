@@ -348,6 +348,13 @@ class QaPairCreate(BaseModel):
     tags: list[str] = []
 
 
+class QaPairUpdate(BaseModel):
+    question: str | None = None
+    answer: str | None = None
+    kind: str | None = None
+    tags: list[str] | None = None
+
+
 class KnowledgeSearchIn(BaseModel):
     query: str
     top_k: int = 5
