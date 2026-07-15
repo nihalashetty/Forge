@@ -52,7 +52,11 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      FORGE_ENVIRONMENT: production
+      # Defaults to production (turns on the hardening guard: refuses default secrets / sqlite /
+      # non-durable checkpointer / non-https public URLs). For a local bring-up on http://localhost
+      # set FORGE_ENVIRONMENT=development in .env - Postgres/pgvector/Redis still run (set below,
+      # env-independent), you just skip the https/trusted-hosts asserts that can't hold on localhost.
+      FORGE_ENVIRONMENT: ${FORGE_ENVIRONMENT:-production}
       FORGE_DATABASE_URL: postgresql+asyncpg://forge:${POSTGRES_PASSWORD:-forge-dev-pw}@postgres:5432/forge
       FORGE_CHECKPOINT_BACKEND: postgres
       # Store embedding vectors in Postgres (reusing FORGE_DATABASE_URL) instead of the embedded
@@ -114,7 +118,8 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      FORGE_ENVIRONMENT: production
+      # Mirror the api's environment (see the note there); defaults to production.
+      FORGE_ENVIRONMENT: ${FORGE_ENVIRONMENT:-production}
       FORGE_DATABASE_URL: postgresql+asyncpg://forge:${POSTGRES_PASSWORD:-forge-dev-pw}@postgres:5432/forge
       FORGE_CHECKPOINT_BACKEND: postgres
       # Same vector store as the api (Postgres/pgvector), so worker-executed ingests/queries hit
