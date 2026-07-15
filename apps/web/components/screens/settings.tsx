@@ -9,7 +9,7 @@ import { EmptyState, Field, Modal, Segmented, Tabs, Toggle } from "../primitives
 import { api, clearTokens, InviteResult, MeResult, ProjectVersion, Secret, TeamMember } from "@/lib/api";
 import { MODELS } from "@/lib/data";
 
-const ROLES = ["owner", "admin", "editor", "viewer"];
+const ROLES = ["owner", "admin", "editor", "viewer", "connector"];
 
 // Project default embedder when rag_defaults.embedding_model is unset. Matches the backend
 // default (embeddings._DEFAULT_FASTEMBED) and the project.json schema default.
@@ -69,6 +69,8 @@ export function SettingsScreen({ project, onDeleteProject }: { project: any; onD
   const [keySave, setKeySave] = useState<"idle" | "saving" | "saved">("idle");
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [tenantId, setTenantId] = useState("");
+  const [copiedWs, setCopiedWs] = useState(false);
 
   const reloadSecrets = useCallback(() => { if (project?.id) api.listSecrets(project.id).then(setSecrets).catch(() => {}); }, [project?.id]);
   useEffect(() => {
@@ -79,6 +81,9 @@ export function SettingsScreen({ project, onDeleteProject }: { project: any; onD
     }).catch(() => {});
     reloadSecrets();
   }, [project?.id, reloadSecrets]);
+  // The workspace (tenant) id — surfaced in General so a user whose email spans multiple
+  // workspaces can supply it at MCP OAuth login. Account-level, so it's independent of project.
+  useEffect(() => { api.me().then((m) => setTenantId(m.tenant_id || "")).catch(() => {}); }, []);
 
   const setCfg = (patch: Record<string, any>) => setConfig((c) => ({ ...c, ...patch }));
   const features = config.features || {};
@@ -173,6 +178,16 @@ export function SettingsScreen({ project, onDeleteProject }: { project: any; onD
                       <option value="fake:echo">fake:echo (offline)</option>
                       {MODELS.map((m) => <option key={m.id} value={m.id}>{m.name} · {m.provider}</option>)}
                     </select>
+                  </Field>
+                </Card>
+                <Card title="Workspace">
+                  <Field label="Workspace ID" help="Your workspace (tenant) identifier — account-level, NOT the project ID. You normally don't need it, but if you sign in over MCP OAuth and your email belongs to more than one workspace, paste this into the login screen's “Workspace id” field.">
+                    <div className="row gap2">
+                      <input className="input mono" readOnly value={tenantId} placeholder="…" onFocus={(e) => e.currentTarget.select()} style={{ flex: 1 }} />
+                      <button className="btn btn-secondary btn-sm" disabled={!tenantId} onClick={() => { if (tenantId) { navigator.clipboard?.writeText(tenantId); setCopiedWs(true); setTimeout(() => setCopiedWs(false), 1400); } }}>
+                        <Icon name={copiedWs ? "check" : "copy"} size={13} />{copiedWs ? "Copied" : "Copy"}
+                      </button>
+                    </div>
                   </Field>
                 </Card>
               </>

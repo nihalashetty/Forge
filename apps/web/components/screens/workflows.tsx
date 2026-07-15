@@ -16,7 +16,7 @@ import { FieldsForm, ModelSelect, MultiSelectChips, type FieldSpec } from "../ca
 import { Field, Toggle } from "../primitives";
 import { VersionHistory } from "../version-history";
 import type { ComponentT } from "@/lib/api";
-import { api, openSSE, Agent, McpClientT, NodeType, Tool, Workflow } from "@/lib/api";
+import { api, openSSE, Agent, McpClientT, NodeType, Tool, ToolSet, Workflow } from "@/lib/api";
 import { NODE_META, NODE_HELP, IO_COLOR, fmtUSD } from "@/lib/data";
 import { canvasToExecutable, canvasToFlow, ioCompatible, newNodeId, starterWorkflow, type FlowEdge, type FlowNode } from "@/lib/graph";
 
@@ -223,6 +223,7 @@ function CanvasInner({ project, workflowId, onWorkflowChange, onBack, onRun, onR
   const [wf, setWf] = useState<Workflow | null>(null);
   const [registry, setRegistry] = useState<Record<string, NodeType>>({});
   const [tools, setTools] = useState<Tool[]>([]);
+  const [toolSets, setToolSets] = useState<ToolSet[]>([]);
   // Saved agent presets (from the Agents tab) - loadable into an agent node.
   const [agents, setAgents] = useState<Agent[]>([]);
   const [mcpServers, setMcpServers] = useState<McpClientT[]>([]);
@@ -261,6 +262,7 @@ function CanvasInner({ project, workflowId, onWorkflowChange, onBack, onRun, onR
     api.listNodeTypes().then((nt) => setRegistry(Object.fromEntries(nt.map((n) => [n.type, n])))).catch(() => {});
     if (project?.id) {
       api.listTools(project.id).then(setTools).catch(() => {});
+      api.listToolSets(project.id).then(setToolSets).catch(() => {});
       api.listAgents(project.id).then(setAgents).catch(() => {});
       api.listMcpClients(project.id).then(setMcpServers).catch(() => {});
       api.listComponents(project.id).then(setComponents).catch(() => {});
@@ -837,6 +839,7 @@ function CanvasInner({ project, workflowId, onWorkflowChange, onBack, onRun, onR
               node={selected}
               nodes={nodes}
               tools={tools}
+              toolSets={toolSets}
               agents={agents}
               mcpServers={mcpServers}
               components={components}
@@ -869,6 +872,7 @@ function NodeInspector({
   node,
   nodes,
   tools,
+  toolSets,
   agents,
   mcpServers,
   components,
@@ -883,6 +887,7 @@ function NodeInspector({
   node: FlowNode;
   nodes: FlowNode[];
   tools: Tool[];
+  toolSets: ToolSet[];
   agents: Agent[];
   mcpServers: McpClientT[];
   components: ComponentT[];
@@ -913,7 +918,7 @@ function NodeInspector({
         <button className="btn btn-danger btn-sm" onClick={() => onDelete(node.id)}><Icon name="trash" size={14} />Delete</button>
       </div>
 
-      {(type === "agent" || type === "deep_agent") && <AgentConfig config={c} onChange={onChange} tools={tools} agents={agents} mcpServers={mcpServers} components={components} folders={dynamic?.kb_folders || []} kinds={dynamic?.qa_kinds || []} />}
+      {(type === "agent" || type === "deep_agent") && <AgentConfig config={c} onChange={onChange} tools={tools} toolSets={toolSets} agents={agents} mcpServers={mcpServers} components={components} folders={dynamic?.kb_folders || []} kinds={dynamic?.qa_kinds || []} />}
 
       {type === "retrieval" && <RetrievalForm c={c} set={set} folders={dynamic?.kb_folders || []} kinds={dynamic?.qa_kinds || []} />}
 

@@ -5,7 +5,7 @@ import { Icon } from "../icons";
 import { StatusPill, Tile } from "../primitives";
 import { AgentConfig } from "../canvas/AgentConfig";
 import { VersionHistory } from "../version-history";
-import { api, Agent, ComponentT, McpClientT, Tool } from "@/lib/api";
+import { api, Agent, ComponentT, McpClientT, Tool, ToolSet } from "@/lib/api";
 
 const NEW_AGENT_CONFIG = { flavor: "agent", model: "openai:gpt-4o-mini", system_prompt: "", tools: [], components: [], middleware: [] };
 
@@ -94,6 +94,7 @@ export function AgentConfigScreen({ project, agentId, onBack }: { project: any; 
   const [config, setConfig] = useState<Record<string, any>>(NEW_AGENT_CONFIG);
   const [name, setName] = useState("");
   const [tools, setTools] = useState<Tool[]>([]);
+  const [toolSets, setToolSets] = useState<ToolSet[]>([]);
   const [mcpServers, setMcpServers] = useState<McpClientT[]>([]);
   const [components, setComponents] = useState<ComponentT[]>([]);
   const [folders, setFolders] = useState<string[]>([]);
@@ -103,6 +104,7 @@ export function AgentConfigScreen({ project, agentId, onBack }: { project: any; 
 
   useEffect(() => {
     if (project?.id) api.listTools(project.id).then(setTools).catch(() => {});
+    if (project?.id) api.listToolSets(project.id).then(setToolSets).catch(() => {});
     if (project?.id) api.listMcpClients(project.id).then(setMcpServers).catch(() => {});
     if (project?.id) api.listComponents(project.id).then(setComponents).catch(() => {});
     if (project?.id) api.listFolders(project.id).then(setFolders).catch(() => {});
@@ -141,7 +143,7 @@ export function AgentConfigScreen({ project, agentId, onBack }: { project: any; 
       <div className="row" style={{ flex: 1, minHeight: 0, alignItems: "stretch" }}>
         <div className="scroll-y grow" style={{ padding: 24 }}>
           <div style={{ maxWidth: 960, margin: "0 auto" }}>
-            <AgentConfig config={config} onChange={setConfig} tools={tools} mcpServers={mcpServers} components={components} folders={folders} kinds={kinds} />
+            <AgentConfig config={config} onChange={setConfig} tools={tools} toolSets={toolSets} mcpServers={mcpServers} components={components} folders={folders} kinds={kinds} />
           </div>
         </div>
         <div className="scroll-y" style={{ width: 300, flex: "none", borderLeft: "1px solid var(--line)", background: "var(--bg-1)", padding: 16 }}>

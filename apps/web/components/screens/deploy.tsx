@@ -3,8 +3,8 @@
    (Consuming external MCP servers lives in the BUILD → External MCP tab.) */
 import { ReactNode, useEffect, useState } from "react";
 import { Icon } from "../icons";
-import { CodeBlock, Field } from "../primitives";
-import { api } from "@/lib/api";
+import { CodeBlock, Field, Segmented } from "../primitives";
+import { api, type McpToken, type ToolSet } from "@/lib/api";
 import { EmbedPanel } from "./embed";
 
 /* Collapsible detail section - keeps the deep integration reference tucked away so the
@@ -44,9 +44,9 @@ function FrameRow({ event, children }: { event: string; children: ReactNode }) {
 /* Left secondary-nav sections (mirrors the Settings screen layout) so the Connect screen
    is navigable instead of one long scroll. */
 type ConnSection = "run" | "reference" | "mcp" | "embed";
-const CONN_SECTIONS: { id: ConnSection; label: string; icon: string; sub: string }[] = [
+const CONN_SECTIONS: { id: ConnSection; label: string; icon: string; sub: string; child?: boolean }[] = [
   { id: "run", label: "Run API", icon: "bolt", sub: "Call this project's workflow from your backend over one endpoint." },
-  { id: "reference", label: "Integration reference", icon: "traces", sub: "The wire format for streaming and non-streaming responses." },
+  { id: "reference", label: "Integration reference", icon: "traces", sub: "The wire format for streaming and non-streaming responses.", child: true },
   { id: "mcp", label: "MCP server", icon: "connect", sub: "Expose this project's tools to Claude Desktop, Cursor, or VS Code." },
   { id: "embed", label: "Embed", icon: "grid", sub: "Drop this project's chatbot into any website as a widget." },
 ];
@@ -55,8 +55,15 @@ const CONN_SECTIONS: { id: ConnSection; label: string; icon: string; sub: string
 export function ConnectScreen({ project }: { project: any }) {
   const [section, setSection] = useState<ConnSection>("run");
   const [tools, setTools] = useState<any[]>([]);
+  const [toolSets, setToolSets] = useState<ToolSet[]>([]);
+  const [tsSave, setTsSave] = useState<"idle" | "saving" | "saved">("idle");
+  const [excluded, setExcluded] = useState<string[]>([]);
+  const [openSets, setOpenSets] = useState<Set<string>>(new Set());
+  const [mcpTokens, setMcpTokens] = useState<McpToken[]>([]);
+  const [newToken, setNewToken] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [save, setSave] = useState<"idle" | "saving" | "saved">("idle");
+  const [credTab, setCredTab] = useState<"key" | "pat">("key"); // which credential to paste - it's either/or
   // Run-API panel: pick the workflow this project's API runs (a saved setting) + the
   // backend-facing base URL, then show the one ready-to-copy endpoint.
   const [workflows, setWorkflows] = useState<any[]>([]);
@@ -65,11 +72,17 @@ export function ConnectScreen({ project }: { project: any }) {
   const [apiBase, setApiBase] = useState(
     (process.env.NEXT_PUBLIC_FORGE_API_URL || "http://localhost:8000").replace(/\/$/, ""),
   );
-  useEffect(() => { if (project?.id) api.listTools(project.id).then(setTools).catch(() => {}); }, [project?.id]);
+  useEffect(() => {
+    if (!project?.id) return;
+    api.listTools(project.id).then(setTools).catch(() => {});
+    api.listToolSets(project.id).then(setToolSets).catch(() => {});
+    api.listMcpTokens(project.id).then(setMcpTokens).catch(() => {});
+  }, [project?.id]);
   useEffect(() => {
     if (!project?.id) return;
     Promise.all([api.getProject(project.id), api.listWorkflows(project.id)]).then(([p, ws]) => {
       setApiKey((p.config as any)?.mcp_api_key || "");
+      setExcluded(((p.config as any)?.mcp_excluded_tools as string[]) || []);
       setWorkflows(ws);
       // Default the picker to the saved API workflow; else the active one, else the first.
       const saved = (p.config as any)?.api_workflow_id;
@@ -80,7 +93,12 @@ export function ConnectScreen({ project }: { project: any }) {
 
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   const url = `${origin}/api/forge/v1/mcp/${project?.id || "<project>"}`;
-  const claudeConfig = JSON.stringify({ mcpServers: { [project?.slug || "forge"]: { url, headers: { Authorization: `Bearer ${apiKey || "<set-an-api-key>"}` } } } }, null, 2);
+  const claudeConfig = JSON.stringify({ mcpServers: { [project?.slug || "forge"]: { url, headers: { Authorization: "Bearer <PAT or API key>" } } } }, null, 2);
+  // The MCP surface = enabled tools of EXPOSED sets, minus individually excluded ones (mirrors
+  // the server; see mcp_server.py._exposed_names).
+  const toolById = new Map(tools.map((t) => [t.id, t]));
+  const exposedToolIds = new Set(toolSets.filter((s) => s.exposed).flatMap((s) => s.tool_ids).filter((id) => !excluded.includes(id)));
+  const exposedTools = tools.filter((t) => t.enabled && exposedToolIds.has(t.id));
 
   // Run API (server-to-server): a backend hits the Forge API DIRECTLY, not the web proxy.
   // ONE endpoint per project - it runs the workflow chosen above; `stream` is the only
@@ -156,6 +174,38 @@ export function ConnectScreen({ project }: { project: any }) {
     saveKey("fmcp_" + Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join(""));
   };
 
+  // Publish a subset of tool sets on the base MCP endpoint (project.config.mcp_published_toolsets,
+  // a list of set slugs). Empty => the base endpoint exposes every enabled tool (prior behavior).
+  async function toggleExposed(ts: ToolSet) {
+    setTsSave("saving");
+    const updated = await api.updateToolSet(project.id, ts.id, { exposed: !ts.exposed });
+    setToolSets((prev) => prev.map((x) => (x.id === ts.id ? updated : x)));
+    setTsSave("saved");
+    setTimeout(() => setTsSave("idle"), 1200);
+  }
+  async function saveExcluded(next: string[]) {
+    setExcluded(next);
+    setTsSave("saving");
+    const p = await api.getProject(project.id);
+    await api.updateProject(project.id, { config: { ...(p.config || {}), mcp_excluded_tools: next.length ? next : undefined } });
+    setTsSave("saved");
+    setTimeout(() => setTsSave("idle"), 1200);
+  }
+  const toggleToolExcluded = (tid: string) =>
+    saveExcluded(excluded.includes(tid) ? excluded.filter((x) => x !== tid) : [...excluded, tid]);
+  const toggleOpenSet = (id: string) =>
+    setOpenSets((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+
+  async function genToken() {
+    const t = await api.createMcpToken(project.id, {});
+    setNewToken(t.token || "");
+    api.listMcpTokens(project.id).then(setMcpTokens).catch(() => {});
+  }
+  async function revokeToken(id: string) {
+    await api.revokeMcpToken(project.id, id);
+    setMcpTokens((prev) => prev.filter((t) => t.id !== id));
+  }
+
   const activeMeta = CONN_SECTIONS.find((s) => s.id === section)!;
   return (
     <div className="col" style={{ flex: 1, minHeight: 0 }}>
@@ -167,7 +217,8 @@ export function ConnectScreen({ project }: { project: any }) {
             const on = section === s.id;
             return (
               <button key={s.id} onClick={() => setSection(s.id)} className={"sidenav-item" + (on ? " active" : "")}
-                style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", height: 34, padding: "0 10px", marginBottom: 1, borderRadius: 7, border: "none", cursor: "pointer", textAlign: "left", color: on ? "var(--accent)" : "var(--fg-1)", fontSize: 13, fontWeight: on ? 600 : 500, fontFamily: "var(--font-ui)" }}>
+                style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", height: 34, padding: "0 10px", paddingLeft: s.child ? 20 : 10, marginBottom: 1, borderRadius: 7, border: "none", cursor: "pointer", textAlign: "left", color: on ? "var(--accent)" : "var(--fg-1)", fontSize: 13, fontWeight: on ? 600 : 500, fontFamily: "var(--font-ui)" }}>
+                {s.child && <span aria-hidden style={{ color: "var(--fg-2)", fontSize: 13, lineHeight: 1, marginRight: -4, flex: "none" }}>└</span>}
                 <Icon name={s.icon as any} size={16} style={{ flex: "none" }} />
                 <span className="grow truncate">{s.label}</span>
               </button>
@@ -268,30 +319,123 @@ export function ConnectScreen({ project }: { project: any }) {
 
             {section === "mcp" && (
               <>
+        <Collapse title="How to use this MCP server" sub="Publish toolsets, connect a client, and pick how each user authenticates.">
+          <ol className="field-help" style={{ margin: "10px 0", paddingLeft: 18, lineHeight: 1.75 }}>
+            <li><b>Curate what&apos;s exposed.</b> Everything is published by default over the single endpoint below — under <b>Toolsets</b>, untick a whole set, or open a set and untick individual tools, to leave them out. (MCP shows the client a flat tool list; toolsets are just how you organize it.)</li>
+            <li><b>Set an API key</b> below — the shared server-to-server credential (<span className="mono-sm">Authorization: Bearer &lt;key&gt;</span>). Without a key the server is closed.</li>
+            <li><b>Add the endpoint</b> to your MCP client (Claude Desktop, Cursor, VS Code) with the config block below — that one URL is all a client needs.</li>
+            <li><b>Authenticate each user</b> — pick one: a <b>personal access token</b> (each user generates one below and pastes it into their client); <b>OAuth 2.1</b> (when enabled, the client discovers Forge and the user logs in — nothing to copy); or <b>your own backend</b> (mint a session token / use Connect and pass the user&apos;s session in <span className="mono-sm">X-Forge-Context</span>).</li>
+            <li><b>Act as the user downstream.</b> So a tool calls <em>your</em> app as that user, connect each user&apos;s account under <b>Auth providers</b> (Forge stores a per-user credential) or inject their session via <span className="mono-sm">{"{{ctx.*}}"}</span>. The MCP token itself is never forwarded. Your app owns its users &amp; sessions; Forge only carries the identity.</li>
+          </ol>
+        </Collapse>
         <div className="card" style={{ padding: 16, marginBottom: 14 }}>
           <div className="t-h3" style={{ marginBottom: 8 }}>MCP endpoint</div>
           <CodeBlock code={url} />
           <div className="field-help">JSON-RPC over HTTP (initialize / tools/list / tools/call) · authenticate with the API key below.</div>
         </div>
+        {/* Authentication: the API key and personal access token are alternatives - a client
+            pastes ONE of them as its Bearer token - so they live behind a two-tab switch. */}
         <div className="card" style={{ padding: 16, marginBottom: 14 }}>
-          <div className="row spread" style={{ marginBottom: 8 }}><div className="t-h3">API key</div><span className="t-caption fg-2">{save === "saving" ? "Saving…" : save === "saved" ? "Saved ✓" : ""}</span></div>
-          <div className="row gap2">
-            <input className="input mono" style={{ flex: 1 }} type="text" value={apiKey} onChange={(e) => setApiKey(e.target.value)} onBlur={(e) => saveKey(e.target.value)} placeholder="Set a key to expose the server" />
-            <button className="btn btn-secondary btn-sm" onClick={genKey}><Icon name="refresh" size={13} />Generate</button>
+          <div className="row spread" style={{ marginBottom: 10, alignItems: "center" }}>
+            <div className="t-h3">Authentication</div>
+            <Segmented options={[{ value: "key", label: "API key" }, { value: "pat", label: "Personal access token" }]} value={credTab} onChange={(v) => setCredTab(v as "key" | "pat")} />
           </div>
-          <div className="field-help">Required: clients send it as <span className="mono-sm">Authorization: Bearer &lt;key&gt;</span>. Without a key the endpoint is closed.</div>
+          <div className="field-help" style={{ marginBottom: 12 }}>Use <b>one</b> of these as the <span className="mono-sm">Bearer</span> token in the config below — the shared <b>API key</b> (server-to-server, one identity) <b>or</b> your own <b>personal access token</b> (acts as you).</div>
+          {credTab === "key" ? (
+            <div className="fade-in">
+              <div className="row gap2">
+                <input className="input mono" style={{ flex: 1 }} type="text" value={apiKey} onChange={(e) => setApiKey(e.target.value)} onBlur={(e) => saveKey(e.target.value)} placeholder="Set a key to expose the server" />
+                <button className="btn btn-secondary btn-sm" onClick={genKey}><Icon name="refresh" size={13} />Generate</button>
+                <span className="t-caption fg-2" style={{ alignSelf: "center", whiteSpace: "nowrap" }}>{save === "saving" ? "Saving…" : save === "saved" ? "Saved ✓" : ""}</span>
+              </div>
+              <div className="field-help">Shared server-to-server credential. Without a key the endpoint is closed to everyone.</div>
+            </div>
+          ) : (
+            <div className="fade-in">
+              <div className="field-help" style={{ marginBottom: 10 }}>
+                A per-user token to paste into your own MCP client instead of the shared key — the server then acts as <b>you</b> (your entitlements). Shown once on creation; store it safely.
+              </div>
+              {newToken && (
+                <div className="card" style={{ padding: 10, marginBottom: 10, background: "var(--bg-2)" }}>
+                  <div className="t-caption fg-2" style={{ marginBottom: 4 }}>New token — copy now, it won&apos;t be shown again:</div>
+                  <CodeBlock code={newToken} />
+                </div>
+              )}
+              <div className="row gap2" style={{ marginBottom: 10 }}>
+                <button className="btn btn-secondary btn-sm" onClick={genToken}><Icon name="plus" size={13} />Generate token</button>
+              </div>
+              <div className="col gap1">
+                {mcpTokens.map((t) => (
+                  <div key={t.id} className="row spread" style={{ padding: "6px 0", borderTop: "1px solid var(--line)" }}>
+                    <div className="row gap2" style={{ alignItems: "center", minWidth: 0 }}>
+                      <Icon name="auth" size={13} style={{ color: "var(--fg-2)" }} />
+                      <span className="mono-sm truncate">{t.name}</span>
+                      <span className="typechip">{t.prefix}…</span>
+                      {t.status !== "active" && <span className="pill pill-muted" style={{ height: 16 }}>{t.status}</span>}
+                    </div>
+                    {t.status === "active" && <button className="iconbtn" title="Revoke token" onClick={() => revokeToken(t.id)}><Icon name="trash" size={14} /></button>}
+                  </div>
+                ))}
+                {mcpTokens.length === 0 && <div className="fg-2 t-caption">No personal tokens yet.</div>}
+              </div>
+            </div>
+          )}
         </div>
         <div className="card" style={{ padding: 16, marginBottom: 14 }}>
           <div className="t-h3" style={{ marginBottom: 8 }}>Claude Desktop / Cursor config</div>
           <CodeBlock code={claudeConfig} />
         </div>
+        <div className="card" style={{ padding: 16, marginBottom: 14 }}>
+          <div className="row spread" style={{ marginBottom: 8 }}>
+            <div className="t-h3">Toolsets</div>
+            <span className="t-caption fg-2">{tsSave === "saving" ? "Saving…" : tsSave === "saved" ? "Saved ✓" : ""}</span>
+          </div>
+          <div className="field-help" style={{ marginBottom: 10 }}>
+            Everything is exposed by default over the single MCP endpoint above — untick a toolset, or open one and untick individual tools, to leave them out. Create and fill sets on the <b>Tools</b> screen.
+          </div>
+          {toolSets.length === 0 && <div className="fg-2 t-caption">No tool sets yet — create one on the Tools screen.</div>}
+          <div className="col gap1">
+            {toolSets.map((ts) => {
+              const open = openSets.has(ts.id);
+              const members = ts.tool_ids.map((id) => toolById.get(id)).filter(Boolean) as typeof tools;
+              const shown = ts.exposed ? members.filter((t) => !excluded.includes(t.id)).length : 0;
+              return (
+                <div key={ts.id} className="card" style={{ padding: 0, overflow: "hidden" }}>
+                  <div className="row spread" style={{ padding: "8px 10px", cursor: "pointer" }} onClick={() => toggleOpenSet(ts.id)}>
+                    <div className="row gap2" style={{ alignItems: "center", minWidth: 0 }}>
+                      <Icon name={open ? "chevdown" : "chevright"} size={14} style={{ color: "var(--fg-2)", flex: "none" }} />
+                      <span className="mono-sm truncate">{ts.name}</span>
+                      <span className="t-caption fg-2">{shown}/{members.length}</span>
+                      {!ts.exposed && <span className="pill pill-muted" style={{ height: 16 }}>excluded</span>}
+                    </div>
+                    <label className="row gap1" style={{ alignItems: "center", cursor: "pointer", flex: "none" }} onClick={(e) => e.stopPropagation()} title="Expose this whole toolset over MCP">
+                      <input type="checkbox" checked={ts.exposed} onChange={() => toggleExposed(ts)} />
+                      <span className="t-caption fg-2">Expose</span>
+                    </label>
+                  </div>
+                  {open && (
+                    <div className="col gap1" style={{ padding: "6px 12px 10px 30px", borderTop: "1px solid var(--line)" }}>
+                      {members.length === 0 && <div className="t-caption fg-2">No tools in this set yet.</div>}
+                      {members.map((t) => (
+                        <label key={t.id} className="row gap2" style={{ alignItems: "center", cursor: ts.exposed ? "pointer" : "default", opacity: ts.exposed ? 1 : 0.5 }}>
+                          <input type="checkbox" disabled={!ts.exposed} checked={ts.exposed && !excluded.includes(t.id)} onChange={() => toggleToolExcluded(t.id)} />
+                          <span className="mono-sm">{t.name}</span><span className="typechip">{t.kind}</span>
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
         <div className="card" style={{ padding: 16 }}>
-          <div className="t-h3" style={{ marginBottom: 10 }}>Exposed tools ({tools.filter((t) => t.enabled).length})</div>
+          <div className="t-h3" style={{ marginBottom: 10 }}>Currently exposed tools ({exposedTools.length})</div>
           <div className="col gap2">
-            {tools.map((t) => (
-              <div key={t.id} className="row gap2"><Icon name="tools" size={14} style={{ color: "var(--fg-2)" }} /><span className="mono-sm">{t.name}</span><span className="typechip">{t.kind}</span>{!t.enabled && <span className="pill pill-muted" style={{ height: 16 }}>disabled</span>}</div>
+            {exposedTools.map((t) => (
+              <div key={t.id} className="row gap2"><Icon name="tools" size={14} style={{ color: "var(--fg-2)" }} /><span className="mono-sm">{t.name}</span><span className="typechip">{t.kind}</span></div>
             ))}
-            {tools.length === 0 && <div className="fg-2 t-caption">No tools to expose yet - add some on the Tools screen.</div>}
+            {exposedTools.length === 0 && <div className="fg-2 t-caption">Nothing exposed yet — put tools in a set and toggle it on above.</div>}
           </div>
         </div>
               </>

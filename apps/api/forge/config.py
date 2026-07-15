@@ -148,6 +148,11 @@ class Settings(BaseSettings):
     # Public URL of the web console (where the SPA is served). Used to build invite links
     # emailed to new teammates, e.g. https://app.forge.yourco.com.
     public_console_url: str = "http://localhost:3000"
+    # Expose Forge's MCP server as an OAuth 2.1 resource + authorization server (MCP authorization
+    # spec). OFF by default: the /.well-known discovery, register/authorize/token endpoints, and the
+    # OAuth 401 challenge are only served when enabled, so an operator opts in AFTER reviewing the
+    # flow (consent UX, registered-client trust, MFA/multi-workspace login edge cases).
+    mcp_oauth_enabled: bool = False
 
     # --- Outbound email (SMTP) - used for team invites & notifications. When smtp_host is
     # unset, email sending is a no-op and the API returns the invite link so an admin can

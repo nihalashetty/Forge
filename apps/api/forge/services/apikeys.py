@@ -30,6 +30,13 @@ def looks_like_api_key(token: str) -> bool:
     return token.startswith(_KEY_PREFIX)
 
 
+_PAT_PREFIX = "forge_pat_"       # per-user MCP personal access token (NOT a general-API key)
+
+
+def looks_like_pat(token: str) -> bool:
+    return token.startswith(_PAT_PREFIX)
+
+
 class ApiKeyService:
     @staticmethod
     async def create(
@@ -81,6 +88,73 @@ class ApiKeyService:
             await session.execute(select(ApiKey).where(ApiKey.key_hash == _hash(presented)))
         ).scalar_one_or_none()
         if row is None or row.status != "active":
+            return None
+        now = datetime.utcnow()
+        if row.expires_at is not None and row.expires_at < now:
+            return None
+        if row.last_used_at is None or (now - row.last_used_at).total_seconds() > _LAST_USED_THROTTLE_S:
+            row.last_used_at = now
+            try:
+                await session.commit()
+            except Exception:  # noqa: BLE001 - last_used is telemetry, never fail auth on it
+                await session.rollback()
+        return row
+
+    # --- Personal access tokens (per-user, MCP-scoped) -------------------------------------
+    @staticmethod
+    async def create_personal(
+        session, *, tenant_id: str, user_id: str, name: str,
+        project_id: str | None = None, ttl_days: int | None = None,
+    ) -> tuple[ApiKey, str]:
+        """Mint a per-user PAT (prefix forge_pat_) for MCP. Bound to `user_id`, optionally scoped to
+        one `project_id`. role is 'viewer' (least privilege - the MCP path uses the end_user identity,
+        not this role, and a PAT is never accepted as a general-API principal). Plaintext shown once."""
+        plaintext = _PAT_PREFIX + _secrets.token_urlsafe(32)
+        row = ApiKey(
+            tenant_id=tenant_id, name=name, role="viewer", user_id=user_id, project_id=project_id,
+            prefix=plaintext[:_PREFIX_STORE_LEN], key_hash=_hash(plaintext), status="active",
+            expires_at=(datetime.utcnow() + timedelta(days=ttl_days)) if ttl_days else None,
+        )
+        session.add(row)
+        await session.commit()
+        await session.refresh(row)
+        return row, plaintext
+
+    @staticmethod
+    async def list_personal(session, tenant_id: str, user_id: str) -> list[ApiKey]:
+        rows = await session.execute(
+            select(ApiKey)
+            .where(ApiKey.tenant_id == tenant_id, ApiKey.user_id == user_id)
+            .order_by(ApiKey.created_at.desc())
+        )
+        return list(rows.scalars())
+
+    @staticmethod
+    async def revoke_personal(session, *, tenant_id: str, user_id: str, key_id: str) -> bool:
+        """Revoke a PAT, but only when it belongs to this user (can't revoke another user's token)."""
+        row = (
+            await session.execute(
+                select(ApiKey).where(
+                    ApiKey.tenant_id == tenant_id, ApiKey.user_id == user_id, ApiKey.id == key_id
+                )
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            return False
+        row.status = "revoked"
+        await session.commit()
+        return True
+
+    @staticmethod
+    async def resolve_personal(session, presented: str) -> ApiKey | None:
+        """Return the active, unexpired, user-bound PAT matching the presented plaintext, or None.
+        Only the forge_pat_ prefix is accepted (a general forge_sk_ key is never a PAT)."""
+        if not looks_like_pat(presented):
+            return None
+        row = (
+            await session.execute(select(ApiKey).where(ApiKey.key_hash == _hash(presented)))
+        ).scalar_one_or_none()
+        if row is None or row.status != "active" or not row.user_id:
             return None
         now = datetime.utcnow()
         if row.expires_at is not None and row.expires_at < now:

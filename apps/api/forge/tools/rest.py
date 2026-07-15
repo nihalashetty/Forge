@@ -722,10 +722,16 @@ def build_rest_tool(cfg: dict, ctx):
         #     never in the prompt, never an LLM arg.
         #   - runtime.context: LangGraph runtime context, if any.
         #   - end_user: the run's identity - authoritative, so it can't be shadowed by the above.
+        eu = getattr(ctx, "end_user", None)
         context = {
             **(getattr(ctx, "run_context", None) or {}),
             **(getattr(runtime, "context", None) or {}),
-            "end_user": getattr(ctx, "end_user", None),
+            "end_user": eu,
+            # Stable per-user keys (authoritative - added last so they override any injected value):
+            # let a tool template {{ctx.end_user_id}} and let an auth provider key PER-USER connected
+            # credentials via config per_user_context_keys: ["end_user_id"] (see AuthResolver).
+            "end_user_id": eu.get("id") if isinstance(eu, dict) else None,
+            "end_user_email": eu.get("email") if isinstance(eu, dict) else None,
         }
         sw = getattr(runtime, "stream_writer", None)
         res = await execute_rest(

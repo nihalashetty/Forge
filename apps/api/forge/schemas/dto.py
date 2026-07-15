@@ -243,6 +243,58 @@ class ToolTestIn(BaseModel):
     context: dict[str, Any] | None = None
 
 
+# --- tool sets (describable groups of tools; organize the UI + expose over MCP) ---
+class ToolSetOut(ORMModel):
+    id: str
+    project_id: str
+    name: str
+    slug: str
+    description: str = ""
+    icon: str | None = None
+    is_default: bool = False
+    exposed: bool = True  # published over MCP (the MCP surface = enabled tools of exposed sets)
+    # Member tool ids (many-to-many). Assembled by the router, not an ORM attribute.
+    tool_ids: list[str] = []
+
+
+class ToolSetCreate(BaseModel):
+    name: str
+    description: str = ""
+    icon: str | None = None
+    is_default: bool = False
+    exposed: bool = True
+    tool_ids: list[str] = []
+
+
+class ToolSetUpdate(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    icon: str | None = None
+    is_default: bool | None = None
+    exposed: bool | None = None
+    # When provided, REPLACES the set's membership with exactly these tool ids.
+    tool_ids: list[str] | None = None
+
+
+# --- MCP personal access tokens (per-user MCP auth) ---
+class McpTokenOut(ORMModel):
+    id: str
+    name: str
+    prefix: str
+    project_id: str | None = None
+    status: str
+    created_at: datetime | None = None
+    last_used_at: datetime | None = None
+    expires_at: datetime | None = None
+    # Full token plaintext - returned ONCE at creation only, never stored or echoed afterwards.
+    token: str | None = None
+
+
+class McpTokenCreate(BaseModel):
+    name: str | None = None
+    ttl_days: int | None = None
+
+
 # --- auth providers ---
 class AuthProviderOut(ORMModel):
     id: str
@@ -269,6 +321,18 @@ class AuthProviderUpdate(BaseModel):
 
 class AuthTestIn(BaseModel):
     context: dict[str, Any] | None = None
+
+
+class UserConnectionIn(BaseModel):
+    """A per-user downstream credential the app owner's connect flow stores in Forge so a tool can
+    act as that end user - without the MCP/session token being passed through. Minimally an
+    access token; refresh_token + expires_at (epoch seconds) enable Forge's automatic refresh. The
+    provider must be kind oauth2_authorization_code with per_user_context_keys: ["end_user_id"]."""
+
+    access_token: str
+    refresh_token: str | None = None
+    expires_at: float | None = None
+    extra: dict[str, Any] = Field(default_factory=dict)
 
 
 # --- secrets (write-only; value never returned) ---

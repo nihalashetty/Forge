@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from forge.auth_providers.resolver import AuthResolver
-from forge.models import Tool
+from forge.models import Tool, ToolSetMember
 from forge.secrets.store import SecretStore
 from forge.tools.graphql import execute_graphql
 from forge.tools.projection import estimate_tokens
@@ -55,7 +55,9 @@ class ToolService:
     @staticmethod
     async def delete(session: AsyncSession, tool: Tool) -> None:
         """Delete a tool. Agents/workflows reference tools by id in their config; the
-        compiler tolerates missing ids (tools_for skips them), so deletion is safe."""
+        compiler tolerates missing ids (tools_for skips them), so deletion is safe. Also
+        remove the tool from any tool sets - membership rows have no DB-level cascade."""
+        await session.execute(delete(ToolSetMember).where(ToolSetMember.tool_id == tool.id))
         await session.delete(tool)
         await session.commit()
 

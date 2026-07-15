@@ -100,10 +100,15 @@ def build_graphql_tool(cfg: dict, ctx):
         # Same three-lane context as the REST tool (kept in sync): per-run injected context,
         # LangGraph runtime context, then the authoritative end_user identity. Reaches the auth
         # resolver (per_user_context_keys / csrf_session) for on-behalf-of GraphQL calls.
+        eu = getattr(ctx, "end_user", None)
         context = {
             **(getattr(ctx, "run_context", None) or {}),
             **(getattr(runtime, "context", None) or {}),
-            "end_user": getattr(ctx, "end_user", None),
+            "end_user": eu,
+            # Stable per-user keys (authoritative), matching the REST tool: enable {{ctx.end_user_id}}
+            # and per_user_context_keys: ["end_user_id"] for per-user connected credentials.
+            "end_user_id": eu.get("id") if isinstance(eu, dict) else None,
+            "end_user_email": eu.get("email") if isinstance(eu, dict) else None,
         }
         res = await execute_graphql(
             cfg, kwargs, tenant_id=ctx.tenant_id, project_id=ctx.project_id,

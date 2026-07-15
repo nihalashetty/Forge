@@ -10,14 +10,20 @@ from forge.models import Project, Tool
 
 
 async def _seed_project_with_tool(slug="mcp-proj") -> str:
+    from forge.services.tool_sets import ToolSetService
+
     async with SessionLocal() as s:
         proj = Project(tenant_id="t_mcps", name="MCP Proj", slug=slug, config={})
         s.add(proj)
         await s.flush()
-        s.add(Tool(tenant_id="t_mcps", project_id=proj.id, name="calculator", kind="builtin",
-                   config={"builtin": "calculator", "description": "Evaluate arithmetic."}))
+        tool = Tool(tenant_id="t_mcps", project_id=proj.id, name="calculator", kind="builtin",
+                    config={"builtin": "calculator", "description": "Evaluate arithmetic."})
+        s.add(tool)
         await s.commit()
         await s.refresh(proj)
+        await s.refresh(tool)
+        # The MCP surface is the enabled tools of EXPOSED tool sets, so publish via a set.
+        await ToolSetService.create(s, "t_mcps", proj.id, name="General", tool_ids=[tool.id])
         return proj.id
 
 
