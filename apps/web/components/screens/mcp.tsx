@@ -27,7 +27,7 @@ export function McpClientsScreen({ project }: { project: any }) {
       {/* LEFT list */}
       <div style={{ width: 280, flex: "none", borderRight: "1px solid var(--line)", display: "flex", flexDirection: "column", background: "var(--bg-1)" }}>
         <div className="row spread" style={{ padding: "14px 16px", borderBottom: "1px solid var(--line)" }}>
-          <div className="t-h1">External MCP</div>
+          <div className="t-display">External MCP</div>
           <button className="btn btn-primary btn-sm" onClick={() => setAddOpen(true)}><Icon name="plus" size={14} /></button>
         </div>
         <div className="scroll-y" style={{ flex: 1, padding: 8 }}>

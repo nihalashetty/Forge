@@ -200,9 +200,8 @@ export function PlaygroundScreen({ project }: { project: any }) {
       {/* header */}
       <div className="row spread" style={{ padding: "12px 20px", borderBottom: "1px solid var(--line)", flex: "none" }}>
         <div className="row gap2">
-          <Tile icon="playground" color="var(--accent)" size={30} />
           <div>
-            <div className="t-h2">Playground</div>
+            <div className="t-display">Playground</div>
             {wfs.length > 1 ? (
               <select
                 className="select" disabled={running}

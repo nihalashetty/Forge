@@ -3,7 +3,7 @@
    drill-in to the per-turn span waterfall (tool + LLM request/response). */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "../icons";
-import { StatusPill } from "../primitives";
+import { Avatar, StatusPill } from "../primitives";
 import { api, Conversation, ConversationDetail, Facets, openSSE, Span, Turn } from "@/lib/api";
 import { fmtUSD } from "@/lib/data";
 
@@ -117,7 +117,7 @@ export function TracesScreen({ project }: { project: any }) {
     // alignItems:stretch - .row centers children, which gives the list its content height.
     <div className="row" style={{ flex: 1, minHeight: 0, height: "100%", overflow: "hidden", alignItems: "stretch" }}>
       {/* conversations list + filters */}
-      <div className="col" style={{ width: 340, flex: "none", borderRight: "1px solid var(--line)", minHeight: 0, height: "100%" }}>
+      <div className="col" style={{ width: 340, flex: "none", background: "var(--bg-1)", borderRight: "1px solid var(--line)", minHeight: 0, height: "100%" }}>
         <div className="row spread" style={{ padding: "16px 16px 8px", flex: "none" }}>
           <div className="t-h2">Conversations</div>
           <div className="row gap2">
@@ -168,7 +168,7 @@ export function TracesScreen({ project }: { project: any }) {
         </div>
       </div>
       {/* transcript */}
-      <div className="scroll-y grow" style={{ minWidth: 0, minHeight: 0, height: "100%", padding: 24, overflowX: "hidden" }}>
+      <div className="scroll-y grow" style={{ minWidth: 0, minHeight: 0, height: "100%", padding: 24, overflowX: "hidden", background: "var(--bg-0)" }}>
         {detail ? <ConversationView key={detail.conversation.thread_id} project={project} detail={detail} />
           : <div className="fg-2" style={{ padding: 40, textAlign: "center" }}>Select a conversation to see its messages.</div>}
       </div>
@@ -209,7 +209,7 @@ function ConversationView({ project, detail }: { project: any; detail: Conversat
   };
 
   return (
-    <div className="fade-up col" style={{ maxWidth: 1100, margin: "0 auto", gap: 4 }}>
+    <div className="fade-up col" style={{ maxWidth: 860, margin: "0 auto", gap: 4 }}>
       {/* high-level rollup */}
       <div className="card" style={{ padding: "14px 18px", marginBottom: 12, borderLeft: "3px solid var(--accent)" }}>
         <div className="row spread">
@@ -227,21 +227,27 @@ function ConversationView({ project, detail }: { project: any; detail: Conversat
 
       {/* transcript */}
       {detail.turns.map((turn) => (
-        <div key={turn.trace_id} style={{ marginBottom: 14 }}>
+        <div key={turn.trace_id} style={{ marginBottom: 18 }}>
           {turn.user_message && (
-            <div className="row" style={{ justifyContent: "flex-end", marginBottom: 8 }}>
-              <div style={{ maxWidth: "78%", background: "var(--accent)", color: "var(--fg-on-accent)", padding: "9px 13px", borderRadius: "12px 12px 3px 12px", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{turn.user_message}</div>
+            <div className="row" style={{ flexDirection: "row-reverse", gap: 10, marginBottom: 12, alignItems: "flex-start" }}>
+              <Avatar name={c.actor} size={28} />
+              <div style={{ maxWidth: "74%", background: "var(--accent)", color: "var(--fg-on-accent)", padding: "9px 13px", borderRadius: "14px 14px 4px 14px", whiteSpace: "pre-wrap", wordBreak: "break-word", fontSize: 13.5, lineHeight: "20px" }}>{turn.user_message}</div>
             </div>
           )}
-          <AITurn
-            turn={turn}
-            open={openTurn === turn.trace_id}
-            spans={traces[turn.trace_id]?.spans}
-            onToggle={() => toggle(turn.trace_id)}
-            onRerun={() => rerun(turn)}
-            rerunning={rerunning === turn.run_id}
-            canRerun={!!c.workflow_id}
-          />
+          <div className="row" style={{ gap: 10, alignItems: "flex-start" }}>
+            <div style={{ width: 28, height: 28, flex: "none", borderRadius: 8, background: "var(--accent)", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff" }}><Icon name="sparkles" size={15} /></div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <AITurn
+                turn={turn}
+                open={openTurn === turn.trace_id}
+                spans={traces[turn.trace_id]?.spans}
+                onToggle={() => toggle(turn.trace_id)}
+                onRerun={() => rerun(turn)}
+                rerunning={rerunning === turn.run_id}
+                canRerun={!!c.workflow_id}
+              />
+            </div>
+          </div>
         </div>
       ))}
     </div>

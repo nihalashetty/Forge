@@ -61,7 +61,7 @@ export function AuthProvidersScreen({ project }: { project: any }) {
       {/* LEFT list */}
       <div style={{ width: 280, flex: "none", borderRight: "1px solid var(--line)", display: "flex", flexDirection: "column", background: "var(--bg-1)" }}>
         <div className="row spread" style={{ padding: "14px 16px", borderBottom: "1px solid var(--line)" }}>
-          <div className="t-h1">Auth Providers</div>
+          <div className="t-display">Auth Providers</div>
           <button className="btn btn-primary btn-sm" onClick={() => setCreateOpen(true)}><Icon name="plus" size={14} /></button>
         </div>
         <div className="scroll-y" style={{ flex: 1, padding: 8 }}>
@@ -307,7 +307,7 @@ function OAuthConnect({ project, provider }: { project: any; provider: AuthProvi
         <div className="row gap2">
           <Icon name="link" size={15} />
           <span className="t-body-sm" style={{ fontWeight: 600 }}>User authorization</span>
-          {status?.connected ? <span className="pill pill-ok"><span className="dot" />connected</span> : <span className="pill pill-muted">not connected</span>}
+          {status?.connected ? <span className="pill pill-ok">connected</span> : <span className="pill pill-muted">not connected</span>}
         </div>
         <button className="btn btn-primary btn-sm" onClick={connect}><Icon name="external" size={13} />{status?.connected ? "Reconnect" : "Connect"}</button>
       </div>

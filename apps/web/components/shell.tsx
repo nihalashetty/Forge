@@ -128,12 +128,6 @@ export function Topbar({ crumbs, right, left, onCommand }: { crumbs: Crumb[]; ri
 /* ---------------- Project sidebar ---------------- */
 export function ProjectSidebar({ project, active, onNav, onBack, refreshKey }: { project: any; active: string; onNav: (id: string) => void; onBack: () => void; refreshKey?: any }) {
   const [counts, setCounts] = useState<Record<string, number>>({});
-  // Sections start collapsed; the user expands the ones they want.
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => {
-    const init: Record<string, boolean> = {};
-    for (const e of PROJECT_NAV) if ("section" in e) init[e.section] = true;
-    return init;
-  });
   // api.ts fires this after any create/delete of a counted resource, so the badges
   // refresh immediately instead of waiting for a page reload.
   const [countsBump, setCountsBump] = useState(0);
@@ -168,8 +162,8 @@ export function ProjectSidebar({ project, active, onNav, onBack, refreshKey }: {
     const count = n.countKey ? counts[n.countKey] : undefined;
     return (
       <button key={n.id} onClick={() => onNav(n.id)} title={n.help || n.label} className={"sidenav-item" + (on ? " active" : "")}
-        style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", height: 34, padding: "0 10px", marginBottom: 1, borderRadius: 7, border: "none", cursor: "pointer", textAlign: "left", color: on ? "var(--accent)" : "var(--fg-1)", fontSize: 13, fontWeight: on ? 600 : 500, fontFamily: "var(--font-ui)", transition: "color var(--dur-fast)" }}>
-        <Icon name={n.icon} size={17} style={{ flex: "none" }} />
+        style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", height: 34, padding: "0 10px", marginBottom: 1, borderRadius: 8, border: "none", cursor: "pointer", textAlign: "left", color: on ? "var(--accent)" : "var(--fg-1)", fontSize: 13, fontWeight: on ? 600 : 500, fontFamily: "var(--font-ui)", transition: "color var(--dur-fast)" }}>
+        <Icon name={n.icon} size={16} style={{ flex: "none" }} />
         <span className="grow truncate">{n.label}</span>
         {count != null && count > 0 && <span className="badge" style={on ? { background: "var(--accent-glow)", color: "var(--accent)" } : {}}>{count}</span>}
       </button>
@@ -184,18 +178,14 @@ export function ProjectSidebar({ project, active, onNav, onBack, refreshKey }: {
         <Icon name="chevdown" size={15} style={{ color: "var(--fg-2)", flex: "none" }} />
       </button>
       <nav className="scroll-y" style={{ flex: 1, minHeight: 0, padding: 8 }}>
-        {PROJECT_NAV.map((entry, idx) => {
+        {PROJECT_NAV.map((entry) => {
           if ("id" in entry && entry.id === "settings") return null; // pinned to the footer
           if ("section" in entry) {
-            const open = !collapsed[entry.section];
+            // Static section heading (like the design) - no collapse toggle.
             return (
-              <div key={entry.section} style={{ marginTop: idx === 0 ? 0 : 10 }}>
-                <button onClick={() => setCollapsed((c) => ({ ...c, [entry.section]: open }))}
-                  style={{ display: "flex", alignItems: "center", gap: 5, width: "100%", padding: "4px 8px 5px", background: "none", border: "none", cursor: "pointer", color: "var(--fg-2)" }}>
-                  <Icon name={open ? "chevdown" : "chevright"} size={12} style={{ flex: "none" }} />
-                  <span className="t-micro" style={{ letterSpacing: ".07em", textTransform: "uppercase" }}>{entry.section}</span>
-                </button>
-                {open && entry.items.map(renderLeaf)}
+              <div key={entry.section}>
+                <div className="t-micro" style={{ letterSpacing: ".06em", textTransform: "uppercase", padding: "14px 10px 5px" }}>{entry.section}</div>
+                {entry.items.map(renderLeaf)}
               </div>
             );
           }

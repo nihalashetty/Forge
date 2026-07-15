@@ -149,12 +149,11 @@ export function DashboardScreen({
               <div>
                 <div className="row spread" style={{ marginBottom: 12 }}>
                   <div className="t-h1">Recent runs</div>
-                  <span className="pill pill-info" style={{ height: 18 }}><span className="dot" />live</span>
+                  <span className="pill pill-muted" style={{ height: 18 }}>live</span>
                 </div>
                 <div className="card" style={{ overflow: "hidden" }}>
                   {(stats?.recent || []).map((r, i, arr) => (
                     <div key={r.id} className="row gap3" style={{ padding: "11px 14px", borderBottom: i < arr.length - 1 ? "1px solid var(--line)" : "none" }}>
-                      <div style={{ width: 7, height: 7, borderRadius: "50%", flex: "none", background: r.status === "done" ? "var(--ok)" : r.status === "error" ? "var(--err)" : "var(--warn)" }} />
                       <div className="grow" style={{ minWidth: 0 }}>
                         <div className="truncate" style={{ fontSize: 13, fontWeight: 600 }}>{r.workflow}</div>
                         <div className="fg-2 t-caption truncate">{r.project} · {r.status}</div>
@@ -175,11 +174,6 @@ export function DashboardScreen({
             {/* All-time usage by project (incl. Forge Assistant share) */}
             <div className="row spread" style={{ margin: "26px 0 12px" }}>
               <div className="t-h1">Reports</div>
-              {stats?.totals && (
-                <span className="fg-2 t-caption mono">
-                  all-time: {stats.totals.runs.toLocaleString()} runs · {stats.totals.tokens.toLocaleString()} tok · {fmtUSD(stats.totals.cost_usd)}
-                </span>
-              )}
             </div>
             <div className="card" style={{ overflow: "hidden" }}>
               <table className="tbl">
@@ -270,7 +264,7 @@ export function OverviewScreen({ project, onNav }: { project: any; onNav: (s: st
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 14, marginBottom: 18 }}>
           {health.map((h, i) => (
             <button key={i} className="card card-hover" style={{ padding: 16, textAlign: "left", background: "var(--bg-1)" }} onClick={() => onNav(h.screen)}>
-              <div className="row spread"><Tile icon={h.icon} color="var(--fg-2)" size={34} /><Icon name="chevright" size={16} style={{ color: "var(--fg-2)" }} /></div>
+              <div className="row spread"><Icon name={h.icon} size={20} style={{ color: "var(--fg-2)" }} /><Icon name="chevright" size={16} style={{ color: "var(--fg-2)" }} /></div>
               <div className="t-display" style={{ fontSize: 28, marginTop: 12 }}>{h.value}</div>
               <div className="fg-2 t-caption">{h.label}</div>
             </button>
@@ -297,7 +291,7 @@ export function OverviewScreen({ project, onNav }: { project: any; onNav: (s: st
               <div className="col gap2">
                 {workflows.map((w) => (
                   <button key={w.id} className="row gap3" onClick={() => onNav("workflow-canvas")} style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid var(--line)", background: "var(--bg-1)", cursor: "pointer", textAlign: "left" }}>
-                    <Tile icon="workflows" color="var(--accent)" size={30} />
+                    <Icon name="workflows" size={18} style={{ color: "var(--accent)", flex: "none" }} />
                     <div className="grow"><div style={{ fontWeight: 600, fontSize: 13 }}>{w.name}</div><div className="fg-2 t-caption">v{w.active_version}</div></div>
                     <StatusPill status={w.status === "active" ? "active" : "draft"} />
                   </button>
@@ -310,7 +304,7 @@ export function OverviewScreen({ project, onNav }: { project: any; onNav: (s: st
             <div className="col gap3">
               {[["msg", "Channels", "Email", "var(--fg-2)", "channels"], ["connect", "MCP Server", "Not exposed", "var(--fg-2)", "connect"], ["playground", "Playground", "Test your workflow", "var(--fg-2)", "playground"]].map((d, i) => (
                 <button key={i} className="row gap3" onClick={() => onNav(d[4])} style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid var(--line)", background: "var(--bg-1)", cursor: "pointer", textAlign: "left" }}>
-                  <Tile icon={d[0]} color={d[3]} size={30} />
+                  <Icon name={d[0]} size={18} style={{ color: d[3], flex: "none" }} />
                   <div className="grow"><div style={{ fontWeight: 600, fontSize: 13 }}>{d[1]}</div><div className="fg-2 t-caption">{d[2]}</div></div>
                   <Icon name="chevright" size={16} style={{ color: "var(--fg-2)" }} />
                 </button>

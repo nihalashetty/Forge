@@ -115,14 +115,15 @@ export function ToolsScreen({ project, onOpen }: { project: any; onOpen: (t: Too
       <div className="col" style={{ flex: 1, minWidth: 0 }}>
         <div className="scroll-y" style={{ flex: 1, padding: "24px 28px 120px" }}>
           <div className="fade-up" style={{ maxWidth: 1500, margin: "0 auto" }}>
-            <div className="row spread wrap gap3" style={{ marginBottom: 22, alignItems: "flex-start" }}>
+            <div style={{ marginBottom: 22 }}>
               <div>
-                <div className="t-display" style={{ fontSize: 21 }}>{headingLabel}</div>
+                <div className="t-display">{headingLabel}</div>
                 <div className="fg-2" style={{ marginTop: 4, maxWidth: 560 }}>External capabilities - REST, GraphQL, code, SQL, or builtins - with response projection.</div>
               </div>
-              <div className="row gap2">
-                <input className="input" style={{ width: 190 }} placeholder="Search tools" value={query} onChange={(e) => setQuery(e.target.value)} />
+              <div className="row gap2 wrap" style={{ marginTop: 16, alignItems: "center" }}>
+                <input className="input" style={{ width: 220 }} placeholder="Search tools" value={query} onChange={(e) => setQuery(e.target.value)} />
                 <button className="btn btn-primary" onClick={() => setOpen(true)}><Icon name="plus" size={15} />New tool</button>
+                <div style={{ flex: 1, minWidth: 8 }} />
                 <Segmented options={[{ value: "grid", label: "Grid" }, { value: "list", label: "List" }]} value={view} onChange={(v) => setView(v as any)} />
               </div>
             </div>
@@ -139,19 +140,16 @@ export function ToolsScreen({ project, onOpen }: { project: any; onOpen: (t: Too
                 {shown.map((t) => <ToolCard key={t.id} t={t} sets={toolSets} selectable={showCheckbox} selected={selected.has(t.id)} onToggleSelect={() => toggleSelect(t.id)} memberSetIds={new Set(toolSets.filter((s) => s.tool_ids.includes(t.id)).map((s) => s.id))} onToggleSet={(sid, isMember) => toggleToolInSet(sid, t.id, isMember)} onOpen={() => onOpen(t)} onDelete={(e) => del(e, t)} onDuplicate={(e) => duplicate(e, t)} onToggle={() => toggleEnabled(t)} />)}
               </div>
             ) : (
-              <div className="card" style={{ overflow: "hidden" }}>
+              <div className="card" style={{ overflowX: "auto" }}>
                 <table className="tbl">
-                  <thead><tr>{showCheckbox && <th style={{ width: 34 }}></th>}<th>Tool</th><th>Kind</th><th>Auth</th><th>Projection</th><th>Status</th><th></th></tr></thead>
+                  <thead><tr>{showCheckbox && <th style={{ width: 34 }}></th>}<th>Tool</th><th>Kind</th><th>Status</th><th></th></tr></thead>
                   <tbody>
                     {shown.map((t) => {
-                      const lt = (t.config as any)?._last_test;
                       return (
                         <tr key={t.id} className="row" style={{ cursor: "pointer" }} onClick={() => onOpen(t)}>
                           {showCheckbox && <td onClick={(e) => { e.stopPropagation(); toggleSelect(t.id); }}><Checkbox checked={selected.has(t.id)} /></td>}
                           <td><div className="row gap2"><Icon name={KIND_ICON[t.kind] || "k_rest"} size={15} style={{ color: "var(--accent)" }} /><span className="mono-sm" style={{ fontWeight: 600 }}>{t.name}</span></div></td>
                           <td><span className="chip chip-mono">{KIND_LABEL[t.kind] || t.kind}</span></td>
-                          <td>{t.auth_provider_id ? <span className="chip chip-mono"><Icon name="auth" size={12} />{t.auth_provider_id.slice(0, 8)}</span> : <span className="fg-2">-</span>}</td>
-                          <td>{lt ? <TokenMeter compact raw={lt.raw_tokens} projected={lt.projected_tokens} animateKey={t.id} /> : <span className="fg-2">-</span>}</td>
                           <td><StatusPill status={t.last_tested || "untested"} /></td>
                           <td style={{ textAlign: "right" }}>
                             <div className="row gap1" style={{ justifyContent: "flex-end" }}>
@@ -203,7 +201,7 @@ function SideItem({ label, count, active, onClick, alert }: { label: string; cou
 function ToolsSidebar({ tools, toolSets, countFor, ungroupedCount, filterSet, onFilter, onNewSet, onManage }: { tools: Tool[]; toolSets: ToolSet[]; countFor: (s: ToolSet) => number; ungroupedCount: number; filterSet: string; onFilter: (k: string) => void; onNewSet: () => void; onManage: () => void }) {
   return (
     <div className="col" style={{ width: 236, flex: "0 0 236px", background: "var(--bg-1)", borderRight: "1px solid var(--line)", padding: "20px 14px", gap: 22, overflowY: "auto" }}>
-      <div className="t-h1" style={{ padding: "0 8px" }}>MCP Tools</div>
+      <div className="t-h2" style={{ padding: "0 8px" }}>MCP Tools</div>
 
       <div className="col" style={{ gap: 2 }}>
         <SideItem label="All tools" count={tools.length} active={filterSet === "all"} onClick={() => onFilter("all")} />

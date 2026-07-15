@@ -101,9 +101,8 @@ export function ComponentsScreen({ project, onOpen }: { project: any; onOpen: (c
     <div className="col grow scroll-y" style={{ minHeight: 0 }}>
       <div className="row spread" style={{ padding: "16px 20px", borderBottom: "1px solid var(--line)" }}>
         <div className="row gap2">
-          <Tile icon="grid" color="var(--accent)" size={30} />
           <div>
-            <div className="t-h2">Components</div>
+            <div className="t-display">Components</div>
             <div className="fg-2 t-caption">UI widgets the agent can render in chat - attached to agents like tools.</div>
           </div>
         </div>
@@ -144,7 +143,6 @@ export function ComponentsScreen({ project, onOpen }: { project: any; onOpen: (c
                 </div>
                 {!c.enabled && (
                   <span className="pill pill-muted">
-                    <span className="dot" />
                     off
                   </span>
                 )}
