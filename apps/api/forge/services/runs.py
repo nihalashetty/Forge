@@ -8,6 +8,7 @@ SSE frames, then persist the trace/spans and finalize the run row.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 import uuid
@@ -46,20 +47,21 @@ RUN_WALL_CLOCK_TIMEOUT_SECONDS = settings.run_wall_clock_timeout_seconds
 
 
 class _RunControl:
-    """Process-wide cooperative-cancellation registry (audit H).
+    """Cooperative + cross-worker cancellation registry (audit H).
 
     A live run loop calls begin()/end() to register itself; cancel_run() signals it via an Event
     the loop polls between frames AND (best-effort) cancels the driving asyncio task so a run
     wedged inside one long frame (e.g. a hung model call) is still interrupted. Entries exist only
-    while a loop is running, so nothing leaks: a queued (not-yet-running) run is canceled directly
-    in the DB by the endpoint. In-process only (the inline execution path); a multi-worker
-    deployment would additionally rely on the DB status + reaper."""
+    while a loop is running, so nothing leaks. Each active loop also gets a lightweight watcher
+    for its shared DB row: if another worker commits ``status=canceled``, the watcher hard-cancels
+    this worker's driving task even when it is blocked inside one long model/tool await."""
 
     def __init__(self) -> None:
         self._events: dict[str, asyncio.Event] = {}
         self._tasks: dict[str, asyncio.Task] = {}
+        self._watchers: dict[str, asyncio.Task] = {}
 
-    def begin(self, run_id: str) -> asyncio.Event:
+    def begin(self, run_id: str, tenant_id: str) -> asyncio.Event:
         ev = asyncio.Event()
         self._events[run_id] = ev
         try:
@@ -68,11 +70,46 @@ class _RunControl:
             task = None
         if task is not None:
             self._tasks[run_id] = task
+        self._watchers[run_id] = asyncio.create_task(
+            self._watch_database(run_id, tenant_id), name=f"forge-cancel-watch:{run_id}",
+        )
         return ev
 
-    def end(self, run_id: str) -> None:
+    async def end(self, run_id: str) -> None:
         self._events.pop(run_id, None)
         self._tasks.pop(run_id, None)
+        watcher = self._watchers.pop(run_id, None)
+        if watcher is not None and watcher is not asyncio.current_task():
+            watcher.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await watcher
+
+    async def _watch_database(self, run_id: str, tenant_id: str) -> None:
+        """Observe cancellation committed by another API/worker process.
+
+        The run table is already the authoritative cross-worker state and exists in every
+        deployment, unlike optional Redis. Polling only while a run is active also gives a hard
+        cancellation backstop for a graph currently awaiting a slow provider call.
+        """
+        while run_id in self._events:
+            await asyncio.sleep(0.25)
+            try:
+                set_current_tenant(tenant_id)
+                async with SessionLocal() as session:
+                    status = (
+                        await session.execute(
+                            select(Run.status).where(Run.id == run_id, Run.tenant_id == tenant_id)
+                        )
+                    ).scalar_one_or_none()
+                if status == "canceled":
+                    self.request_cancel(run_id, hard=True)
+                    return
+                if status is None or status in ("done", "error"):
+                    return
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - transient DB errors must not kill execution
+                log.debug("run cancel watcher failed for %s", run_id, exc_info=True)
 
     def is_running(self, run_id: str) -> bool:
         return run_id in self._events
@@ -605,7 +642,7 @@ class RunService:
                     # frames. A hard asyncio task-cancel (from request_cancel) is the backstop for
                     # a run wedged inside a single long frame - it propagates to the `finally`,
                     # which marks the run canceled.
-                    cancel_ev = run_control.begin(run.id)
+                    cancel_ev = run_control.begin(run.id, tenant_id)
                     wall_clock = RUN_WALL_CLOCK_TIMEOUT_SECONDS
                     started_monotonic = time.monotonic()
                     canceled = timed_out = False
@@ -727,7 +764,7 @@ class RunService:
                 else:
                     await broker.publish({"event": "error", "data": {"message": _client_error(public, run.id, str(e))}})
             finally:
-                run_control.end(run_id)
+                await run_control.end(run_id)
                 if display_token is not None:
                     reset_tool_display_names(display_token)
                 # A HARD task-cancel (operator cancel of a run wedged in one long frame) lands here
@@ -781,7 +818,7 @@ class RunService:
                     # entirely (audit H1).
                     components: list = []
                     # Cooperative cancel + wall-clock timeout on the non-SSE path too (audit H).
-                    cancel_ev = run_control.begin(run.id)
+                    cancel_ev = run_control.begin(run.id, tenant_id)
                     wall_clock = RUN_WALL_CLOCK_TIMEOUT_SECONDS
                     started_monotonic = time.monotonic()
                     canceled = timed_out = False
@@ -851,7 +888,7 @@ class RunService:
                     "escalate": bool(on_err.get("escalate")),
                 }
             finally:
-                run_control.end(run_id)
+                await run_control.end(run_id)
 
     async def resume(self, *, run_id: str, tenant_id: str, value, project_id: str | None = None, run_context: dict | None = None, public: bool = False) -> dict:
         """Resume an interrupted run (HITL) with `Command(resume=value)` on its thread."""
@@ -1087,9 +1124,8 @@ class RunService:
         except Exception:  # noqa: BLE001
             log.exception("failed to mark run %s as %s", run_id, status)
 
-    @staticmethod
     async def reap_stale_runs(
-        *, queued_max_age_s: int = 900, running_max_age_s: int = 3600,
+        self, *, queued_max_age_s: int = 900, running_max_age_s: int = 3600,
         hitl_timeout_s: int | None = None,
     ) -> int:
         """Mark runs stuck in non-terminal states as error so they never linger forever
@@ -1098,11 +1134,9 @@ class RunService:
         periodically from the app lifespan. Returns the number reaped.
 
         Also expires `interrupted` runs awaiting a human approval for longer than
-        `hitl_timeout_s` (audit C): the run is failed and its handoff closed with a fallback
-        channel message so the customer isn't left hanging. `hitl_timeout_s` defaults to the
-        HITL_APPROVAL_TIMEOUT_SECONDS module constant; 0/None disables HITL expiry (unchanged
-        behavior). NOTE: this static reaper has no checkpointer, so it uses the fail+close
-        branch; resuming with a configured default decision would need the live checkpointer."""
+        `hitl_timeout_s` (audit C). A Human Input node with ``timeout_default`` resumes its
+        durable checkpoint with that decision. Without a configured default (or without a live
+        checkpointer), the run fails and its handoff is closed with a fallback channel message."""
         hitl_timeout_s = HITL_APPROVAL_TIMEOUT_SECONDS if hitl_timeout_s is None else hitl_timeout_s
         hitl_on = bool(hitl_timeout_s and hitl_timeout_s > 0)
         now = datetime.utcnow()
@@ -1132,23 +1166,110 @@ class RunService:
                     # went to await input - the right anchor for the approval deadline.
                     paused_at = run.ended_at or run.started_at or run.created_at or now
                     if paused_at < hitl_cut:
-                        run.status = "error"
-                        run.error = f"HITL approval timed out after {hitl_timeout_s}s (no human reply)"
-                        run.ended_at = now
-                        reaped += 1
                         expired_hitl.append((run.id, run.tenant_id, run.workflow_id))
             if reaped:
                 await s.commit()
-            # Best-effort: close the handoff + push the workflow's fallback message so the
-            # customer isn't left hanging on an abandoned approval.
-            for run_id, tenant_id, workflow_id in expired_hitl:
+
+        resumed_defaults = 0
+        for run_id, tenant_id, workflow_id in expired_hitl:
+            if await self._resume_hitl_timeout_default(run_id, tenant_id):
+                reaped += 1
+                resumed_defaults += 1
+                continue
+            # No default: fail only if the run is STILL interrupted. A human may have answered
+            # between the scan and this write; never overwrite that concurrent completion.
+            async with SessionLocal() as s:
+                run = (
+                    await s.execute(
+                        select(Run).where(
+                            Run.id == run_id, Run.tenant_id == tenant_id,
+                            Run.status == "interrupted",
+                        )
+                    )
+                ).scalar_one_or_none()
+                if run is None:
+                    continue
+                run.status = "error"
+                run.error = f"HITL approval timed out after {hitl_timeout_s}s (no human reply)"
+                run.ended_at = now
+                await s.commit()
+                reaped += 1
                 try:
-                    await RunService._notify_hitl_timeout(s, run_id, tenant_id, workflow_id)
+                    await self._notify_hitl_timeout(s, run_id, tenant_id, workflow_id)
                 except Exception:  # noqa: BLE001 - one bad notify must not stop the reaper
                     log.exception("HITL timeout notify failed for run %s", run_id)
         if reaped:
-            log.info("reaped %d stale run(s) (%d HITL timeouts)", reaped, len(expired_hitl))
+            log.info(
+                "reaped %d stale run(s) (%d HITL timeouts, %d resumed with defaults)",
+                reaped, len(expired_hitl), resumed_defaults,
+            )
         return reaped
+
+    async def _resume_hitl_timeout_default(self, run_id: str, tenant_id: str) -> bool:
+        """Resume an expired interrupt with its persisted default, if configured."""
+        if self.checkpointer is None:
+            return False
+        try:
+            from forge.models import HandoffRequest
+            from forge.services.handoff import HandoffService, interrupt_hitl_meta
+
+            set_current_tenant(tenant_id)
+            async with SessionLocal() as session:
+                run = (
+                    await session.execute(
+                        select(Run).where(
+                            Run.id == run_id, Run.tenant_id == tenant_id,
+                            Run.status == "interrupted",
+                        )
+                    )
+                ).scalar_one_or_none()
+                if run is None:
+                    return False
+                wf = await session.get(Workflow, run.workflow_id)
+                thread = await session.get(Thread, run.thread_id)
+                if wf is None or thread is None:
+                    return False
+                ctx = await build_compile_context(
+                    session, tenant_id=tenant_id, project_id=run.project_id,
+                    checkpointer=self.checkpointer, store=self.store,
+                    end_user=(thread.meta or {}).get("end_user"), run_context=None,
+                )
+                graph = compile_workflow(wf.executable, ctx)
+                config = {
+                    "configurable": {"thread_id": thread.lg_thread_id},
+                    "recursion_limit": _recursion_limit(wf.executable),
+                }
+                snapshot = await graph.aget_state(config)
+                interrupts = [
+                    jsonable(getattr(task, "interrupts", None))
+                    for task in getattr(snapshot, "tasks", [])
+                    if getattr(task, "interrupts", None)
+                ]
+                default = interrupt_hitl_meta(interrupts).get("timeout_default")
+                if default is None:
+                    return False
+                handoff = (
+                    await session.execute(
+                        select(HandoffRequest).where(
+                            HandoffRequest.run_id == run_id,
+                            HandoffRequest.tenant_id == tenant_id,
+                            HandoffRequest.status == "open",
+                        ).order_by(HandoffRequest.created_at)
+                    )
+                ).scalars().first()
+                if handoff is not None:
+                    result = await HandoffService.reply(
+                        session, self, handoff=handoff,
+                        agent_id="system:hitl-timeout", message=str(default),
+                    )
+                    resume_result = result.get("resume") or {}
+                    return bool(resume_result) and not resume_result.get("error")
+
+            result = await self.resume(run_id=run_id, tenant_id=tenant_id, value=default)
+            return not result.get("error")
+        except Exception:  # noqa: BLE001 - default resume is best-effort; fail branch remains
+            log.exception("HITL timeout default resume failed for run %s", run_id)
+            return False
 
     @staticmethod
     async def _notify_hitl_timeout(session, run_id: str, tenant_id: str, workflow_id: str) -> None:

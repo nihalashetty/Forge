@@ -95,16 +95,17 @@ async def _make_checkpointer(stack: AsyncExitStack):
     return cp
 
 
-async def _reaper_loop() -> None:
+async def _reaper_loop(app: FastAPI) -> None:
     """Periodically reap runs stuck in queued/running (never streamed, or driver died) so
     they can't linger forever (audit F3)."""
     from forge.services.runs import RunService
 
     log = logging.getLogger("forge.reaper")
+    run_service = RunService(checkpointer=app.state.checkpointer, store=app.state.store)
     while True:
         try:
             await asyncio.sleep(300)
-            await RunService.reap_stale_runs()
+            await run_service.reap_stale_runs()
         except asyncio.CancelledError:
             break
         except Exception:  # noqa: BLE001 - keep the reaper alive across failures
@@ -197,7 +198,7 @@ async def lifespan(app: FastAPI):
         bg_tasks.append(asyncio.create_task(_scheduler_loop(app), name="forge-scheduler"))
     # The reaper is safe to run everywhere (idempotent), but one instance is enough.
     if settings.scheduler_leader:
-        bg_tasks.append(asyncio.create_task(_reaper_loop(), name="forge-reaper"))
+        bg_tasks.append(asyncio.create_task(_reaper_loop(app), name="forge-reaper"))
     # Data-retention purge (leader-only): ages out traces/spans/runs + audit logs (finding e).
     if settings.enable_retention and settings.scheduler_leader:
         bg_tasks.append(asyncio.create_task(_retention_loop(), name="forge-retention"))

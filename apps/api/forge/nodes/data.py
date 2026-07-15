@@ -93,13 +93,16 @@ def human_input_factory(cfg: dict, ctx: CompileContext):
     # Deadline surfaced on the interrupt so operators/UI see how long the approval waits before
     # the reaper expires it (audit C). Per-node override, else the global HITL timeout (0 = none).
     timeout_seconds = cfg.get("timeout_seconds") or HITL_APPROVAL_TIMEOUT_SECONDS or None
+    timeout_default = cfg.get("timeout_default")
+    if timeout_default not in decisions:
+        timeout_default = None
 
     def _node(state: dict) -> dict:
         # Pauses the run; resumed via Command(resume=value). Node re-runs from the
         # top on resume, so the side effect (writing the decision) is placed after.
         decision = interrupt({
             "prompt": prompt, "allowed_decisions": decisions, "schema": schema,
-            "timeout_seconds": timeout_seconds,
+            "timeout_seconds": timeout_seconds, "timeout_default": timeout_default,
         })
         out: dict[str, Any] = {"messages": [HumanMessage(content=f"[human decision] {decision}")]}
         if output_key:

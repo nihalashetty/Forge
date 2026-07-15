@@ -30,7 +30,7 @@ from forge.services.runs import RunService
 log = logging.getLogger("forge.handoff")
 
 # Reserved key inside HandoffRequest.reply_context carrying the HITL metadata captured when the
-# handoff was opened (the interrupting node's allowed_decisions + kind) - HandoffRequest has no
+# handoff was opened (the interrupting node's allowed decisions/default + kind) - HandoffRequest has no
 # dedicated column (models/entities.py is frozen), so it rides in the JSON reply_context and is
 # stripped before the context is handed to a channel send.
 HITL_META_KEY = "_forge_hitl"
@@ -74,14 +74,17 @@ def interrupt_ack(interrupts) -> str | None:
 
 
 def interrupt_hitl_meta(interrupts) -> dict:
-    """HITL metadata to persist so the reply path can coerce a channel decision: the
-    interrupting node's allowed_decisions + kind (human_input | handoff)."""
+    """Metadata for the interrupting node's decisions, timeout default, and kind."""
     for val in _iter_interrupt_values(interrupts):
         if "allowed_decisions" in val:
-            return {"kind": "human_input", "allowed_decisions": list(val.get("allowed_decisions") or [])}
+            return {
+                "kind": "human_input",
+                "allowed_decisions": list(val.get("allowed_decisions") or []),
+                "timeout_default": val.get("timeout_default"),
+            }
         if val.get("handoff"):
-            return {"kind": "handoff", "allowed_decisions": []}
-    return {"kind": None, "allowed_decisions": []}
+            return {"kind": "handoff", "allowed_decisions": [], "timeout_default": None}
+    return {"kind": None, "allowed_decisions": [], "timeout_default": None}
 
 
 def coerce_to_allowed_decision(text: str, allowed: list[str]) -> str:
@@ -247,8 +250,11 @@ class HandoffService:
         hitl_meta = interrupt_hitl_meta(interrupts)
         reply_ctx = _channel_reply_context(handoff.reply_context)
         if hitl_meta.get("allowed_decisions"):
-            reply_ctx[HITL_META_KEY] = {"allowed_decisions": hitl_meta["allowed_decisions"],
-                                        "kind": hitl_meta.get("kind")}
+            reply_ctx[HITL_META_KEY] = {
+                "allowed_decisions": hitl_meta["allowed_decisions"],
+                "kind": hitl_meta.get("kind"),
+                "timeout_default": hitl_meta.get("timeout_default"),
+            }
         fresh = await HandoffService.create(
             session, channel=None, tenant_id=handoff.tenant_id, project_id=handoff.project_id,
             workflow_id=handoff.workflow_id, run_id=handoff.run_id, thread_id=handoff.thread_id,

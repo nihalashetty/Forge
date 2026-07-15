@@ -126,6 +126,7 @@ async def _maybe_open_handoff(ch, result: dict, *, customer, customer_message, r
     if hitl_meta.get("allowed_decisions"):
         ctx[HITL_META_KEY] = {
             "allowed_decisions": hitl_meta["allowed_decisions"], "kind": hitl_meta.get("kind"),
+            "timeout_default": hitl_meta.get("timeout_default"),
         }
     async with SessionLocal() as s:
         await HandoffService.create(

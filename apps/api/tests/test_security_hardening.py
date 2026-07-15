@@ -111,7 +111,7 @@ async def test_reaper_marks_stale_runs():
         r.started_at = old
         await s.commit()
         qid, rid = q.id, r.id
-    reaped = await RunService.reap_stale_runs(queued_max_age_s=60, running_max_age_s=60)
+    reaped = await RunService().reap_stale_runs(queued_max_age_s=60, running_max_age_s=60)
     assert reaped >= 2
     async with SessionLocal() as s:
         assert (await s.get(Run, qid)).status == "error"

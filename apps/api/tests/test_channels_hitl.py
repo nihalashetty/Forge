@@ -8,6 +8,7 @@ signatures. Uses the shared checkpointer pattern (InMemorySaver) so runs can be 
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import time
@@ -24,7 +25,7 @@ from forge.routers import hooks
 from forge.services.channels import ChannelService
 from forge.services.dispatch import dispatch_message
 from forge.services.handoff import HandoffService, coerce_to_allowed_decision
-from forge.services.runs import RunService
+from forge.services.runs import RunService, run_control
 
 # --- workflow fixtures --------------------------------------------------------------------
 
@@ -35,6 +36,20 @@ _HITL_ONE = {
     "on_error": {"message": "We'll follow up soon."},
     "nodes": [
         {"id": "hi1", "type": "human_input", "config": {"prompt": "Approve?", "allowed_decisions": ["approve", "reject"]}},
+        {"id": "end", "type": "end", "config": {}},
+    ],
+    "edges": [{"source": "hi1", "target": "end"}],
+}
+
+_HITL_DEFAULT = {
+    "id": "wf_default", "version": 1,
+    "state": {"messages": {"type": "list[message]", "reducer": "add_messages"}},
+    "entry_node": "hi1",
+    "nodes": [
+        {"id": "hi1", "type": "human_input", "config": {
+            "prompt": "Approve?", "allowed_decisions": ["approve", "reject"],
+            "timeout_default": "reject",
+        }},
         {"id": "end", "type": "end", "config": {}},
     ],
     "edges": [{"source": "hi1", "target": "end"}],
@@ -278,7 +293,7 @@ async def test_hitl_timeout_expires_interrupted_run(monkeypatch):
         run.ended_at = datetime.utcnow() - timedelta(hours=1)
         await s.commit()
 
-    reaped = await RunService.reap_stale_runs(hitl_timeout_s=1)
+    reaped = await rs.reap_stale_runs(hitl_timeout_s=1)
     assert reaped >= 1
     async with SessionLocal() as s:
         run = await s.get(Run, run_id)
@@ -287,6 +302,26 @@ async def test_hitl_timeout_expires_interrupted_run(monkeypatch):
         assert h.status == "closed"
     # The workflow's on_error fallback was pushed over the channel.
     assert delivered and delivered[0] == "We'll follow up soon."
+
+
+async def test_hitl_timeout_resumes_with_configured_default():
+    wf = await _mk_wf(_HITL_DEFAULT, "t_exp_default", "p_exp_default")
+    rs = RunService(checkpointer=InMemorySaver())
+    result = await dispatch_message(
+        rs, tenant_id="t_exp_default", project_id="p_exp_default",
+        workflow_id=wf.id, text="please",
+    )
+    assert result["interrupted"] is True
+    async with SessionLocal() as s:
+        run = await s.get(Run, result["run_id"])
+        run.ended_at = datetime.utcnow() - timedelta(hours=1)
+        await s.commit()
+
+    assert await rs.reap_stale_runs(hitl_timeout_s=1) >= 1
+    async with SessionLocal() as s:
+        run = await s.get(Run, result["run_id"])
+        assert run.status == "done"
+        assert run.error is None
 
 
 # --- (h) run cancel -----------------------------------------------------------------------
@@ -305,6 +340,39 @@ async def test_cancel_run_marks_canceled_and_is_idempotent():
     # Cancelling an already-terminal run is a no-op.
     out2 = await rs.cancel_run(run_id=run_id, tenant_id="t_cancel", project_id="p_cancel")
     assert out2["ok"] is False and out2["status"] == "canceled"
+
+
+async def test_run_control_observes_cross_worker_database_cancel():
+    """A DB cancellation made outside the local registry hard-cancels the active task."""
+    wf = await _mk_wf(_HITL_ONE, "t_cancel_remote", "p_cancel_remote")
+    rs = RunService(checkpointer=InMemorySaver())
+    async with SessionLocal() as s:
+        run = await rs.create_run(
+            s, tenant_id="t_cancel_remote", project_id="p_cancel_remote",
+            workflow_id=wf.id, input={},
+        )
+        run_id = run.id
+
+    async def _active_run():
+        run_control.begin(run_id, "t_cancel_remote")
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await run_control.end(run_id)
+
+    task = asyncio.create_task(_active_run())
+    await asyncio.sleep(0.05)
+    async with SessionLocal() as s:
+        run = await s.get(Run, run_id)
+        run.status = "canceled"
+        await s.commit()
+
+    canceled = False
+    try:
+        await asyncio.wait_for(task, timeout=2)
+    except asyncio.CancelledError:
+        canceled = True
+    assert canceled is True
 
 
 # --- (f) email HTML fallback + (g) threading ----------------------------------------------
