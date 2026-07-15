@@ -113,7 +113,7 @@ export function EmbedPanel({ project }: { project: any }) {
 export function EmbedScreen({ project }: { project: any }) {
   return (
     <div className="scroll-y" style={{ flex: 1, padding: "24px 28px" }}>
-      <div style={{ maxWidth: 760, margin: "0 auto" }} className="col gap4">
+      <div style={{ maxWidth: 960, margin: "0 auto" }} className="col gap4">
         <div className="row gap2">
           <Tile icon="grid" color="var(--io-json)" size={30} />
           <div>

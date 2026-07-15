@@ -73,7 +73,7 @@ export function DashboardScreen({
   ];
   return (
     <div className="scroll-y" style={{ flex: 1, padding: "28px 32px" }}>
-      <div className="fade-up" style={{ maxWidth: 1180, margin: "0 auto" }}>
+      <div className="fade-up" style={{ maxWidth: 1600, margin: "0 auto" }}>
         <div className="row spread" style={{ marginBottom: 22, alignItems: "flex-end" }}>
           <div>
             <div className="t-display-lg">Welcome to Forge</div>
@@ -212,12 +212,11 @@ export function DashboardScreen({
 }
 
 /* ============ PROJECT OVERVIEW ============ */
-export function OverviewScreen({ project, onNav, onDeleteProject }: { project: any; onNav: (s: string) => void; onDeleteProject?: (project: { id: string; name: string }) => Promise<void> | void }) {
+export function OverviewScreen({ project, onNav }: { project: any; onNav: (s: string) => void }) {
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [counts, setCounts] = useState<ProjectCounts | null>(null);
   const [stats, setStats] = useState<ProjectStats | null>(null);
   const [tab, setTab] = useState("overview");
-  const [deleting, setDeleting] = useState(false);
   useEffect(() => {
     if (!project?.id) return;
     // The workflow list is rendered below (needs the rows); the other tiles only need
@@ -241,28 +240,11 @@ export function OverviewScreen({ project, onNav, onDeleteProject }: { project: a
   ];
   return (
     <div className="scroll-y" style={{ flex: 1, padding: "24px 28px" }}>
-      <div className="fade-up" style={{ maxWidth: 1080, margin: "0 auto" }}>
+      <div className="fade-up" style={{ maxWidth: 1600, margin: "0 auto" }}>
         <div className="row spread" style={{ marginBottom: 14 }}>
           <div>
             <div className="t-display">{project?.name}</div>
             <div className="fg-1" style={{ marginTop: 3 }}>Visual agent workspace · {project?.slug}</div>
-          </div>
-          <div className="row gap2">
-            <button className="btn btn-secondary" onClick={() => onNav("tools")}><Icon name="tools" size={15} />Tools</button>
-            {onDeleteProject && project?.id && (
-              <button
-                className="btn btn-danger"
-                disabled={deleting}
-                onClick={async () => {
-                  setDeleting(true);
-                  try { await onDeleteProject({ id: project.id, name: project.name }); }
-                  finally { setDeleting(false); }
-                }}
-              >
-                <Icon name="trash" size={15} />{deleting ? "Deleting..." : "Delete"}
-              </button>
-            )}
-            <button className="btn btn-primary" onClick={() => onNav("workflow-canvas")}><Icon name="workflows" size={15} />Open canvas</button>
           </div>
         </div>
         <div style={{ marginBottom: 18 }}>

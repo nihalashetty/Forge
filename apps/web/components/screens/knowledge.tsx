@@ -59,7 +59,7 @@ export function KnowledgeScreen({ project }: { project: any }) {
           ))}
         </nav>
         <div className="scroll-y" style={{ flex: 1, minWidth: 0, padding: "4px 28px 24px 16px" }}>
-          <div style={{ maxWidth: 960 }}>
+          <div style={{ maxWidth: 1400 }}>
             {tab === "files" && <Files project={project} />}
             {tab === "qa" && <QA project={project} />}
             {tab === "search" && <SearchDebugger project={project} />}

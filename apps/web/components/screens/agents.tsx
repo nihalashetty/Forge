@@ -46,7 +46,7 @@ export function AgentsScreen({ project, onOpen }: { project: any; onOpen: (a: Ag
 
   return (
     <div className="scroll-y" style={{ flex: 1, padding: "24px 28px" }}>
-      <div className="fade-up" style={{ maxWidth: 1000, margin: "0 auto" }}>
+      <div className="fade-up" style={{ maxWidth: 1600, margin: "0 auto" }}>
         <div className="row spread" style={{ marginBottom: 18 }}>
           <div>
             <div className="t-display">Agents</div>
@@ -140,7 +140,7 @@ export function AgentConfigScreen({ project, agentId, onBack }: { project: any; 
       </div>
       <div className="row" style={{ flex: 1, minHeight: 0, alignItems: "stretch" }}>
         <div className="scroll-y grow" style={{ padding: 24 }}>
-          <div style={{ maxWidth: 640, margin: "0 auto" }}>
+          <div style={{ maxWidth: 960, margin: "0 auto" }}>
             <AgentConfig config={config} onChange={setConfig} tools={tools} mcpServers={mcpServers} components={components} folders={folders} kinds={kinds} />
           </div>
         </div>

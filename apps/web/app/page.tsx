@@ -81,8 +81,8 @@ function App() {
   const project = view.project ? cards.find((c) => c.id === view.project) || projects.find((p) => p.id === view.project) : null;
   const go = (v: View) => setView(v);
   const navScreen = (screen: string) => setView((v) => ({ ...v, name: "project", screen }));
-  async function deleteProject(projectToDelete: { id: string; name: string }) {
-    if (!window.confirm(`Delete project "${projectToDelete.name}"?\n\nThis removes its workflows, agents, tools, auth providers, knowledge, secrets, runs, and traces. This cannot be undone.`)) return;
+  async function deleteProject(projectToDelete: { id: string; name: string }, opts?: { skipConfirm?: boolean }) {
+    if (!opts?.skipConfirm && !window.confirm(`Delete project "${projectToDelete.name}"?\n\nThis removes its workflows, agents, tools, auth providers, knowledge, secrets, runs, and traces. This cannot be undone.`)) return;
     await api.deleteProject(projectToDelete.id);
     setProjects((prev) => prev.filter((p) => p.id !== projectToDelete.id));
     setRefreshNonce((n) => n + 1); // refetches dashboard stats (drops the deleted project's counts)
@@ -144,7 +144,7 @@ function App() {
       </div>
     ) : (
       <div className="row gap2">
-        <button className="btn btn-secondary btn-sm" onClick={() => setAssistantOpen(true)}><Icon name="sparkles" size={14} />Forge Assistant</button>
+        <button className="btn btn-secondary" onClick={() => setAssistantOpen(true)} style={{ height: 32 }}><Icon name="sparkles" size={14} />Forge Assistant</button>
       </div>
     );
 
@@ -185,7 +185,7 @@ function App() {
       );
     if (view.name === "project") {
       switch (view.screen) {
-        case "overview": return <OverviewScreen project={project} onNav={navScreen} onDeleteProject={deleteProject} />;
+        case "overview": return <OverviewScreen project={project} onNav={navScreen} />;
         case "playground": return <PlaygroundScreen project={project} />;
         case "workflows": return <WorkflowsScreen project={project} onOpen={(w) => { setSelWorkflow(w); navScreen("workflow-canvas"); }} />;
         case "workflow-canvas": return <WorkflowCanvas project={project} workflowId={selWorkflow?.id} onWorkflowChange={setSelWorkflow} onBack={() => navScreen("workflows")} onRun={() => navScreen("playground")} onRegisterFlush={(fn) => { canvasFlushRef.current = fn; }} />;
@@ -205,7 +205,7 @@ function App() {
         case "traces": return <TracesScreen project={project} />;
         case "connect": return <ConnectScreen project={project} />;
         case "embed": return <EmbedScreen project={project} />;
-        case "settings": return <SettingsScreen project={project} />;
+        case "settings": return <SettingsScreen project={project} onDeleteProject={(p) => deleteProject(p, { skipConfirm: true })} />;
         default: return <OverviewScreen project={project} onNav={navScreen} />;
       }
     }

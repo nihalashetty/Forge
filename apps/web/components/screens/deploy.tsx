@@ -177,7 +177,7 @@ export function ConnectScreen({ project }: { project: any }) {
 
         {/* content */}
         <div className="scroll-y grow" style={{ minWidth: 0 }}>
-          <div className="fade-up" style={{ maxWidth: 820, margin: "0 auto", padding: "24px 28px" }}>
+          <div className="fade-up" style={{ maxWidth: 960, margin: "0 auto", padding: "24px 28px" }}>
             <div style={{ marginBottom: 18 }}>
               <div className="t-display">{activeMeta.label}</div>
               <div className="fg-1" style={{ marginTop: 3 }}>{activeMeta.sub}</div>
