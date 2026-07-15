@@ -5,7 +5,22 @@ from __future__ import annotations
 from sqlalchemy import func, select
 
 from forge.db.base import SessionLocal
-from forge.models import Agent, AuthProvider, Component, KbSource, McpClient, Project, QaPair, Run, Secret, Span, Thread, Tool, Trace, Workflow
+from forge.models import (
+    Agent,
+    AuthProvider,
+    Component,
+    HandoffRequest,
+    KbSource,
+    McpClient,
+    QaPair,
+    Run,
+    Secret,
+    Span,
+    Thread,
+    Tool,
+    Trace,
+    Workflow,
+)
 from forge.services.projects import ProjectService
 
 
@@ -31,6 +46,8 @@ async def test_project_counts_are_scoped_to_project():
             Component(tenant_id=tenant_id, project_id=proj.id, name="card"),
             KbSource(tenant_id=tenant_id, project_id=proj.id, kind="text", name="src"),
             AuthProvider(tenant_id=tenant_id, project_id=proj.id, name="auth", kind="bearer", config={}),
+            HandoffRequest(tenant_id=tenant_id, project_id=proj.id, run_id="run-open", status="open"),
+            HandoffRequest(tenant_id=tenant_id, project_id=proj.id, run_id="run-done", status="answered"),
             # Belongs to a different project in the same tenant - must NOT be counted for `proj`.
             Tool(tenant_id=tenant_id, project_id=other.id, name="other_tool", kind="builtin", config={}),
             Workflow(tenant_id=tenant_id, project_id=other.id, name="other_wf"),
@@ -40,12 +57,13 @@ async def test_project_counts_are_scoped_to_project():
         counts = await ProjectService.counts(session, tenant_id, proj.id)
         assert counts == {
             "workflows": 2, "agents": 1, "tools": 3,
-            "components": 1, "knowledge": 1, "auth": 1,
+            "components": 1, "knowledge": 1, "auth": 1, "handoffs": 1,
         }
         # An empty project is all zeros (never None).
         empty = await ProjectService.create(session, tenant_id, name="Empty", slug="empty")
         assert await ProjectService.counts(session, tenant_id, empty.id) == {
             "workflows": 0, "agents": 0, "tools": 0, "components": 0, "knowledge": 0, "auth": 0,
+            "handoffs": 0,
         }
 
 

@@ -1,7 +1,7 @@
 """TriggerService - sync workflow trigger nodes to Trigger rows and decide what fires.
 
 A workflow's executable may contain trigger nodes (webhook_in / schedule / email_in /
-chat_in). On publish/save we mirror those nodes into `triggers` rows so the dispatcher
+app_event). On publish/save we mirror those nodes into `triggers` rows so the dispatcher
 (webhook route + scheduler + channels) can route inbound events to runs.
 """
 

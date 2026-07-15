@@ -30,6 +30,7 @@ class ProjectCountsOut(BaseModel):
     components: int
     knowledge: int
     auth: int
+    handoffs: int
 
 
 class ProjectCreate(BaseModel):
@@ -164,7 +165,6 @@ class AgentOut(ORMModel):
     id: str
     project_id: str
     name: str
-    version: int
     config: dict = {}
     created_by: str | None = None
     created_by_email: str | None = None
@@ -219,7 +219,6 @@ class ToolOut(ORMModel):
     name: str
     kind: str
     enabled: bool
-    version: int
     auth_provider_id: str | None = None
     last_tested: str | None = None
     config: dict = {}
@@ -326,6 +325,9 @@ class KbSourceCreate(BaseModel):
     # How to split this source into chunks: recursive (default) | section | sentence.
     # None -> falls back to the project's rag_defaults.chunking_strategy, then "recursive".
     chunking_strategy: str | None = None
+    # Optional per-source ingest knobs stored on the source meta and read at ingest time -
+    # e.g. for a crawl: {"max_pages": 50, "max_depth": 2, "crawl_delay": 0.5}.
+    meta: dict | None = None
 
 
 class QaPairOut(ORMModel):
@@ -342,6 +344,13 @@ class QaPairCreate(BaseModel):
     answer: str
     kind: str = "faq"  # free-form category: faq, error_workaround, or any custom kind
     tags: list[str] = []
+
+
+class QaPairUpdate(BaseModel):
+    question: str | None = None
+    answer: str | None = None
+    kind: str | None = None
+    tags: list[str] | None = None
 
 
 class KnowledgeSearchIn(BaseModel):

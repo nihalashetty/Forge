@@ -3,7 +3,9 @@
   "$id": "forge/nodes/join",
   "type": "object",
   "properties": {
-    "reducer": { "type": "string", "enum": ["concat", "merge", "first", "last"], "default": "concat" }
+    "reducer": { "type": "string", "enum": ["concat", "merge", "first", "last"], "default": "concat" },
+    "input_key": { "type": "string", "description": "State key holding the fan-out results to re-aggregate. Omit to use the join purely as a convergence marker (results are then aggregated by that key's own add-reducer)." },
+    "output_key": { "type": "string", "description": "State key to write the aggregated result to (defaults to input_key). Point at a 'last'-reducer field to overwrite cleanly rather than append." }
   },
   "$comment": "ports: in:control[], out:json"
 }

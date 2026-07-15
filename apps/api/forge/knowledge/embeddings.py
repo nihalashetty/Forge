@@ -14,12 +14,15 @@ import math
 import os
 from typing import Protocol
 
+from forge.tracing.tracer import embedding_span
+
 log = logging.getLogger("forge.embeddings")
 
 
 class Embedder(Protocol):
     name: str
     dim: int
+    max_input_chars: int  # safe char budget before the model truncates (see ingest clamp)
 
     def embed(self, texts: list[str]) -> list[list[float]]: ...
     def embed_query(self, text: str) -> list[float]: ...
@@ -43,11 +46,43 @@ _MODEL_DIMS = {
 # Default fastembed model when the ref is just "fastembed:" or unset (small, 384-dim, CPU-fast).
 _DEFAULT_FASTEMBED = "BAAI/bge-small-en-v1.5"
 
+# Max input sequence LENGTH (tokens) per model. An embedder silently TRUNCATES anything longer,
+# so a chunk_size (in chars) that overflows this loses the tail of every chunk. Chunking is
+# char-based, so we convert with a deliberately conservative chars/token ratio (dense text can
+# be ~3-4 chars/token) to get a safe character budget - see `max_input_chars` + the ingest clamp.
+_MODEL_MAX_TOKENS = {
+    "text-embedding-3-small": 8191, "text-embedding-3-large": 8191, "text-embedding-ada-002": 8191,
+    "BAAI/bge-small-en-v1.5": 512, "BAAI/bge-base-en-v1.5": 512, "BAAI/bge-large-en-v1.5": 512,
+}
+_DEFAULT_MAX_TOKENS = 512  # conservative fallback for an unmapped model
+_CHARS_PER_TOKEN = 4  # rough English average; used only to derive a safe char budget from tokens
+
+
+def _est_tokens(texts: list[str]) -> int:
+    """Rough input-token estimate for pricing an embedding span (chars / ~4). Embedders don't
+    return token counts, so this drives the span's cost via pricing; latency is always exact."""
+    return sum(len(t or "") for t in texts) // _CHARS_PER_TOKEN
+
+
+def _max_input_chars(model_name: str) -> int:
+    return _MODEL_MAX_TOKENS.get(model_name, _DEFAULT_MAX_TOKENS) * _CHARS_PER_TOKEN
+
 # Every embedding dim a Chroma collection may have been created under: the known model dims
 # plus 256 (the removed hashed FakeEmbedder's legacy dim). delete/reingest sweep ALL of these
 # (see services.knowledge._dim_collections) so switching embedders can't leave orphaned
 # vectors behind - a stale FAQ would otherwise keep deflecting, a stale chunk keep surfacing.
 KNOWN_EMBEDDING_DIMS: frozenset[int] = frozenset({256, *_MODEL_DIMS.values()})
+
+# Relevance floors calibrated to the DEFAULT local BGE embedder (repo audit + measured cosines):
+# BGE query/doc cosine for RELATED pairs ~0.75-0.86, UNRELATED ~0.38-0.52, so a 0.6 floor cleanly
+# separates them and lets a wildly off-topic query surface NOTHING (the grounded agent then says
+# it doesn't know instead of answering from the nearest chunk). Hosted models (e.g. OpenAI) sit
+# on a LOWER cosine scale - set a smaller min_score per project/node when using them.
+DEFAULT_MIN_SCORE = 0.6
+# Cross-encoder rerank floor on the sigmoid (0-1) scale. The default ms-marco reranker is sharply
+# bimodal (relevant ~1.0, irrelevant ~0.0 measured), so 0.3 drops off-topic while keeping
+# borderline-relevant passages. Applied ONLY when rerank is on (a different scale from cosine).
+DEFAULT_RERANK_MIN_SCORE = 0.3
 
 
 class _LCEmbedder:
@@ -57,6 +92,7 @@ class _LCEmbedder:
         self._e = emb
         self.name = model_name
         self.dim = _MODEL_DIMS.get(model_name, 1536)
+        self.max_input_chars = _max_input_chars(model_name)
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         return self._e.embed_documents(texts)
@@ -67,10 +103,12 @@ class _LCEmbedder:
     # Async variants keep network embed calls off the event loop's back (the sync
     # ones block the loop - and the SSE stream - for the whole round trip).
     async def aembed(self, texts: list[str]) -> list[list[float]]:
-        return await self._e.aembed_documents(texts)
+        with embedding_span(self.name, n_texts=len(texts), input_tokens=_est_tokens(texts)):
+            return await self._e.aembed_documents(texts)
 
     async def aembed_query(self, text: str) -> list[float]:
-        return await self._e.aembed_query(text)
+        with embedding_span(self.name, n_texts=1, input_tokens=_est_tokens([text])):
+            return await self._e.aembed_query(text)
 
 
 class _FastEmbedEmbedder:
@@ -93,6 +131,7 @@ class _FastEmbedEmbedder:
         self._model = TextEmbedding(model_name=model_name, cache_dir=cache_dir)
         self.name = model_name
         self.dim = len(next(iter(self._model.embed(["dim probe"]))))
+        self.max_input_chars = _max_input_chars(model_name)
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         # fastembed yields numpy float32 arrays; Chroma wants plain float lists. `tolist()`
@@ -108,12 +147,14 @@ class _FastEmbedEmbedder:
     async def aembed(self, texts: list[str]) -> list[list[float]]:
         import asyncio
 
-        return await asyncio.to_thread(self.embed, texts)
+        with embedding_span(self.name, n_texts=len(texts), input_tokens=_est_tokens(texts)):
+            return await asyncio.to_thread(self.embed, texts)
 
     async def aembed_query(self, text: str) -> list[float]:
         import asyncio
 
-        return await asyncio.to_thread(self.embed_query, text)
+        with embedding_span(self.name, n_texts=1, input_tokens=_est_tokens([text])):
+            return await asyncio.to_thread(self.embed_query, text)
 
 
 # Provider embedder instances are expensive to construct (~1s measured on Windows:

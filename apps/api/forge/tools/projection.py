@@ -11,9 +11,12 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 import jmespath
+
+log = logging.getLogger("forge.tools.projection")
 
 
 def get_path(data: Any, dotted: str) -> Any:
@@ -41,9 +44,17 @@ def project_response(data: Any, response_cfg: dict | None) -> Any:
     if expr:
         try:
             return jmespath.search(expr, data)
-        except jmespath.exceptions.JMESPathError:
-            # Bad expression at runtime: fall back to full payload rather than crash.
-            return data
+        except jmespath.exceptions.JMESPathError as e:
+            # A broken/typo'd expression must NOT silently return the full raw payload: that
+            # masquerades as success, hides the misconfiguration from the operator, and can dump
+            # a huge un-projected body onto the model. Log it and return a small, clearly-marked
+            # structured error instead (still passes through cap_payload downstream).
+            log.warning("JMESPath projection failed for expression %r: %s", expr, e)
+            return {
+                "error": "projection_error",
+                "message": f"the configured response projection failed: {e}",
+                "expression": expr,
+            }
 
     fields = [f for f in response_cfg.get("fields", []) if f.get("include_in_llm", True)]
     if fields:

@@ -13,8 +13,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from forge.deps import current_tenant_id, get_session
+from forge.deps import CurrentUser, current_tenant_id, get_session, require_role
 from forge.services.components import ComponentService
+from forge.services.versions import safe_snapshot
 
 router = APIRouter(prefix="/v1/projects/{project_id}/components", tags=["components"])
 
@@ -67,11 +68,14 @@ async def list_components(project_id: str, session: AsyncSession = Depends(get_s
 
 
 @router.post("", response_model=ComponentOut, status_code=201)
-async def create_component(project_id: str, body: ComponentCreate, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id)):
+async def create_component(project_id: str, body: ComponentCreate, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id),
+                           user: CurrentUser = Depends(require_role("editor"))):
     existing = await ComponentService.list(session, tenant_id, project_id)
     if any(c.name == body.name for c in existing):
         raise HTTPException(409, f"A component named '{body.name}' already exists in this project.")
-    return await ComponentService.create(session, tenant_id, project_id, **body.model_dump())
+    comp = await ComponentService.create(session, tenant_id, project_id, **body.model_dump())
+    await safe_snapshot(session, "component", comp, author=user)
+    return comp
 
 
 @router.get("/{component_id}", response_model=ComponentOut)
@@ -83,7 +87,8 @@ async def get_component(project_id: str, component_id: str, session: AsyncSessio
 
 
 @router.patch("/{component_id}", response_model=ComponentOut)
-async def update_component(project_id: str, component_id: str, body: ComponentUpdate, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id)):
+async def update_component(project_id: str, component_id: str, body: ComponentUpdate, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id),
+                           user: CurrentUser = Depends(require_role("editor"))):
     comp = await ComponentService.get(session, tenant_id, project_id, component_id)
     if comp is None:
         raise HTTPException(404, "Component not found")
@@ -91,11 +96,14 @@ async def update_component(project_id: str, component_id: str, body: ComponentUp
         existing = await ComponentService.list(session, tenant_id, project_id)
         if any(c.name == body.name and c.id != comp.id for c in existing):
             raise HTTPException(409, f"A component named '{body.name}' already exists in this project.")
-    return await ComponentService.update(session, comp, **body.model_dump(exclude_unset=True))
+    comp = await ComponentService.update(session, comp, **body.model_dump(exclude_unset=True))
+    await safe_snapshot(session, "component", comp, author=user)
+    return comp
 
 
 @router.delete("/{component_id}", status_code=204)
-async def delete_component(project_id: str, component_id: str, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id)):
+async def delete_component(project_id: str, component_id: str, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id),
+                           _: CurrentUser = Depends(require_role("editor"))):
     comp = await ComponentService.get(session, tenant_id, project_id, component_id)
     if comp is None:
         raise HTTPException(404, "Component not found")

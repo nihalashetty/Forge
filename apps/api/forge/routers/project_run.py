@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
@@ -38,7 +38,7 @@ from forge.models import Project, Run, Thread, Workflow
 from forge.schemas.dto import ProjectRunIn
 from forge.services.auth import role_at_least
 from forge.services.runs import RunService
-from forge.util.ratelimit import rate_limiter
+from forge.util.ratelimit import idempotency, rate_limiter
 
 router = APIRouter(prefix="/v1/projects/{project_id}", tags=["project-run"])
 
@@ -100,11 +100,27 @@ async def project_run(
     user: CurrentUser = Depends(get_current_user),
     run_service: RunService = Depends(get_run_service),
     rc: dict | None = Depends(run_context),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ):
     tenant_id = user.tenant_id
     # Per-tenant run-creation rate limit (shared bucket with the per-workflow run API).
     if not rate_limiter.allow(f"runs:{tenant_id}", rate=settings.run_rate_limit_per_minute, per=60):
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "run rate limit exceeded; slow down")
+
+    # Idempotency for the blind-retry-prone case: a non-streaming new turn re-POSTed with the
+    # same Idempotency-Key returns the original result instead of running the workflow again
+    # (duplicate emails/charges/side-effects). Streaming and HITL-resume are live/thread-stateful
+    # and are not deduped here. Checked BEFORE run creation so the side-effecting run never fires
+    # twice; the result is stored after completion below.
+    ik = (
+        f"projrun:{tenant_id}:{project_id}:{idempotency_key}"
+        if (idempotency_key and body.resume is None and not body.stream)
+        else None
+    )
+    if ik:
+        cached = idempotency.get(ik)
+        if cached is not None:
+            return cached
 
     # ---- HITL resume: answer an interrupt the workflow raised on this thread ----
     if body.resume is not None:
@@ -134,7 +150,9 @@ async def project_run(
                     run_id=run.id, tenant_id=tenant_id, project_id=project_id,
                     run_context=rc, resume=True, resume_value=value,
                 ):
-                    yield {"event": frame["event"], "data": json.dumps(frame["data"], default=str)}
+                    # `id` lets a disconnected client reattach via GET .../runs/{run_id}/stream
+                    # with Last-Event-ID (the run keeps executing regardless - finding #12).
+                    yield {"event": frame["event"], "data": json.dumps(frame["data"], default=str), "id": frame.get("id")}
 
             return EventSourceResponse(gen_resume(), headers=SSE_HEADERS)
         result = await run_service.resume(
@@ -148,6 +166,7 @@ async def project_run(
     wf = await _configured_workflow(session, tenant_id, project_id)
     end_user = _resolve_end_user(body, user, tenant_id, project_id)
     # Enforce the tenant DAILY quota atomically with run creation (audit F2).
+    from forge.services.budget import BudgetExceeded, ModelNotAllowed
     from forge.services.quota import QuotaExceeded, run_admission
 
     try:
@@ -158,6 +177,10 @@ async def project_run(
             )
     except QuotaExceeded as e:
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, e.message) from e
+    except ModelNotAllowed as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, e.message) from e
+    except BudgetExceeded as e:
+        raise HTTPException(status.HTTP_402_PAYMENT_REQUIRED, e.message) from e
 
     if body.stream:
         async def gen_new():
@@ -165,7 +188,9 @@ async def project_run(
             async for frame in run_service.stream(
                 run_id=run.id, tenant_id=tenant_id, project_id=project_id, run_context=rc,
             ):
-                yield {"event": frame["event"], "data": json.dumps(frame["data"], default=str)}
+                # `id` lets a disconnected client reattach via GET .../runs/{run_id}/stream
+                # with Last-Event-ID (the run keeps executing regardless - finding #12).
+                yield {"event": frame["event"], "data": json.dumps(frame["data"], default=str), "id": frame.get("id")}
 
         return EventSourceResponse(gen_new(), headers=SSE_HEADERS)
 
@@ -173,4 +198,6 @@ async def project_run(
         run_id=run.id, tenant_id=tenant_id, project_id=project_id, run_context=rc,
     )
     result["thread_id"] = run.thread_id
+    if ik:
+        idempotency.put(ik, result)
     return result

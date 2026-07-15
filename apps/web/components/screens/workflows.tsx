@@ -14,6 +14,7 @@ import { EdgeOverlay } from "../canvas/EdgeOverlay";
 import { WorkflowTestPanel } from "../canvas/WorkflowTestPanel";
 import { FieldsForm, ModelSelect, MultiSelectChips, type FieldSpec } from "../canvas/ConfigForm";
 import { Field, Toggle } from "../primitives";
+import { VersionHistory } from "../version-history";
 import type { ComponentT } from "@/lib/api";
 import { api, openSSE, Agent, McpClientT, NodeType, Tool, Workflow } from "@/lib/api";
 import { NODE_META, NODE_HELP, IO_COLOR, fmtUSD } from "@/lib/data";
@@ -203,7 +204,14 @@ export function WorkflowsScreen({ project, onOpen }: { project: any; onOpen: (w:
 }
 
 /* ============ CANVAS ============ */
-export function WorkflowCanvas(props: { project: any; workflowId?: string; onWorkflowChange?: (workflow: Workflow) => void; onBack: () => void; onRun: () => void }) {
+export function guardCanvasBeforeUnload(dirty: boolean, event: BeforeUnloadEvent): boolean {
+  if (!dirty) return false;
+  event.preventDefault();
+  event.returnValue = "";
+  return true;
+}
+
+export function WorkflowCanvas(props: { project: any; workflowId?: string; onWorkflowChange?: (workflow: Workflow) => void; onBack: () => void; onRun: () => void; onRegisterFlush?: (fn: (() => Promise<void>) | null) => void }) {
   return (
     <ReactFlowProvider>
       <CanvasInner {...props} />
@@ -211,7 +219,7 @@ export function WorkflowCanvas(props: { project: any; workflowId?: string; onWor
   );
 }
 
-function CanvasInner({ project, workflowId, onWorkflowChange, onBack, onRun }: { project: any; workflowId?: string; onWorkflowChange?: (workflow: Workflow) => void; onBack: () => void; onRun: () => void }) {
+function CanvasInner({ project, workflowId, onWorkflowChange, onBack, onRun, onRegisterFlush }: { project: any; workflowId?: string; onWorkflowChange?: (workflow: Workflow) => void; onBack: () => void; onRun: () => void; onRegisterFlush?: (fn: (() => Promise<void>) | null) => void }) {
   const [wf, setWf] = useState<Workflow | null>(null);
   const [registry, setRegistry] = useState<Record<string, NodeType>>({});
   const [tools, setTools] = useState<Tool[]>([]);
@@ -230,6 +238,17 @@ function CanvasInner({ project, workflowId, onWorkflowChange, onBack, onRun }: {
   const [running, setRunning] = useState(false);
   const [testOpen, setTestOpen] = useState(false);
   const [showProblems, setShowProblems] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
+  // Unsaved-changes tracking (drives the beforeunload guard + auto-save on navigate-away).
+  const [dirty, setDirty] = useState(false);
+  const dirtyRef = useRef(false);
+  // Undo/redo stacks of {nodes, edges} snapshots. Structural actions push; undo/redo pop.
+  const [past, setPast] = useState<{ nodes: FlowNode[]; edges: FlowEdge[] }[]>([]);
+  const [future, setFuture] = useState<{ nodes: FlowNode[]; edges: FlowEdge[] }[]>([]);
+  // Clipboard for copy/paste/duplicate of a single node.
+  const clipboardRef = useRef<{ nodeType: string; config: Record<string, any> } | null>(null);
+  // Transient, non-blocking connection-type mismatch hint (edges stay permissive).
+  const [connWarning, setConnWarning] = useState<string | null>(null);
   const [paletteQuery, setPaletteQuery] = useState("");
   // Hover help for palette items - rendered as a fixed-position card so the palette's
   // own scroll container can't clip it. Positioned from the hovered item's rect (the
@@ -259,10 +278,105 @@ function CanvasInner({ project, workflowId, onWorkflowChange, onBack, onRun }: {
       setEdges(flow.edges as any);
       setTimeout(() => fitView({ padding: 0.2, duration: 300 }), 90);
     }).catch(() => {});
-  }, [project?.id, workflowId, setNodes, setEdges, fitView]);
+  }, [project?.id, workflowId, reloadKey, setNodes, setEdges, fitView]);
 
   const nodeTypes = useMemo(() => ({ forge: ForgeNode }), []);
   const selected = nodes.find((n) => n.id === selId) || null;
+
+  // ---- Canvas UX: dirty tracking, undo/redo, copy/paste/duplicate ----
+  // Refs mirror the latest graph so the history/clipboard callbacks stay stable (no dep churn)
+  // yet always operate on current state; calling snapshot() inside an action captures the
+  // pre-action graph (refs update after render).
+  const nodesRef = useRef(nodes);
+  const edgesRef = useRef(edges);
+  useEffect(() => { nodesRef.current = nodes; }, [nodes]);
+  useEffect(() => { edgesRef.current = edges; }, [edges]);
+  useEffect(() => { dirtyRef.current = dirty; }, [dirty]);
+
+  // Warn before closing/reloading the tab with unsaved edits.
+  useEffect(() => {
+    const h = (e: BeforeUnloadEvent) => { guardCanvasBeforeUnload(dirtyRef.current, e); };
+    window.addEventListener("beforeunload", h);
+    return () => window.removeEventListener("beforeunload", h);
+  }, []);
+
+  const snapshot = useCallback(() => {
+    setPast((p) => [...p.slice(-49), { nodes: nodesRef.current, edges: edgesRef.current }]);
+    setFuture([]);
+  }, []);
+
+  const undo = useCallback(() => {
+    setPast((p) => {
+      if (!p.length) return p;
+      const prev = p[p.length - 1];
+      setFuture((f) => [{ nodes: nodesRef.current, edges: edgesRef.current }, ...f].slice(0, 50));
+      setNodes(prev.nodes);
+      setEdges(prev.edges as any);
+      setSelId(null);
+      setDirty(true);
+      return p.slice(0, -1);
+    });
+  }, [setNodes, setEdges]);
+
+  const redo = useCallback(() => {
+    setFuture((f) => {
+      if (!f.length) return f;
+      const next = f[0];
+      setPast((p) => [...p.slice(-49), { nodes: nodesRef.current, edges: edgesRef.current }]);
+      setNodes(next.nodes);
+      setEdges(next.edges as any);
+      setSelId(null);
+      setDirty(true);
+      return f.slice(1);
+    });
+  }, [setNodes, setEdges]);
+
+  const copyNode = useCallback(() => {
+    const n = nodesRef.current.find((x) => x.id === selId);
+    if (n) clipboardRef.current = { nodeType: n.data.nodeType, config: JSON.parse(JSON.stringify(n.data.config || {})) };
+  }, [selId]);
+
+  const pasteNode = useCallback(() => {
+    const clip = clipboardRef.current;
+    if (!clip) return;
+    snapshot();
+    const cur = nodesRef.current;
+    const id = newNodeId(clip.nodeType, cur.map((n) => n.id));
+    const base = cur.find((n) => n.id === selId);
+    const pos = base ? { x: base.position.x + 44, y: base.position.y + 44 } : { x: 360 + (cur.length % 4) * 36, y: 160 + (cur.length % 4) * 36 };
+    setNodes((nds) => [...nds, { id, type: "forge", position: pos, data: { nodeType: clip.nodeType, config: JSON.parse(JSON.stringify(clip.config)) } }]);
+    setSelId(id);
+    setDirty(true);
+  }, [selId, setNodes, snapshot]);
+
+  const duplicateNode = useCallback(() => {
+    const n = nodesRef.current.find((x) => x.id === selId);
+    if (!n) return;
+    clipboardRef.current = { nodeType: n.data.nodeType, config: JSON.parse(JSON.stringify(n.data.config || {})) };
+    pasteNode();
+  }, [selId, pasteNode]);
+
+  // Keyboard: Ctrl/Cmd+Z undo · Ctrl/Cmd+Shift+Z (or Ctrl+Y) redo · Ctrl+C/V copy/paste ·
+  // Ctrl+D duplicate. Ignored while typing in a form field so text editing keeps its own undo.
+  useEffect(() => {
+    const isEditable = (el: EventTarget | null) => {
+      const t = el as HTMLElement | null;
+      if (!t) return false;
+      const tag = t.tagName;
+      return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || !!t.isContentEditable;
+    };
+    const h = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || isEditable(e.target)) return;
+      const k = e.key.toLowerCase();
+      if (k === "z") { e.preventDefault(); if (e.shiftKey) redo(); else undo(); }
+      else if (k === "y") { e.preventDefault(); redo(); }
+      else if (k === "c") { copyNode(); }
+      else if (k === "v") { pasteNode(); }
+      else if (k === "d") { e.preventDefault(); duplicateNode(); }
+    };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [undo, redo, copyNode, pasteNode, duplicateNode]);
 
   // LangGraph edges are control flow (data moves via shared state), so connections
   // are permissive: any output -> any input, just not a node to itself. Handle colors
@@ -289,8 +403,12 @@ function CanvasInner({ project, workflowId, onWorkflowChange, onBack, onRun }: {
     const removedIds = new Set(
       changes.filter((c) => c.type === "remove").map((c) => c.id),
     );
+    // Snapshot before a keyboard (Backspace/Delete) removal so it can be undone.
+    if (removedIds.size) snapshot();
+    // Ignore pure selection/measurement churn so the canvas doesn't read as dirty on load.
+    if (changes.some((c) => c.type !== "select" && c.type !== "dimensions")) setDirty(true);
     setNodes((nds) => stripRouterTargets(applyNodeChanges(changes, nds) as FlowNode[], removedIds));
-  }, [setNodes, stripRouterTargets]);
+  }, [setNodes, stripRouterTargets, snapshot]);
 
   const syncRouterCaseEdge = useCallback((nodeId: string, key: string, target: string) => {
     const handle = `case:${key}`;
@@ -356,18 +474,24 @@ function CanvasInner({ project, workflowId, onWorkflowChange, onBack, onRun }: {
   const onEdgesChangeSynced = useCallback((changes: EdgeChange[]) => {
     const removedIds = new Set(changes.filter((c) => c.type === "remove").map((c) => c.id));
     if (removedIds.size) {
+      snapshot();
       clearRouterTargetsForRemovedEdges(edges.filter((e) => removedIds.has(e.id)));
     }
+    if (changes.some((c) => c.type !== "select")) setDirty(true);
     setEdges((eds) => applyEdgeChanges(changes, eds) as FlowEdge[]);
-  }, [clearRouterTargetsForRemovedEdges, edges, setEdges]);
+  }, [clearRouterTargetsForRemovedEdges, edges, setEdges, snapshot]);
 
   const removeEdge = useCallback((edge: FlowEdge) => {
+    snapshot();
+    setDirty(true);
     clearRouterTargetsForRemovedEdges([edge]);
     setEdges((eds) => eds.filter((e) => e.id !== edge.id));
-  }, [clearRouterTargetsForRemovedEdges, setEdges]);
+  }, [clearRouterTargetsForRemovedEdges, setEdges, snapshot]);
 
   const onConnect = useCallback((params: Connection) => {
     if (!isValidConnection(params)) return;
+    snapshot();
+    setDirty(true);
     const sn = nodes.find((n) => n.id === params.source);
     const fromRouterCase = !!params.sourceHandle?.startsWith("case:") && sn?.data.nodeType === "router";
     // Dragging from a router's case row wires that case to the target node - the canvas
@@ -384,13 +508,24 @@ function CanvasInner({ project, workflowId, onWorkflowChange, onBack, onRun }: {
     }
     const sp = registry[sn?.data.nodeType || ""]?.output_ports || [];
     const io = (sp.find((p) => p.id === params.sourceHandle) || sp[0])?.io_type || "any";
+    // Non-blocking type hint: LangGraph edges are control flow (data moves via shared state),
+    // so a mismatch is allowed - but surface it so the user knows the port types differ.
+    const tn = nodes.find((n) => n.id === params.target);
+    const tp = registry[tn?.data.nodeType || ""]?.input_ports || [];
+    const tio = (tp.find((p) => p.id === params.targetHandle) || tp[0])?.io_type || "any";
+    if (!ioCompatible(io, tio)) {
+      setConnWarning(`Connected ${io} → ${tio}: the port types differ. It still works (data flows through shared state), just double-check this is intended.`);
+      window.setTimeout(() => setConnWarning(null), 6000);
+    }
     setEdges((eds) => addEdge(
       { ...params, style: { stroke: IO_COLOR[io] || "var(--io-any)", strokeWidth: 2 } },
       fromRouterCase ? eds.filter((e) => !(e.source === params.source && e.sourceHandle === params.sourceHandle)) : eds,
     ));
-  }, [isValidConnection, nodes, registry, setEdges, setNodes]);
+  }, [isValidConnection, nodes, registry, setEdges, setNodes, snapshot]);
 
   const addNode = useCallback((type: string) => {
+    snapshot();
+    setDirty(true);
     const id = newNodeId(type, nodes.map((n) => n.id));
     const n = nodes.length;
     const defConfig: Record<string, any> =
@@ -402,18 +537,21 @@ function CanvasInner({ project, workflowId, onWorkflowChange, onBack, onRun }: {
       : {};
     setNodes((nds) => [...nds, { id, type: "forge", position: { x: 360 + (n % 4) * 36, y: 140 + (n % 4) * 36 }, data: { nodeType: type, config: defConfig } }]);
     setSelId(id);
-  }, [nodes, setNodes]);
+  }, [nodes, setNodes, snapshot]);
 
   const updateConfig = useCallback((cfg: Record<string, any>) => {
     if (!selId) return;
+    setDirty(true);
     setNodes((nds) => nds.map((n) => (n.id === selId ? { ...n, data: { ...n.data, config: cfg } } : n)));
   }, [selId, setNodes]);
 
   const deleteNode = useCallback((id: string) => {
+    snapshot();
+    setDirty(true);
     setNodes((nds) => stripRouterTargets(nds.filter((n) => n.id !== id), new Set([id])));
     setEdges((eds) => eds.filter((e) => e.source !== id && e.target !== id));
     setSelId((cur) => (cur === id ? null : cur));
-  }, [setNodes, setEdges, stripRouterTargets]);
+  }, [setNodes, setEdges, stripRouterTargets, snapshot]);
 
   const saveCanvasState = useCallback(async (nextNodes: FlowNode[], nextEdges: FlowEdge[]) => {
     if (!wf) return;
@@ -428,6 +566,7 @@ function CanvasInner({ project, workflowId, onWorkflowChange, onBack, onRun }: {
       const warns = ((res as any).warnings || []).map((w: any) => ({ ...w, level: "warning" }));
       setProblems([...res.errors, ...warns]);
       setSaveState(res.valid ? "saved" : "invalid");
+      setDirty(false); // canvas is persisted (invalid only blocks publish, not the save)
       if (!res.valid || warns.length) setShowProblems(true);
       setTimeout(() => setSaveState((s) => (s === "saved" ? "idle" : s)), 1500);
     } catch {
@@ -438,6 +577,17 @@ function CanvasInner({ project, workflowId, onWorkflowChange, onBack, onRun }: {
   const save = useCallback(async () => {
     await saveCanvasState(nodes, edges);
   }, [saveCanvasState, nodes, edges]);
+
+  // Register the canvas flush with the parent so the top-bar Publish saves first.
+  useEffect(() => {
+    onRegisterFlush?.(save);
+    return () => onRegisterFlush?.(null);
+  }, [onRegisterFlush, save]);
+
+  const backGuarded = useCallback(async () => {
+    if (dirtyRef.current) { try { await save(); } catch { /* leave anyway */ } }
+    onBack();
+  }, [save, onBack]);
 
   const renameWorkflowTitle = useCallback(async (name: string) => {
     if (!wf || !project?.id || name === wf.name) return;
@@ -523,7 +673,7 @@ function CanvasInner({ project, workflowId, onWorkflowChange, onBack, onRun }: {
       {/* toolbar */}
       <div className="row spread" style={{ padding: "10px 16px", borderBottom: "1px solid var(--line)", background: "var(--bg-1)" }}>
         <div className="row gap2">
-          <button className="iconbtn" onClick={onBack}><Icon name="chevleft" size={18} /></button>
+          <button className="iconbtn" onClick={backGuarded}><Icon name="chevleft" size={18} /></button>
           <Tile icon="workflows" color="var(--accent)" size={28} />
           <div style={{ minWidth: 0 }}>
             <EditableName value={wf?.name} fallback="Workflow" className="t-h2 truncate" inputStyle={{ height: 28, minWidth: 220 }} onCommit={renameWorkflowTitle} />
@@ -531,13 +681,19 @@ function CanvasInner({ project, workflowId, onWorkflowChange, onBack, onRun }: {
           </div>
         </div>
         <div className="row gap2">
+          <div className="row" style={{ gap: 1 }}>
+            <button className="iconbtn" title="Undo (Ctrl+Z)" onClick={undo} disabled={!past.length}><Icon name="undo" size={16} /></button>
+            <button className="iconbtn" title="Redo (Ctrl+Shift+Z)" onClick={redo} disabled={!future.length}><Icon name="redo" size={16} /></button>
+          </div>
           {problems.length > 0 && (
             <button className="btn btn-danger btn-sm" onClick={() => setShowProblems((s) => !s)}><Icon name="validate" size={14} />{problems.length} problem{problems.length === 1 ? "" : "s"}</button>
           )}
           <button className="btn btn-secondary btn-sm" onClick={() => fitView({ padding: 0.2, duration: 300 })}><Icon name="fit" size={14} />Fit</button>
+          <VersionHistory entityType="workflow" entityId={wf?.id} entityLabel={wf?.name} onRestored={() => setReloadKey((k) => k + 1)} />
           <button className="btn btn-secondary btn-sm" onClick={save} disabled={saveState === "saving"}>
             <Icon name={saveState === "saved" ? "check" : "save"} size={14} />
             {saveState === "saving" ? "Saving…" : saveState === "saved" ? "Saved" : saveState === "invalid" ? "Saved (invalid)" : "Save"}
+            {dirty && saveState === "idle" && <span title="Unsaved changes" style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--accent)", marginLeft: 4 }} />}
           </button>
           <button className="btn btn-ghost btn-sm" onClick={async () => { await save(); onRun(); }}><Icon name="playground" size={14} />Playground</button>
           <button className="btn btn-primary btn-sm" onClick={() => setTestOpen(true)}><Icon name="play" size={14} />{running ? "Testing…" : "Test"}</button>
@@ -616,6 +772,7 @@ function CanvasInner({ project, workflowId, onWorkflowChange, onBack, onRun }: {
                 style={{ width: "100%", height: "100%" }}
                 nodes={nodes} edges={edges} nodeTypes={nodeTypes}
                 onNodesChange={onNodesChangeSynced} onEdgesChange={onEdgesChangeSynced} onConnect={onConnect}
+                onNodeDragStart={() => snapshot()}
                 isValidConnection={isValidConnection as any}
                 onNodeClick={(_, n) => setSelId(n.id)} onPaneClick={() => setSelId(null)}
                 deleteKeyCode={["Backspace", "Delete"]}
@@ -630,6 +787,16 @@ function CanvasInner({ project, workflowId, onWorkflowChange, onBack, onRun }: {
               <div className="col center" style={{ width: "100%", height: "100%", color: "var(--fg-2)" }}>Loading canvas…</div>
             )}
           </NodeTypesContext.Provider>
+
+          {connWarning && (
+            <div className="card fade-in" style={{ position: "absolute", top: 12, left: "50%", transform: "translateX(-50%)", maxWidth: 460, padding: "8px 12px", boxShadow: "var(--sh-2)", borderColor: "var(--warn)", zIndex: 5 }}>
+              <div className="row gap2" style={{ alignItems: "flex-start" }}>
+                <Icon name="validate" size={14} style={{ color: "var(--warn)", flexShrink: 0, marginTop: 2 }} />
+                <span className="t-caption fg-1" style={{ flex: 1 }}>{connWarning}</span>
+                <button className="iconbtn" style={{ width: 20, height: 20 }} onClick={() => setConnWarning(null)}><Icon name="x" size={12} /></button>
+              </div>
+            </div>
+          )}
 
           {showProblems && problems.length > 0 && (
             <div className="card" style={{ position: "absolute", left: 12, right: 12, bottom: 12, maxHeight: 160, overflow: "auto", boxShadow: "var(--sh-pop)" }}>
@@ -860,10 +1027,6 @@ const NODE_FIELDS: Record<string, FieldSpec[]> = {
     { key: "mailbox", label: "Mailbox", widget: "text", placeholder: "support@yourco.com", help: "The address this trigger handles. Connect an Email channel (Connect screen) to receive mail." },
     { key: "include_subject", label: "Include subject", widget: "toggle", help: "Prepend the email subject to the message." },
     { key: "reply", label: "Reply to sender", widget: "toggle", help: "Send the workflow's answer back as a threaded email." },
-  ],
-  chat_in: [
-    { key: "channel", label: "Channel", widget: "select", options: ["any", "widget", "teams"].map((m) => ({ value: m, label: m })), help: "Which chat surface feeds this workflow (web widget / Microsoft Teams)." },
-    { key: "greeting", label: "Greeting", widget: "text", placeholder: "Hi! How can I help?" },
   ],
   app_event: [
     { key: "poll_url", label: "Poll URL", widget: "text", placeholder: "https://api.example.com/events", help: "Polled on each interval; new items fire the workflow." },

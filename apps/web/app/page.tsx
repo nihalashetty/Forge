@@ -1,6 +1,6 @@
 "use client";
 /* Forge - root app: routing + chrome assembly (a single navigable SPA, like the handoff). */
-import { ReactNode, useEffect, useMemo, useState } from "react";
+import { ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Topbar, ProjectSidebar, CommandPalette, AssistantPanel, Crumb } from "@/components/shell";
 import { DashboardScreen, OverviewScreen, OnboardingScreen, ProjectCard } from "@/components/screens/home";
 import { PlaygroundScreen } from "@/components/screens/playground";
@@ -114,11 +114,15 @@ function App() {
     }
   }
 
+  // The canvas registers its save() here so the top-bar Publish can flush unsaved edits
+  // before publishing (otherwise Publish would ship the last-saved version, not the canvas).
+  const canvasFlushRef = useRef<(() => Promise<void>) | null>(null);
   const [publishState, setPublishState] = useState<"idle" | "publishing" | "published" | "error">("idle");
   async function publishWorkflow() {
     if (!project || !selWorkflow) return;
     setPublishState("publishing");
     try {
+      if (canvasFlushRef.current) await canvasFlushRef.current();
       await api.publishWorkflow((project as any).id, selWorkflow.id);
       setPublishState("published");
       setRefreshNonce((n) => n + 1);
@@ -184,7 +188,7 @@ function App() {
         case "overview": return <OverviewScreen project={project} onNav={navScreen} onDeleteProject={deleteProject} />;
         case "playground": return <PlaygroundScreen project={project} />;
         case "workflows": return <WorkflowsScreen project={project} onOpen={(w) => { setSelWorkflow(w); navScreen("workflow-canvas"); }} />;
-        case "workflow-canvas": return <WorkflowCanvas project={project} workflowId={selWorkflow?.id} onWorkflowChange={setSelWorkflow} onBack={() => navScreen("workflows")} onRun={() => navScreen("playground")} />;
+        case "workflow-canvas": return <WorkflowCanvas project={project} workflowId={selWorkflow?.id} onWorkflowChange={setSelWorkflow} onBack={() => navScreen("workflows")} onRun={() => navScreen("playground")} onRegisterFlush={(fn) => { canvasFlushRef.current = fn; }} />;
         case "agents": return <AgentsScreen project={project} onOpen={(a) => { setSelAgent(a); navScreen("agent-config"); }} />;
         case "agent-config": return <AgentConfigScreen project={project} agentId={selAgent?.id} onBack={() => navScreen("agents")} />;
         case "tools": return <ToolsScreen project={project} onOpen={(t) => { setSelTool(t); navScreen("tool-builder"); }} />;

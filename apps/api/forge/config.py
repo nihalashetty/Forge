@@ -26,6 +26,9 @@ REPO_ROOT = _HERE.parents[3] if len(_HERE.parents) > 3 else API_ROOT
 _DEFAULT_SCHEMAS_DIR = REPO_ROOT / "packages" / "schemas"
 _DEFAULT_DATA_DIR = API_ROOT / ".data"
 
+# Minimum length for a non-empty FORGE_SERVICE_API_TOKEN (enforced by the production guard).
+_MIN_SERVICE_TOKEN_LEN = 24
+
 
 def _as_str_list(v: object) -> list[str]:
     """Parse a list-of-strings setting from env leniently: a JSON array (["a","b"]), a
@@ -70,7 +73,8 @@ class Settings(BaseSettings):
     # _as_str_list. Keeps a stray bracket/space from an interpolated default from crashing boot.
     @field_validator(
         "jwt_secret_previous", "cors_origins", "egress_allow_hosts", "egress_deny_hosts",
-        "egress_allow_private_hosts", "trusted_proxies", "trusted_hosts", mode="before",
+        "egress_allow_private_hosts", "trusted_proxies", "trusted_hosts",
+        "mcp_stdio_allowed_commands", mode="before",
     )
     @classmethod
     def _parse_str_lists(cls, v: object) -> list[str]:
@@ -91,7 +95,13 @@ class Settings(BaseSettings):
         default_factory=lambda: (_DEFAULT_DATA_DIR / "checkpoints.sqlite").as_posix()
     )
 
-    # --- Vectors (user-mandated: Chroma; embedded persistent client) ---
+    # --- Vectors ---
+    # Backend for the embedding store. "chroma" (default) is the embedded persistent client -
+    # zero-infra, but single-writer (one process owns the on-disk index), so it does NOT share
+    # across workers. "pgvector" stores vectors in Postgres (reusing `database_url`) behind the
+    # same interface, so every worker reads/writes the same vectors - the production choice.
+    # pgvector requires Postgres with the `vector` extension available.
+    vector_backend: str = Field(default="chroma")  # chroma | pgvector
     chroma_path: str = Field(default_factory=lambda: (_DEFAULT_DATA_DIR / "chroma").as_posix())
     # Cache dir for the local fastembed embedder's model files. Set to a baked path in the
     # Docker image (see apps/api/Dockerfile) so the default model ships with the image - no
@@ -167,6 +177,12 @@ class Settings(BaseSettings):
     # Set true to run code tools in production despite the lack of OS isolation (you accept
     # the in-process RCE/DoS risk - e.g. a trusted single-tenant deployment).
     allow_unsandboxed_code_tools: bool = False
+    # External MCP servers reached via the `stdio` transport launch a LOCAL PROCESS
+    # (command + args) - i.e. arbitrary command execution on the API host, like an
+    # unsandboxed code tool. OFF by default; enable only on a trusted single-tenant install.
+    # Optionally restrict to an allow-list of executables (empty = any command when enabled).
+    enable_mcp_stdio: bool = False
+    mcp_stdio_allowed_commands: Annotated[list[str], NoDecode] = []
     # Prune the assistant's ~19 tools to the relevant subset per turn (cuts tool-schema
     # tokens). Opt-in: the selection itself is an extra model call, so it's a tradeoff.
     assistant_tool_selector: bool = False
@@ -182,6 +198,24 @@ class Settings(BaseSettings):
     # Auto-attach AnthropicPromptCachingMiddleware to Anthropic-model agents (caches the
     # static system-prompt/tools prefix; large multi-turn cost saving). Off => opt-in only.
     default_anthropic_prompt_caching: bool = True
+    # Minimum cosine similarity for a long-term-memory `recall` hit to be returned. 0 = off
+    # (return the top_k nearest regardless of distance). Raise (~0.3-0.5 for the default BGE
+    # embedder) to stop unrelated memories polluting the prompt.
+    memory_recall_min_score: float = 0.0
+
+    # --- Semantic cache / HITL / channel delivery (framework-configurable) ---
+    # Cosine threshold for a semantic-cache hit (the `semantic_cache` agent middleware) and its
+    # entry TTL. Per-agent config can override; these are the deployment defaults.
+    semantic_cache_threshold: float = 0.95
+    semantic_cache_ttl_seconds: int = 3600
+    # How long a HITL-interrupted run may wait for a human before the reaper expires it (fails
+    # the run + closes the handoff with the on_error fallback). 0 = never expire (prior behavior).
+    hitl_approval_timeout_seconds: int = 0
+    # Hard per-run wall-clock ceiling (cooperative, checked between stream frames). 0 = unlimited.
+    run_wall_clock_timeout_seconds: int = 0
+    # Outbound channel delivery (email SMTP) retry policy.
+    channel_send_max_attempts: int = 3
+    channel_send_backoff_base_seconds: float = 0.5
 
     # --- Models ---
     default_model: str = "fake:echo"  # offline-safe default; set a real provider model in prod
@@ -192,11 +226,21 @@ class Settings(BaseSettings):
     # at the end; fastest, but HITL interrupts mid-run rely on per-step checkpoints,
     # so keep async/sync when using human_input nodes).
     run_durability: str = "async"
+    # Floor for LangGraph's per-run superstep budget (recursion_limit). LangGraph's own
+    # default is 25, which a Loop node (each iteration ~= loop->router->body, ~3 supersteps)
+    # blows past after only a handful of iterations, raising GraphRecursionError mid-run. The
+    # actual limit used is max(this floor, a value derived from workflow size + loop max_iter),
+    # so large graphs/loops scale automatically. Raise the floor for very deep workflows.
+    graph_recursion_limit: int = 100
 
     # --- Observability (OpenTelemetry export; point at an OTLP collector or Langfuse) ---
     otel_enabled: bool = False
     otel_exporter_otlp_endpoint: str | None = None
     otel_service_name: str = "forge"
+    # Expose the unauthenticated /metrics (Prometheus counters) and /version (dependency
+    # versions) endpoints. OFF by default: these are an internal operational surface that also
+    # aids fingerprinting, so enable only where the scrape endpoint sits on a trusted network.
+    expose_metrics: bool = False
 
     # --- Tool I/O in traces (debug what an agent actually sent a tool) ---
     # Master switch: capture per-tool-call input/output on trace spans (the LLM's tool args,
@@ -213,17 +257,26 @@ class Settings(BaseSettings):
     # Per-field clip so a large body/response can't bloat the spans table. 0 = no cap.
     trace_tool_io_max_chars: int = 20000
 
-    # In-process scheduler for `schedule` triggers (fires due schedules once a minute).
-    # OFF by default: with more than one replica each would fire every schedule (duplicate
-    # runs). Enable it on EXACTLY ONE instance (set FORGE_SCHEDULER_LEADER=true there), or
-    # run a dedicated single scheduler/worker. `enable_scheduler` is the master switch;
-    # `scheduler_leader` lets you ship the same image everywhere and elect one leader by env.
-    enable_scheduler: bool = False
+    # In-process scheduler for `schedule` / `app_event` triggers (fires due ones once a minute).
+    # ON by default so a published schedule actually fires out of the box (the manual documents
+    # this; off-by-default silently no-op'd every schedule). Dispatch now claims each due trigger
+    # atomically (re-check + stamp last_fired_at in one txn) before running it, so an accidental
+    # multi-leader setup can't double-fire. For multi-replica prod, still elect ONE leader:
+    # `scheduler_leader` lets you ship the same image everywhere and set FORGE_SCHEDULER_LEADER
+    # =false on the non-leaders. Set FORGE_ENABLE_SCHEDULER=false to disable entirely.
+    enable_scheduler: bool = True
     scheduler_leader: bool = True
 
     # Seed demo data (projects/tools/auth) on first run. Off => start from an empty
     # workspace and create projects yourself. Set FORGE_SEED_DEMO=true to populate.
     seed_demo: bool = False
+
+    # --- Versioning (entity change history) ---
+    # How many recent versions to retain per entity (workflows, agents, tools, components,
+    # auth providers, knowledge sources, project settings). Older versions are pruned on each
+    # new snapshot. 0 = keep all (no pruning). Overridable per-tenant via tenant.settings
+    # ("version_history_limit"); exposed in the console Settings > Versioning panel.
+    version_history_limit: int = 5
 
     # --- CORS ---
     cors_origins: Annotated[list[str], NoDecode] = ["http://localhost:3000", "http://127.0.0.1:3000"]
@@ -247,6 +300,25 @@ class Settings(BaseSettings):
     # live in tenant.settings (max_runs_per_minute / max_runs_per_day). ---
     run_rate_limit_per_minute: int = 60
     api_rate_limit_per_minute: int = 240
+    # Ceiling on the UNAUTHENTICATED auth endpoints (login/register/refresh/accept-invite) -
+    # brute-force / credential-stuffing guard (audit: login had no throttle). This is the STRICT
+    # per-EMAIL rate (per-account guard); the per-IP bucket is 10x looser (stuffing/DoS across
+    # many accounts). 0 = unlimited.
+    auth_rate_limit_per_minute: int = 10
+    # Wire api_rate_limit_per_minute as a global per-IP request ceiling (ASGI middleware).
+    # Health/readiness/metrics and SSE stream paths are exempt. Set false to disable the
+    # global guard (per-surface limits - runs/embed/auth/tools - still apply).
+    enable_global_rate_limit: bool = True
+    # Projected per-run cost (USD) reserved against the daily cost cap while a run is in flight,
+    # so N concurrent runs can't each pass a stale "already-spent" check and blow past the cap.
+    # 0 = disabled (admit on completed-cost only, prior behavior). Per-tenant override:
+    # tenant.settings["projected_run_cost_usd"] / ["max_cost_per_run_usd"].
+    projected_run_cost_usd: float = 0.0
+    # Timezone for the daily quota reset window (was hard-coded to UTC midnight). Per-tenant
+    # override: tenant.settings["reset_tz"]. Falls back to UTC where tzdata is unavailable.
+    quota_reset_tz: str = "UTC"
+    # Bounded concurrency for evaluation runs (each dataset item is a full billable run).
+    eval_concurrency: int = 5
 
     # --- Public embed surface (anonymous, browser-facing). The publishable key is PUBLIC
     # by design, so these are the real abuse/cost ceilings. Per-IP is the important one
@@ -264,6 +336,22 @@ class Settings(BaseSettings):
     # by thread in Python. Bounds the query regardless of retention; raise it for projects
     # with very deep history at the cost of a wider scan.
     conversation_scan_limit: int = 2000
+
+    # --- Data retention (scheduled purge; leader-only, wired into the reaper loop). Traces/
+    # spans/runs are purged per-project by project.config.tracing.retention_days; audit logs by
+    # audit_log_retention_days. 0 anywhere = keep forever (no purge). ---
+    enable_retention: bool = True
+    retention_interval_seconds: int = 3600  # how often the purge sweep runs
+    audit_log_retention_days: int = 0       # workspace-wide audit-log floor; 0 = keep forever
+    # Fallback trace/span/run retention (days) for projects that don't set
+    # tracing.retention_days in their config. 0 = keep forever.
+    default_trace_retention_days: int = 0
+
+    # Best-effort worker count (mirror your gunicorn/uvicorn --workers). Only used so the
+    # startup guard can WARN when >1 worker runs WITHOUT Redis - in-process rate-limit /
+    # idempotency / token-revocation state is per-worker and won't be shared. Also read from
+    # the conventional $WEB_CONCURRENCY env var.
+    web_concurrency: int = 1
 
     # Reverse-proxy IPs whose X-Forwarded-For we trust for client-IP derivation. Empty =>
     # trust none (use the socket peer). Set to your LB/ingress IPs in production so clients
@@ -331,7 +419,33 @@ class Settings(BaseSettings):
                 "FORGE_ENABLE_CODE_TOOLS is on but code execution is not OS-isolated. Disable it, "
                 "or set FORGE_ALLOW_UNSANDBOXED_CODE_TOOLS=true to explicitly accept the RCE/DoS risk."
             )
+        # A Host-header allow-list must be set outside dev (empty => TrustedHostMiddleware is
+        # not even added, so Host/absolute-URI spoofing is unmitigated - audit S6/host attacks).
+        if not self.trusted_hosts:
+            problems.append("FORGE_TRUSTED_HOSTS must list the API's public hostname(s) outside dev.")
+        # Public URLs are embedded in OAuth redirect URIs and emailed invite/reset links; they
+        # MUST be https in production so tokens/codes never traverse cleartext.
+        for name, url in (("FORGE_PUBLIC_BASE_URL", self.public_base_url),
+                          ("FORGE_PUBLIC_CONSOLE_URL", self.public_console_url)):
+            if not url.lower().startswith("https://"):
+                problems.append(f"{name} must be an https:// URL outside dev (got {url!r}).")
+        # A short service token is brute-forceable; if enabled at all it must be long+random.
+        if self.service_api_token and len(self.service_api_token) < _MIN_SERVICE_TOKEN_LEN:
+            problems.append(
+                f"FORGE_SERVICE_API_TOKEN is set but shorter than {_MIN_SERVICE_TOKEN_LEN} chars - "
+                "use a long random secret or leave it empty to disable server-to-server auth."
+            )
         return problems
+
+    def _multi_worker_without_redis(self) -> bool:
+        import os
+
+        workers = self.web_concurrency
+        try:
+            workers = max(workers, int(os.getenv("WEB_CONCURRENCY", "0") or 0))
+        except ValueError:
+            pass
+        return workers > 1 and not self.redis_url
 
     def startup_warnings(self) -> list[str]:
         """Non-fatal but dangerous configuration, logged loudly at startup regardless of
@@ -345,8 +459,19 @@ class Settings(BaseSettings):
             warns.append("auth_required is false - unauthenticated requests act as the workspace owner.")
         if self.enable_code_tools:
             warns.append("Code tools are enabled and run unsandboxed (RestrictedPython only).")
+        if self.enable_mcp_stdio:
+            warns.append(
+                "MCP stdio transport is enabled - external MCP clients can launch local processes "
+                "(arbitrary command execution). Restrict FORGE_MCP_STDIO_ALLOWED_COMMANDS."
+            )
         if self.environment.lower() not in (*self._DEV_ENVIRONMENTS, "production", "prod", "staging"):
             warns.append(f"Unrecognized FORGE_ENVIRONMENT={self.environment!r} - treated as security-enforced.")
+        if self._multi_worker_without_redis():
+            warns.append(
+                "Multiple workers configured without FORGE_REDIS_URL - rate limits, idempotency, "
+                "and token revocation are in-process (per-worker) and won't be shared/enforced "
+                "globally. Set FORGE_REDIS_URL for multi-worker deployments."
+            )
         return warns
 
 

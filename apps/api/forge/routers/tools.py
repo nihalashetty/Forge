@@ -5,10 +5,11 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from forge.deps import current_tenant_id, get_session
+from forge.deps import CurrentUser, current_tenant_id, get_session, require_role
 from forge.schemas.contracts import validate_against_id
 from forge.schemas.dto import ToolCreate, ToolOut, ToolTestIn, ToolUpdate
 from forge.services.tools import ToolService
+from forge.services.versions import safe_snapshot
 
 router = APIRouter(prefix="/v1/projects/{project_id}/tools", tags=["tools"])
 
@@ -19,12 +20,15 @@ async def list_tools(project_id: str, session: AsyncSession = Depends(get_sessio
 
 
 @router.post("", response_model=ToolOut, status_code=201)
-async def create_tool(project_id: str, body: ToolCreate, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id)):
+async def create_tool(project_id: str, body: ToolCreate, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id),
+                      user: CurrentUser = Depends(require_role("editor"))):
     cfg = {**body.config, "name": body.name, "kind": body.kind}
     errors = validate_against_id(cfg, "forge/tool")
     if errors:
         raise HTTPException(422, detail={"errors": errors})
-    return await ToolService.create(session, tenant_id, project_id, name=body.name, kind=body.kind, config=body.config, auth_provider_id=body.auth_provider_id)
+    tool = await ToolService.create(session, tenant_id, project_id, name=body.name, kind=body.kind, config=body.config, auth_provider_id=body.auth_provider_id)
+    await safe_snapshot(session, "tool", tool, author=user)
+    return tool
 
 
 @router.get("/{tool_id}", response_model=ToolOut)
@@ -36,7 +40,8 @@ async def get_tool(project_id: str, tool_id: str, session: AsyncSession = Depend
 
 
 @router.patch("/{tool_id}", response_model=ToolOut)
-async def update_tool(project_id: str, tool_id: str, body: ToolUpdate, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id)):
+async def update_tool(project_id: str, tool_id: str, body: ToolUpdate, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id),
+                      user: CurrentUser = Depends(require_role("editor"))):
     tool = await ToolService.get(session, tenant_id, tool_id)
     if tool is None:
         raise HTTPException(404, "Tool not found")
@@ -45,11 +50,14 @@ async def update_tool(project_id: str, tool_id: str, body: ToolUpdate, session: 
         errors = validate_against_id(cfg, "forge/tool")
         if errors:
             raise HTTPException(422, detail={"errors": errors})
-    return await ToolService.update(session, tool, name=body.name, config=body.config, auth_provider_id=body.auth_provider_id, enabled=body.enabled)
+    tool = await ToolService.update(session, tool, name=body.name, config=body.config, auth_provider_id=body.auth_provider_id, enabled=body.enabled)
+    await safe_snapshot(session, "tool", tool, author=user)
+    return tool
 
 
 @router.delete("/{tool_id}", status_code=204)
-async def delete_tool(project_id: str, tool_id: str, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id)):
+async def delete_tool(project_id: str, tool_id: str, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id),
+                      _: CurrentUser = Depends(require_role("editor"))):
     tool = await ToolService.get(session, tenant_id, tool_id)
     if tool is None:
         raise HTTPException(404, "Tool not found")
@@ -57,7 +65,8 @@ async def delete_tool(project_id: str, tool_id: str, session: AsyncSession = Dep
 
 
 @router.post("/{tool_id}/test")
-async def test_tool(project_id: str, tool_id: str, body: ToolTestIn, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id)):
+async def test_tool(project_id: str, tool_id: str, body: ToolTestIn, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id),
+                    _: CurrentUser = Depends(require_role("editor"))):
     tool = await ToolService.get(session, tenant_id, tool_id)
     if tool is None:
         raise HTTPException(404, "Tool not found")

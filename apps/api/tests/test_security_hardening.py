@@ -12,10 +12,9 @@ from datetime import datetime, timedelta
 import pytest
 
 from forge.db.base import SessionLocal
-from forge.models import Component, Run, Tenant, Workflow
+from forge.models import Run, Tenant, Workflow
 from forge.services.components import ComponentService
 from forge.services.runs import RunService
-
 
 # --- S1: runs are scoped by project, not just tenant -------------------------------------
 
@@ -111,7 +110,7 @@ async def test_reaper_marks_stale_runs():
         r.started_at = old
         await s.commit()
         qid, rid = q.id, r.id
-    reaped = await RunService.reap_stale_runs(queued_max_age_s=60, running_max_age_s=60)
+    reaped = await RunService().reap_stale_runs(queued_max_age_s=60, running_max_age_s=60)
     assert reaped >= 2
     async with SessionLocal() as s:
         assert (await s.get(Run, qid)).status == "error"

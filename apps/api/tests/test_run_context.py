@@ -19,7 +19,6 @@ from fastapi import HTTPException
 
 from forge.deps import FORGE_CONTEXT_HEADER, run_context
 from forge.engine.context import CompileContext
-from forge.tools import rest
 from forge.tools.rest import build_args_schema, build_rest_tool, execute_rest
 
 

@@ -6,9 +6,6 @@ router expression routing, middleware attachment, and an actual graph run.
 
 from __future__ import annotations
 
-import operator
-from typing import Annotated, TypedDict
-
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver

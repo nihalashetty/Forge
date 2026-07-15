@@ -2,8 +2,10 @@
 
 Reads the conversation from `messages`, optionally prepends the configured prompt
 as a system message, and appends the model's reply. Structured output binds the
-response_format schema. Template variable rendering over state is intentionally
-minimal for now (the prompt is used verbatim as a system message).
+response_format schema. The prompt is a TemplateString: `{{state.<key>}}` tokens are
+rendered against the current run state (same engine the webhook/emit nodes use), so a
+"rewrite this value" prompt sees the actual state instead of the literal placeholder.
+Per-run secrets (`ctx.*`) are intentionally NOT exposed to the prompt (LLM-visible).
 """
 
 from __future__ import annotations
@@ -25,8 +27,15 @@ def llm_factory(config: dict, ctx: CompileContext):
     async def _node(state: dict) -> dict:
         from langchain_core.messages import SystemMessage
 
+        from forge.auth_providers.templates import render_template
+
         msgs = list(state.get("messages") or [])
-        input_msgs: list[Any] = ([SystemMessage(content=prompt)] if prompt else []) + msgs
+        # Render {{state.*}} tokens in the prompt against the live run state. A whole-string
+        # single token can resolve to a non-str value; coerce so SystemMessage content is text.
+        rendered = render_template(prompt, {"state": dict(state)}) if isinstance(prompt, str) and prompt else prompt
+        if rendered is not None and not isinstance(rendered, str):
+            rendered = str(rendered)
+        input_msgs: list[Any] = ([SystemMessage(content=rendered)] if rendered else []) + msgs
         result = await runnable.ainvoke(input_msgs)
         if structured_schema:
             # Structured result is not a message; surface it on a conventional channel.

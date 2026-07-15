@@ -3,8 +3,8 @@
    (free-form kinds/categories + tags), and the search debugger. */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Icon } from "../icons";
-import { Field, Modal, Segmented, StatusPill } from "../primitives";
-import { api, KbSource, QaPair, SearchHit } from "@/lib/api";
+import { Drawer, Field, Modal, Segmented, StatusPill } from "../primitives";
+import { api, ActivityEntry, KbSource, QaPair, SearchHit } from "@/lib/api";
 import { ChunkMap } from "./chunk-map";
 
 const VTABS = [
@@ -25,12 +25,19 @@ const CHUNK_HELP = "Recursive suits most documents; By section keeps each Markdo
 
 export function KnowledgeScreen({ project }: { project: any }) {
   const [tab, setTab] = useState<string>("files");
+  const [histOpen, setHistOpen] = useState(false);
   return (
     <div className="col" style={{ flex: 1, minHeight: 0 }}>
-      <div style={{ padding: "20px 28px 14px" }}>
-        <div className="t-display">Knowledge</div>
-        <div className="fg-1" style={{ marginTop: 3 }}>Ground agents in your docs (Chroma vectors, organized in folders) and deflect FAQs with categorized Q&A pairs.</div>
+      <div className="row spread" style={{ padding: "20px 28px 14px", alignItems: "flex-start" }}>
+        <div>
+          <div className="t-display">Knowledge</div>
+          <div className="fg-1" style={{ marginTop: 3 }}>Ground agents in your docs (Chroma vectors, organized in folders) and deflect FAQs with categorized Q&A pairs.</div>
+        </div>
+        <button className="btn btn-secondary btn-sm" style={{ flex: "none" }} onClick={() => setHistOpen(true)} disabled={!project?.id} title="What was added, changed or removed">
+          <Icon name="clock" size={14} />History
+        </button>
       </div>
+      <KnowledgeHistory project={project} open={histOpen} onClose={() => setHistOpen(false)} />
       <div className="row" style={{ flex: 1, minHeight: 0, alignItems: "stretch" }}>
         {/* vertical tab rail */}
         <nav className="col" style={{ width: 184, flex: "none", padding: "4px 0 16px 20px", gap: 2 }}>
@@ -61,6 +68,71 @@ export function KnowledgeScreen({ project }: { project: any }) {
         </div>
       </div>
     </div>
+  );
+}
+
+/* Compact "3m ago" / "2d ago" relative time, falling back to a locale date. */
+function knRelTime(iso?: string | null): string {
+  if (!iso) return "";
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return String(iso);
+  const s = Math.round((Date.now() - t) / 1000);
+  if (s < 60) return "just now";
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.round(h / 24);
+  if (d < 30) return `${d}d ago`;
+  return new Date(iso).toLocaleDateString();
+}
+
+/* Read-only, project-wide activity: what files / Q&A pairs were added, changed or removed.
+   Opened from the Knowledge header - no per-row clutter, no restore (content lives in the
+   vector store, so there's nothing to roll back). */
+function KnowledgeHistory({ project, open, onClose }: { project: any; open: boolean; onClose: () => void }) {
+  const [rows, setRows] = useState<ActivityEntry[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    if (!open || !project?.id) return;
+    setRows(null); setErr(null);
+    api.knowledgeActivity(project.id).then(setRows).catch((e) => setErr(String(e?.message || e)));
+  }, [open, project?.id]);
+
+  const ACTION: Record<string, { label: string; cls: string; icon: string }> = {
+    added: { label: "Added", cls: "pill-ok", icon: "plus" },
+    changed: { label: "Changed", cls: "pill-muted", icon: "edit" },
+    removed: { label: "Removed", cls: "pill-err", icon: "trash" },
+  };
+  return (
+    <Drawer open={open} onClose={onClose} title="Knowledge history" sub={project?.name} width={440}>
+      <div className="col" style={{ padding: 14, gap: 8 }}>
+        {err && <div className="card" style={{ padding: 12, color: "var(--err)" }}>{err}</div>}
+        {!err && rows === null && <div className="fg-2 t-caption" style={{ padding: "8px 2px" }}>Loading…</div>}
+        {!err && rows?.length === 0 && (
+          <div className="col center" style={{ padding: "40px 16px", textAlign: "center", gap: 8, color: "var(--fg-2)" }}>
+            <Icon name="clock" size={22} />
+            <div className="t-body-sm">No changes yet.</div>
+            <div className="t-caption">Adding, editing or removing files and Q&A pairs shows up here.</div>
+          </div>
+        )}
+        {rows?.map((r) => {
+          const a = ACTION[r.action || ""] || { label: r.action || "changed", cls: "pill-muted", icon: "minus" };
+          return (
+            <div key={r.id} className="card" style={{ padding: "10px 12px" }}>
+              <div className="row gap2" style={{ alignItems: "center", minWidth: 0 }}>
+                <span className={"pill " + a.cls} style={{ height: 18, flex: "none" }}><Icon name={a.icon as any} size={11} />{a.label}</span>
+                <span className="typechip" style={{ flex: "none" }}>{r.entity_type === "qa_pair" ? "Q&A" : "File"}</span>
+                <span className="t-body-sm truncate" style={{ minWidth: 0 }}>{r.title}</span>
+              </div>
+              <div className="t-caption fg-2 truncate" style={{ marginTop: 4 }}>
+                {r.author_email || "unknown"}{r.created_at ? ` · ${knRelTime(r.created_at)}` : ""}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </Drawer>
   );
 }
 
@@ -232,8 +304,8 @@ function Files({ project }: { project: any }) {
   return (
     <div className="col" style={{ gap: 12 }}>
       {health?.needs_reembed && (
-        <div className="card row spread" style={{ padding: "10px 14px", background: "var(--signal-glow)", borderColor: "transparent" }}>
-          <div className="row gap2" style={{ minWidth: 0 }}><Icon name="bolt" size={15} style={{ color: "var(--signal)" }} />
+        <div className="card row spread" style={{ padding: "10px 14px", background: "var(--warn-bg)", borderColor: "transparent" }}>
+          <div className="row gap2" style={{ minWidth: 0 }}><Icon name="bolt" size={15} style={{ color: "var(--warn)" }} />
             <span className="t-body-sm">{health.mismatched.length} source(s) were embedded with a different model than the current one ({health.current_model}) - they won&apos;t appear in search until re-embedded.</span>
           </div>
           <button className="btn btn-secondary btn-sm" style={{ flex: "none" }} onClick={async () => { for (const m of health.mismatched) await reingest(m.id); }}><Icon name="refresh" size={13} />Re-embed all</button>
@@ -374,7 +446,7 @@ function Files({ project }: { project: any }) {
             onChange={(v) => setForm((f) => ({ ...f, chunkStrategy: v }))}
           />
         </Field>
-        {addErr && <div className="t-caption" style={{ color: "var(--danger, #c00)", marginTop: 4 }}>⚠ {addErr}</div>}
+        {addErr && <div className="t-caption" style={{ color: "var(--err)", marginTop: 4 }}>⚠ {addErr}</div>}
       </Modal>
 
       <Modal open={rechunkOpen} onClose={() => setRechunkOpen(false)} width={520}
@@ -396,7 +468,7 @@ function Files({ project }: { project: any }) {
             <Field label="Overlap (chars)" help="Characters shared between adjacent chunks."><input className="input" type="number" min={0} step={20} value={rechunkForm.overlap} onChange={(e) => setRechunkForm((f) => ({ ...f, overlap: Number(e.target.value) }))} /></Field>
           </div>
         </div>
-        {rechunkErr && <div className="t-caption" style={{ color: "var(--danger, #c00)", marginTop: 8 }}>⚠ {rechunkErr}</div>}
+        {rechunkErr && <div className="t-caption" style={{ color: "var(--err)", marginTop: 8 }}>⚠ {rechunkErr}</div>}
       </Modal>
     </div>
     </div>
@@ -412,6 +484,9 @@ function QA({ project }: { project: any }) {
   const [kind, setKind] = useState<string | null>(null); // null = All pairs
   const [newKind, setNewKind] = useState<string | null>(null); // non-null = naming a new kind
   const [form, setForm] = useState({ question: "", answer: "", kind: "faq", tags: "" });
+  const [editing, setEditing] = useState<string | null>(null);
+  const [edit, setEdit] = useState({ question: "", answer: "", kind: "faq", tags: "" });
+  const [saving, setSaving] = useState(false);
   const reload = useCallback(() => { if (project?.id) api.listQa(project.id).then(setRows).catch(() => {}); }, [project?.id]);
   useEffect(() => { reload(); }, [reload]);
 
@@ -433,6 +508,28 @@ function QA({ project }: { project: any }) {
     const tags = form.tags.split(",").map((t) => t.trim()).filter(Boolean);
     await api.addQa(project.id, { question: form.question, answer: form.answer, kind: effectiveKind, tags });
     setForm({ question: "", answer: "", kind: form.kind, tags: "" }); reload();
+  }
+
+  function startEdit(q: QaPair) {
+    setEditing(q.id);
+    setEdit({ question: q.question, answer: q.answer, kind: q.kind || "faq", tags: (q.tags || []).join(", ") });
+  }
+
+  async function saveEdit() {
+    if (!editing || !edit.question.trim() || saving) return;
+    setSaving(true);
+    try {
+      const updated = await api.updateQa(project.id, editing, {
+        question: edit.question.trim(),
+        answer: edit.answer,
+        kind: edit.kind.trim() || "faq",
+        tags: edit.tags.split(",").map((tag) => tag.trim()).filter(Boolean),
+      });
+      setRows((current) => current.map((row) => row.id === updated.id ? updated : row));
+      setEditing(null);
+    } finally {
+      setSaving(false);
+    }
   }
 
   function KindRow({ value, label, count }: { value: string | null; label: string; count: number }) {
@@ -511,13 +608,27 @@ function QA({ project }: { project: any }) {
         <div className="card" style={{ overflow: "hidden" }}>
           <table className="tbl"><thead><tr><th>Question</th><th>Answer</th>{showKindCol && <th>Kind</th>}<th>Tags</th><th /></tr></thead>
             <tbody>
-              {visible.map((q) => (
+              {visible.map((q) => editing === q.id ? (
+                <tr key={q.id}>
+                  <td><input autoFocus className="input" value={edit.question} onChange={(e) => setEdit((v) => ({ ...v, question: e.target.value }))} /></td>
+                  <td><textarea className="textarea" rows={2} value={edit.answer} onChange={(e) => setEdit((v) => ({ ...v, answer: e.target.value }))} /></td>
+                  {showKindCol && <td><input className="input" list="qa-kinds" value={edit.kind} onChange={(e) => setEdit((v) => ({ ...v, kind: e.target.value }))} /></td>}
+                  <td><input className="input" value={edit.tags} placeholder="tag, tag" onChange={(e) => setEdit((v) => ({ ...v, tags: e.target.value }))} /></td>
+                  <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                    <button className="iconbtn" title="Save" onClick={saveEdit} disabled={!edit.question.trim() || saving}><Icon name="check" size={15} /></button>
+                    <button className="iconbtn" title="Cancel" onClick={() => setEditing(null)} disabled={saving}><Icon name="x" size={15} /></button>
+                  </td>
+                </tr>
+              ) : (
                 <tr key={q.id}>
                   <td style={{ fontWeight: 600, maxWidth: 260 }} className="truncate">{q.question}</td>
                   <td className="fg-1 truncate" style={{ maxWidth: 280 }}>{q.answer}</td>
                   {showKindCol && <td><span className="typechip">{q.kind}</span></td>}
                   <td className="fg-2 t-caption truncate" style={{ maxWidth: 140 }}>{(q.tags || []).join(", ") || "-"}</td>
-                  <td style={{ textAlign: "right" }}><button className="iconbtn" onClick={async () => { await api.deleteQa(project.id, q.id); reload(); }}><Icon name="trash" size={15} /></button></td>
+                  <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                    <button className="iconbtn" title="Edit" onClick={() => startEdit(q)}><Icon name="edit" size={15} /></button>
+                    <button className="iconbtn" title="Delete" onClick={async () => { await api.deleteQa(project.id, q.id); reload(); }}><Icon name="trash" size={15} /></button>
+                  </td>
                 </tr>
               ))}
               {visible.length === 0 && <tr><td colSpan={showKindCol ? 5 : 4}><div className="fg-2" style={{ padding: 22, textAlign: "center" }}>{rows.length === 0 ? "No Q&A pairs yet." : "No pairs of this kind yet."}</div></td></tr>}
@@ -591,7 +702,7 @@ function SearchDebugger({ project }: { project: any }) {
           <div key={i} className="card" style={{ padding: 12 }}>
             <div className="row spread" style={{ marginBottom: 4 }}>
               <span className="t-caption fg-2 mono">{h.source_id?.slice(0, 12) || "-"}</span>
-              <span className="chip chip-mono" style={{ color: "var(--signal)" }}>score {h.score.toFixed(3)}</span>
+              <span className="chip chip-mono">score {h.score.toFixed(3)}</span>
             </div>
             <div className="t-body-sm" style={{ whiteSpace: "pre-wrap" }}>{h.text}</div>
           </div>

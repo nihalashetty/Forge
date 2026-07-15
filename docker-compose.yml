@@ -12,7 +12,9 @@
 
 services:
   postgres:
-    image: postgres:16-alpine
+    # pgvector/pgvector ships the `vector` extension (plain postgres:16 does not), so the
+    # pgvector store (FORGE_VECTOR_BACKEND=pgvector) can CREATE EXTENSION vector on first use.
+    image: pgvector/pgvector:pg16
     environment:
       POSTGRES_USER: forge
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-forge-dev-pw}
@@ -50,9 +52,16 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      FORGE_ENVIRONMENT: production
+      # Defaults to production (turns on the hardening guard: refuses default secrets / sqlite /
+      # non-durable checkpointer / non-https public URLs). For a local bring-up on http://localhost
+      # set FORGE_ENVIRONMENT=development in .env - Postgres/pgvector/Redis still run (set below,
+      # env-independent), you just skip the https/trusted-hosts asserts that can't hold on localhost.
+      FORGE_ENVIRONMENT: ${FORGE_ENVIRONMENT:-production}
       FORGE_DATABASE_URL: postgresql+asyncpg://forge:${POSTGRES_PASSWORD:-forge-dev-pw}@postgres:5432/forge
       FORGE_CHECKPOINT_BACKEND: postgres
+      # Store embedding vectors in Postgres (reusing FORGE_DATABASE_URL) instead of the embedded
+      # single-writer Chroma index, so api and worker share one vector store across replicas.
+      FORGE_VECTOR_BACKEND: pgvector
       FORGE_REDIS_URL: redis://redis:6379/0
       # Run the scheduler/reaper on this single instance (the leader). If you scale `api`
       # to multiple replicas, keep this on ONE of them only.
@@ -75,10 +84,10 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     volumes:
-      # Persist the Fernet master.key + Chroma vectors across image rebuilds, and SHARE them with
-      # the worker. This is container-filesystem state (/app/.data), NOT in the pgdata volume, so
-      # without this it is wiped on every `up --build` - regenerating master.key would leave every
-      # secret already stored in Postgres undecryptable.
+      # Persist the Fernet master.key across image rebuilds, and SHARE it with the worker. This is
+      # container-filesystem state (/app/.data), NOT in the pgdata volume, so without this it is
+      # wiped on every `up --build` - regenerating master.key would leave every secret already
+      # stored in Postgres undecryptable. (Vectors now live in Postgres via pgvector, not here.)
       - forge-data:/app/.data
     ports:
       - "8000:8000"
@@ -109,9 +118,13 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      FORGE_ENVIRONMENT: production
+      # Mirror the api's environment (see the note there); defaults to production.
+      FORGE_ENVIRONMENT: ${FORGE_ENVIRONMENT:-production}
       FORGE_DATABASE_URL: postgresql+asyncpg://forge:${POSTGRES_PASSWORD:-forge-dev-pw}@postgres:5432/forge
       FORGE_CHECKPOINT_BACKEND: postgres
+      # Same vector store as the api (Postgres/pgvector), so worker-executed ingests/queries hit
+      # the shared vectors rather than a private Chroma index.
+      FORGE_VECTOR_BACKEND: pgvector
       FORGE_REDIS_URL: redis://redis:6379/0
       FORGE_JWT_SECRET: ${FORGE_JWT_SECRET:?set a strong random secret}
       # Not used by the worker (only the api seeds the admin), but the shared production guard
@@ -128,9 +141,9 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     volumes:
-      # Same shared volume as api: the worker decrypts run secrets with the SAME master.key and
-      # reads the SAME Chroma store the api ingested into. A separate key here would fail to
-      # decrypt anything the api encrypted.
+      # Same shared volume as api: the worker decrypts run secrets with the SAME master.key.
+      # A separate key here would fail to decrypt anything the api encrypted. (Vectors are shared
+      # via Postgres/pgvector now, not this volume.)
       - forge-data:/app/.data
 
   web:
@@ -152,6 +165,7 @@ services:
 
 volumes:
   pgdata:
-  # Fernet master.key + Chroma vectors, shared by api and worker and persisted across rebuilds
-  # (container-filesystem state under /app/.data, not part of the Postgres pgdata volume).
+  # Fernet master.key, shared by api and worker and persisted across rebuilds (container-
+  # filesystem state under /app/.data, not part of the Postgres pgdata volume). Vectors live
+  # in Postgres (pgvector) now, so this volume no longer holds the Chroma index.
   forge-data:

@@ -51,7 +51,6 @@ export interface Tool {
   name: string;
   kind: string;
   enabled: boolean;
-  version: number;
   auth_provider_id?: string | null;
   last_tested?: string | null;
   config: Record<string, any>;
@@ -109,7 +108,6 @@ export interface Agent {
   id: string;
   project_id: string;
   name: string;
-  version: number;
   config: Record<string, any>;
   created_by?: string | null;
   created_by_email?: string | null;
@@ -143,7 +141,7 @@ export interface ProjectStats {
 // Sidebar badge counts (keys match countKey in data.ts PROJECT_NAV). One cheap call
 // replaces six full-list fetches that were only ever read for their `.length`.
 export interface ProjectCounts {
-  workflows: number; agents: number; tools: number; components: number; knowledge: number; auth: number;
+  workflows: number; agents: number; tools: number; components: number; knowledge: number; auth: number; handoffs: number;
 }
 
 export interface DashboardStats {
@@ -366,20 +364,28 @@ export const api = {
   listQaKinds: (pid: string) => json<string[]>(`/v1/projects/${pid}/qa-pairs/kinds`),
   addQa: (pid: string, body: { question: string; answer: string; kind?: string; tags?: string[] }) =>
     json<QaPair>(`/v1/projects/${pid}/qa-pairs`, { method: "POST", body: JSON.stringify(body) }),
+  updateQa: (pid: string, qid: string, body: { question?: string; answer?: string; kind?: string; tags?: string[] }) =>
+    json<QaPair>(`/v1/projects/${pid}/qa-pairs/${qid}`, { method: "PATCH", body: JSON.stringify(body) }),
   deleteQa: (pid: string, qid: string) => fetch(`${BASE}/v1/projects/${pid}/qa-pairs/${qid}`, { method: "DELETE", headers: authHeader() }),
   // traces + conversations (Traces view)
   listTraces: (pid: string) => json<Trace[]>(`/v1/projects/${pid}/traces`),
   getTrace: (pid: string, trid: string) => json<{ trace: Trace; spans: Span[] }>(`/v1/projects/${pid}/traces/${trid}`),
-  listConversations: (pid: string, opts?: { actor?: string; source?: string; status?: string; limit?: number; offset?: number }) => {
+  listConversations: (pid: string, opts?: { actor?: string; source?: string; status?: string; search?: string; limit?: number; offset?: number }) => {
     const q = new URLSearchParams();
     if (opts?.actor) q.set("actor", opts.actor);
     if (opts?.source) q.set("source", opts.source);
     if (opts?.status) q.set("status", opts.status);
+    if (opts?.search) q.set("search", opts.search);
     if (opts?.limit != null) q.set("limit", String(opts.limit));
     if (opts?.offset != null) q.set("offset", String(opts.offset));
     const qs = q.toString();
     return json<Conversation[]>(`/v1/projects/${pid}/conversations${qs ? `?${qs}` : ""}`);
   },
+  // Re-run a past run with the same input (fresh thread). Used by the Traces "re-run" button.
+  rerunRun: (pid: string, wid: string, rid: string) =>
+    json<{ id: string; status: string; thread_id: string }>(
+      `/v1/projects/${pid}/workflows/${wid}/runs/${rid}/rerun`, { method: "POST" },
+    ),
   getConversation: (pid: string, threadId: string) =>
     json<ConversationDetail>(`/v1/projects/${pid}/conversations/${encodeURIComponent(threadId)}`),
   conversationFacets: (pid: string) => json<Facets>(`/v1/projects/${pid}/conversations/facets`),
@@ -415,10 +421,22 @@ export const api = {
   acceptInvite: (token: string, password: string) =>
     json<AuthResult>("/v1/auth/accept-invite", { method: "POST", body: JSON.stringify({ token, password }) }),
   listTeam: () => json<TeamMember[]>("/v1/team/members"),
-  listAudit: (projectId?: string) => json<AuditEntry[]>(`/v1/audit${projectId ? `?project_id=${projectId}` : ""}`),
   listPricing: () => json<Record<string, { input_per_1m: number; output_per_1m: number }>>("/v1/pricing"),
   setPricing: (model: string, body: { input_per_1m: number; output_per_1m: number }) =>
     json<any>(`/v1/pricing/${encodeURIComponent(model)}`, { method: "PUT", body: JSON.stringify(body) }),
+  // version history (workflow | agent | tool | component | auth_provider | kb_source | project)
+  listVersions: (entityType: EntityType, entityId: string) =>
+    json<EntityVersion[]>(`/v1/versions/${entityType}/${entityId}`),
+  getVersion: (entityType: EntityType, entityId: string, versionNo: number) =>
+    json<EntityVersion & { snapshot: Record<string, any> }>(`/v1/versions/${entityType}/${entityId}/${versionNo}`),
+  restoreVersion: (entityType: EntityType, entityId: string, versionNo: number) =>
+    json<{ ok?: boolean; version_no?: number }>(`/v1/versions/${entityType}/${entityId}/restore`, { method: "POST", body: JSON.stringify({ version_no: versionNo }) }),
+  // read-only project-wide knowledge activity (added | changed | removed) for the Knowledge History
+  knowledgeActivity: (projectId: string) =>
+    json<ActivityEntry[]>(`/v1/versions/project/${projectId}/activity`),
+  // full project config snapshots (newest first) so Settings > History can diff by section
+  projectConfigHistory: (projectId: string) =>
+    json<ProjectVersion[]>(`/v1/versions/project/${projectId}/config-history`),
   inviteMember: (body: { email: string; role?: string; password?: string }) =>
     json<InviteResult>("/v1/team/members", { method: "POST", body: JSON.stringify(body) }),
   updateMember: (uid: string, body: { role?: string; status?: string }) =>
@@ -456,7 +474,7 @@ export const api = {
 };
 
 export interface InviteResult extends TeamMember { email_sent: boolean; invite_url?: string; }
-export interface Channel { id: string; type: string; name: string; workflow_id?: string | null; enabled: boolean; config: Record<string, any>; key?: string | null; inbound_url?: string; messaging_endpoint?: string; }
+export interface Channel { id: string; type: string; name: string; workflow_id?: string | null; enabled: boolean; config: Record<string, any>; key?: string | null; inbound_url?: string; }
 export interface Trigger { id: string; workflow_id: string; node_id: string; kind: string; enabled: boolean; config: Record<string, any>; webhook_url?: string; last_fired_at?: string | null; }
 export interface Dataset { id: string; name: string; workflow_id?: string | null; score_mode: string; items: any[]; n_items: number; last_pass_rate?: number | null; }
 export interface EvalReport { summary: { total: number; passed: number; pass_rate: number }; results: { input: string; expected: string; answer: string; passed: boolean; reason?: string | null }[]; }
@@ -467,11 +485,17 @@ export type EvalRunResult = EvalReport | { error: string };
 export interface Handoff { id: string; run_id: string; workflow_id?: string | null; customer?: string | null; customer_message?: string | null; reason?: string | null; status: string; at?: string | null; }
 export interface EmbedSettings { enabled: boolean; allowed_origins: string[]; workflow_id?: string | null; publishable_key?: string | null; embed_src?: string | null; }
 
+export type EntityType = "workflow" | "agent" | "tool" | "component" | "auth_provider" | "kb_source" | "project";
+export interface EntityVersion { id: string; version_no: number; label?: string | null; author_email?: string | null; created_at?: string | null; }
+// One row of the read-only Knowledge activity feed (a file or Q&A pair added/changed/removed).
+export interface ActivityEntry { id: string; entity_type: "kb_source" | "qa_pair"; entity_id: string; action?: string | null; title: string; author_email?: string | null; created_at?: string | null; }
+// A full project config snapshot (Settings > History diffs consecutive ones per section).
+export interface ProjectVersion { id: string; version_no: number; author_email?: string | null; created_at?: string | null; snapshot: Record<string, any>; }
+
 export interface MeResult { id: string; email: string | null; role: string; tenant_id: string; is_fallback: boolean; }
 export interface AuthResult { access_token: string; refresh_token: string; user: { id: string; email: string; role: string }; }
 export interface TeamMember { id: string; email: string; role: string; status: string; tenant_id: string; }
 export interface McpClientT { id: string; name: string; transport: string; url?: string | null; command?: string | null; args?: any; headers_ref?: string | null; enabled: boolean; disabled_tools?: string[]; }
-export interface AuditEntry { id: string; action: string; actor_email?: string | null; resource_type?: string | null; ip?: string | null; status: string; at?: string | null; }
 
 export interface SSEFrame {
   event: string;

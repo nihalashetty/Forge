@@ -153,10 +153,6 @@ export const NODE_HELP: Record<string, { what: string; example: string }> = {
     what: "Starts the workflow when an email arrives in the connected mailbox (configure the Email channel under Connect → Channels). Optionally replies to the sender with the answer.",
     example: "support@yourco.com receives a question → agent replies by email",
   },
-  chat_in: {
-    what: "Starts the workflow from a chat surface - Microsoft Teams (configured under Channels). The user's message flows straight into the graph.",
-    example: "A teammate messages the Teams bot → grounded agent answers",
-  },
   app_event: {
     what: "Polls an external source on an interval and runs the workflow once PER NEW item (deduped by a key you choose). Turns any API/feed into an event source.",
     example: "Poll the issues API every 5 min → triage each new issue",
@@ -271,12 +267,12 @@ export const PROJECTS = [
 ];
 
 export const RECENT_RUNS = [
-  { id: "r1", project: "Customer Support", workflow: "Support Router", status: "done", dur: "4.2s", tokens: "12.4k", trigger: "teams", time: "2m ago" },
+  { id: "r1", project: "Customer Support", workflow: "Support Router", status: "done", dur: "4.2s", tokens: "12.4k", trigger: "email", time: "2m ago" },
   { id: "r2", project: "Sales Assistant", workflow: "Lead Qualifier", status: "done", dur: "2.1s", tokens: "6.1k", trigger: "api", time: "5m ago" },
-  { id: "r3", project: "Customer Support", workflow: "Support Router", status: "interrupted", dur: "1.8s", tokens: "3.2k", trigger: "teams", time: "8m ago" },
+  { id: "r3", project: "Customer Support", workflow: "Support Router", status: "interrupted", dur: "1.8s", tokens: "3.2k", trigger: "email", time: "8m ago" },
   { id: "r4", project: "Internal Ops Bot", workflow: "PR Summarizer", status: "error", dur: "0.9s", tokens: "1.1k", trigger: "mcp", time: "14m ago" },
   { id: "r5", project: "Data Q&A", workflow: "Metrics Explainer", status: "done", dur: "3.6s", tokens: "9.8k", trigger: "playground", time: "21m ago" },
-  { id: "r6", project: "Customer Support", workflow: "Refund Flow", status: "done", dur: "5.5s", tokens: "15.2k", trigger: "teams", time: "33m ago" },
+  { id: "r6", project: "Customer Support", workflow: "Refund Flow", status: "done", dur: "5.5s", tokens: "15.2k", trigger: "email", time: "33m ago" },
 ];
 
 export const KB_SOURCES = [
@@ -300,8 +296,8 @@ export const SEARCH_HITS = [
 ];
 
 export const TRACE_RUNS = [
-  { id: "tr1", workflow: "Support Router", status: "done", started: "14:22:08", dur: "4.2s", tokens: "12.4k", cost: "$0.038", trigger: "teams" },
-  { id: "tr2", workflow: "Support Router", status: "interrupted", started: "14:18:51", dur: "1.8s", tokens: "3.2k", cost: "$0.009", trigger: "teams" },
+  { id: "tr1", workflow: "Support Router", status: "done", started: "14:22:08", dur: "4.2s", tokens: "12.4k", cost: "$0.038", trigger: "email" },
+  { id: "tr2", workflow: "Support Router", status: "interrupted", started: "14:18:51", dur: "1.8s", tokens: "3.2k", cost: "$0.009", trigger: "email" },
   { id: "tr3", workflow: "Refund Flow", status: "done", started: "14:10:33", dur: "5.5s", tokens: "15.2k", cost: "$0.047", trigger: "api" },
   { id: "tr4", workflow: "PR Summarizer", status: "error", started: "13:58:02", dur: "0.9s", tokens: "1.1k", cost: "$0.003", trigger: "mcp" },
   { id: "tr5", workflow: "Metrics Explainer", status: "done", started: "13:44:19", dur: "3.6s", tokens: "9.8k", cost: "$0.030", trigger: "playground" },
@@ -357,15 +353,14 @@ export const PROJECT_NAV: NavEntry[] = [
     { id: "mcp", label: "External MCP", icon: "connect", help: "Connect external MCP servers (GitHub, Slack, …) and toggle which of their tools agents and workflows can use." },
   ] },
   { section: "Deploy", items: [
-    { id: "channels", label: "Channels", icon: "msg", help: "Deploy a workflow to a surface: email or Microsoft Teams." },
+    { id: "channels", label: "Channels", icon: "msg", help: "Deploy a workflow to an email surface." },
     { id: "triggers", label: "Triggers", icon: "bolt", help: "Event-driven entry points - webhook URLs, schedules, and pollers that start runs." },
-    { id: "connect", label: "Connect", icon: "connect", help: "Expose this project's tools as an MCP server, and register external MCP servers to consume." },
-    { id: "embed", label: "Embed", icon: "grid", help: "Embed this project's chatbot as a widget on any website (publishable key + allowed origins)." },
+    { id: "connect", label: "Connect", icon: "connect", help: "Connect this project to external systems: the Run API, integration reference, MCP server, and the embeddable chat widget." },
   ] },
   { section: "Observe", items: [
     { id: "traces", label: "Traces", icon: "traces", help: "Per-run span waterfall with model calls, tokens, latency, and cost." },
     { id: "datasets", label: "Evaluations", icon: "validate", help: "Test datasets (input + expected) scored against a workflow to catch regressions." },
-    { id: "handoff", label: "Agent inbox", icon: "user", help: "Live conversations escalated to a human - reply here to resume the run." },
+    { id: "handoff", label: "Agent inbox", icon: "user", countKey: "handoffs", help: "Live conversations escalated to a human - reply here to resume the run." },
   ] },
   { id: "settings", label: "Settings", icon: "settings", help: "Model defaults, provider keys, secrets, team & roles, and the audit log." },
 ];

@@ -8,7 +8,9 @@ SSE frames, then persist the trace/spans and finalize the run row.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import time
 import uuid
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta
@@ -18,6 +20,7 @@ from sqlalchemy import or_, select
 
 from forge.config import settings
 from forge.db.base import SessionLocal
+from forge.db.scoping import set_current_tenant
 from forge.engine.compiler import compile_workflow
 from forge.models import Run, Thread, Trace, Workflow
 from forge.services.runtime import build_compile_context
@@ -32,6 +35,213 @@ from forge.util.serialize import (
 )
 
 log = logging.getLogger("forge.runs")
+
+# Settings wanted (config.py is owned by a parallel agent; module constants used for now):
+#   FORGE_HITL_APPROVAL_TIMEOUT_SECONDS (int, default 0 = never expire) - how long an
+#     interrupted run may wait for a human approval before the reaper fails it + closes the
+#     handoff with a fallback channel message (audit C).
+#   FORGE_RUN_WALL_CLOCK_TIMEOUT_SECONDS (int, default 0 = unlimited) - hard per-run wall-clock
+#     budget for graph execution, checked cooperatively between stream frames (audit H).
+HITL_APPROVAL_TIMEOUT_SECONDS = settings.hitl_approval_timeout_seconds
+RUN_WALL_CLOCK_TIMEOUT_SECONDS = settings.run_wall_clock_timeout_seconds
+
+
+class _RunControl:
+    """Cooperative + cross-worker cancellation registry (audit H).
+
+    A live run loop calls begin()/end() to register itself; cancel_run() signals it via an Event
+    the loop polls between frames AND (best-effort) cancels the driving asyncio task so a run
+    wedged inside one long frame (e.g. a hung model call) is still interrupted. Entries exist only
+    while a loop is running, so nothing leaks. Each active loop also gets a lightweight watcher
+    for its shared DB row: if another worker commits ``status=canceled``, the watcher hard-cancels
+    this worker's driving task even when it is blocked inside one long model/tool await."""
+
+    def __init__(self) -> None:
+        self._events: dict[str, asyncio.Event] = {}
+        self._tasks: dict[str, asyncio.Task] = {}
+        self._watchers: dict[str, asyncio.Task] = {}
+
+    def begin(self, run_id: str, tenant_id: str) -> asyncio.Event:
+        ev = asyncio.Event()
+        self._events[run_id] = ev
+        try:
+            task = asyncio.current_task()
+        except RuntimeError:
+            task = None
+        if task is not None:
+            self._tasks[run_id] = task
+        self._watchers[run_id] = asyncio.create_task(
+            self._watch_database(run_id, tenant_id), name=f"forge-cancel-watch:{run_id}",
+        )
+        return ev
+
+    async def end(self, run_id: str) -> None:
+        self._events.pop(run_id, None)
+        self._tasks.pop(run_id, None)
+        watcher = self._watchers.pop(run_id, None)
+        if watcher is not None and watcher is not asyncio.current_task():
+            watcher.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await watcher
+
+    async def _watch_database(self, run_id: str, tenant_id: str) -> None:
+        """Observe cancellation committed by another API/worker process.
+
+        The run table is already the authoritative cross-worker state and exists in every
+        deployment, unlike optional Redis. Polling only while a run is active also gives a hard
+        cancellation backstop for a graph currently awaiting a slow provider call.
+        """
+        while run_id in self._events:
+            await asyncio.sleep(0.25)
+            try:
+                set_current_tenant(tenant_id)
+                async with SessionLocal() as session:
+                    status = (
+                        await session.execute(
+                            select(Run.status).where(Run.id == run_id, Run.tenant_id == tenant_id)
+                        )
+                    ).scalar_one_or_none()
+                if status == "canceled":
+                    self.request_cancel(run_id, hard=True)
+                    return
+                if status is None or status in ("done", "error"):
+                    return
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - transient DB errors must not kill execution
+                log.debug("run cancel watcher failed for %s", run_id, exc_info=True)
+
+    def is_running(self, run_id: str) -> bool:
+        return run_id in self._events
+
+    def request_cancel(self, run_id: str, *, hard: bool = True) -> bool:
+        """Signal a running loop to stop. Returns True if a live loop was signaled (else the run
+        isn't running in THIS process - the caller should fall back to the DB status)."""
+        ev = self._events.get(run_id)
+        signaled = ev is not None
+        if ev is not None:
+            ev.set()
+        if hard:
+            t = self._tasks.get(run_id)
+            if t is not None and not t.done():
+                t.cancel()
+                signaled = True
+        return signaled
+
+
+run_control = _RunControl()
+
+
+# --- Durable SSE: decouple run execution from the client connection (finding #12) ----------
+# A run's graph is driven by a BACKGROUND task that publishes frames to a per-run broker; the
+# SSE endpoints merely SUBSCRIBE. So a client disconnect ends only the subscription - the run
+# keeps executing and persisting via the checkpointer, and a client can reattach (same run_id)
+# to replay missed frames via Last-Event-ID + follow the rest. In-process (single worker); a
+# multi-worker deployment additionally leans on the DB run status + the stale-run reaper.
+
+RUN_BROKER_TTL_SECONDS = 300  # retain a finished run's frames this long for late reconnects
+
+
+class _RunBroker:
+    """Ordered, replayable, multi-subscriber event buffer for one run episode. Frames get a
+    monotonic seq (the SSE event id); subscribers replay from a Last-Event-ID then follow live."""
+
+    def __init__(self) -> None:
+        self.seq = 0
+        self.events: list[tuple[int, dict]] = []
+        self.done = asyncio.Event()
+        self._subs: set[asyncio.Queue] = set()
+        self._lock = asyncio.Lock()
+
+    async def publish(self, frame: dict) -> None:
+        async with self._lock:
+            self.seq += 1
+            item = (self.seq, frame)
+            self.events.append(item)
+            for q in self._subs:
+                q.put_nowait(item)
+
+    async def finish(self) -> None:
+        async with self._lock:
+            if self.done.is_set():
+                return
+            self.done.set()
+            for q in self._subs:
+                q.put_nowait((None, None))  # unblock live subscribers
+
+    async def subscribe(self, last_event_id: int = 0) -> AsyncIterator[tuple[int, dict]]:
+        """Replay buffered frames with seq > last_event_id, then follow live frames until finish.
+        The queue is registered BEFORE the buffer snapshot so a frame published in the gap is
+        queued (never lost); `last_yielded` dedups the buffer/queue overlap."""
+        q: asyncio.Queue = asyncio.Queue()
+        async with self._lock:
+            self._subs.add(q)
+            buffered = list(self.events)
+            finished = self.done.is_set()
+        last_yielded = last_event_id
+        try:
+            for seq, frame in buffered:
+                if seq > last_yielded:
+                    yield seq, frame
+                    last_yielded = seq
+            if finished:
+                return
+            while True:
+                seq, frame = await q.get()
+                if seq is None:  # finish sentinel
+                    return
+                if seq > last_yielded:
+                    yield seq, frame
+                    last_yielded = seq
+        finally:
+            async with self._lock:
+                self._subs.discard(q)
+
+
+class _RunStreams:
+    """Process-wide registry of run brokers + their detached executor tasks."""
+
+    def __init__(self) -> None:
+        self._brokers: dict[str, _RunBroker] = {}
+        self._tasks: dict[str, asyncio.Task] = {}
+        self._lock = asyncio.Lock()
+
+    def get(self, run_id: str) -> _RunBroker | None:
+        return self._brokers.get(run_id)
+
+    async def ensure(self, run_id: str, *, start: bool, factory) -> tuple[_RunBroker | None, bool]:
+        """Return (broker, started_now). If a LIVE (unfinished) executor already owns this run,
+        reattach to it. Else if `start`, launch a fresh executor+broker episode (initial run or a
+        resume). Else return the finished broker (for replay) or None (nothing in this process)."""
+        async with self._lock:
+            existing = self._brokers.get(run_id)
+            if existing is not None and not existing.done.is_set():
+                return existing, False
+            if not start:
+                return existing, False
+            broker = _RunBroker()
+            self._brokers[run_id] = broker
+            task = asyncio.create_task(factory(broker))
+            self._tasks[run_id] = task
+            task.add_done_callback(lambda _t, rid=run_id, b=broker: self._on_done(rid, b))
+            return broker, True
+
+    def _on_done(self, run_id: str, broker: _RunBroker) -> None:
+        # Drop the task ref; GC this exact broker after a grace window (identity-checked so a
+        # later episode's broker under the same run_id is never evicted by this timer).
+        self._tasks.pop(run_id, None)
+
+        def _gc() -> None:
+            if self._brokers.get(run_id) is broker:
+                self._brokers.pop(run_id, None)
+
+        try:
+            asyncio.get_running_loop().call_later(RUN_BROKER_TTL_SECONDS, _gc)
+        except RuntimeError:  # no running loop (shouldn't happen from a task callback)
+            _gc()
+
+
+run_streams = _RunStreams()
 
 
 def _client_error(public: bool, run_id: str, detail: str) -> str:
@@ -139,6 +349,24 @@ def _internal_message_nodes(nodes: list) -> set[str]:
     return out
 
 
+def _recursion_limit(executable: dict | None) -> int:
+    """LangGraph superstep budget for a run. LangGraph defaults to 25, which a Loop node
+    (each iteration spends ~3 supersteps: loop -> router -> body -> back) exceeds after only
+    a few iterations, raising GraphRecursionError mid-run - so the Loop node effectively broke
+    past ~8 iterations on every non-assistant run path. Derive a budget from graph size plus
+    each loop's max_iter, floored by settings.graph_recursion_limit, so large workflows scale
+    automatically and small ones keep safe headroom."""
+    ex = executable or {}
+    nodes = [n for n in (ex.get("nodes") or []) if isinstance(n, dict)]
+    loop_iters = sum(
+        int((n.get("config") or {}).get("max_iter", 10) or 10)
+        for n in nodes
+        if n.get("type") == "loop"
+    )
+    computed = (len(nodes) + 1) * 2 + loop_iters * 3 + 10
+    return max(int(settings.graph_recursion_limit or 0), computed)
+
+
 class RunService:
     def __init__(self, checkpointer: Any = None, store: Any = None) -> None:
         self.checkpointer = checkpointer
@@ -148,6 +376,19 @@ class RunService:
         self, session, *, tenant_id: str, project_id: str, workflow_id: str, input: dict,
         thread_id: str | None = None, end_user: dict | None = None, source: str = "playground",
     ) -> Run:
+        set_current_tenant(tenant_id)  # bind tenant for the Postgres RLS GUC (no-op on SQLite)
+        # Enforce the tenant's daily spend ceiling on EVERY run-creation path - webhook / email /
+        # Email / app_event / MCP / playground - not just the embed widget (audit M2). create_run
+        # is the single run factory, so this is the universal floor. The embed path additionally
+        # wraps this in run_admission for atomic burst-safety. No-op unless a quota is configured.
+        from forge.services.quota import check_run_quota
+        await check_run_quota(session, tenant_id)
+        # Project governance: monthly USD cap + allowed_models allow-list (no-op unless the
+        # project configures them). Raises BudgetExceeded / ModelNotAllowed, mapped to HTTP by
+        # the admission routers. Model is validated per-node at publish; admission checks spend.
+        from forge.services.budget import enforce_project_budget
+        await enforce_project_budget(session, tenant_id, project_id)
+
         wf = (
             await session.execute(
                 select(Workflow).where(Workflow.tenant_id == tenant_id, Workflow.id == workflow_id)
@@ -220,7 +461,14 @@ class RunService:
     async def stream(
         self, *, run_id: str, tenant_id: str, project_id: str | None = None, public: bool = False,
         run_context: dict | None = None, resume: bool = False, resume_value: Any = None,
+        last_event_id: int = 0,
     ) -> AsyncIterator[dict]:
+        """SSE SUBSCRIBER: ensure a detached executor is driving this run, then relay its frames
+        (each tagged with a monotonic `id`). A client disconnect ends only this subscription -
+        the executor keeps running (finding #12). Reconnecting with the same run_id + a
+        Last-Event-ID replays missed frames then follows the rest; a run that finished during the
+        gap is reconstructed from the persisted trace so the caller still gets the final answer."""
+        set_current_tenant(tenant_id)  # bind tenant for the Postgres RLS GUC (no-op on SQLite)
         async with SessionLocal() as session:
             where = [Run.tenant_id == tenant_id, Run.id == run_id]
             if project_id is not None:
@@ -236,6 +484,95 @@ class RunService:
             if resume and run.status != "interrupted":
                 yield {"event": "error", "data": {"message": f"run is not awaiting input (status={run.status})", "status": run.status}}
                 return
+            status = run.status
+
+        # A fresh streaming episode starts on a queued run (initial) or a resume (interrupted ->
+        # running); otherwise we only reattach. ensure() serializes so a double-connect can't
+        # start two executors - the second reattaches to the first's broker.
+        start = resume or status == "queued"
+        broker, _started = await run_streams.ensure(
+            run_id, start=start,
+            factory=lambda b: self._execute(
+                run_id=run_id, tenant_id=tenant_id, project_id=project_id, public=public,
+                run_context=run_context, resume=resume, resume_value=resume_value, broker=b,
+            ),
+        )
+        if broker is not None:
+            async for seq, frame in broker.subscribe(last_event_id):
+                yield {"id": str(seq), "event": frame["event"], "data": frame["data"]}
+            return
+        # No broker in this process (terminal run past its retention window, or a run whose
+        # executor lived in a since-gone process): rebuild the terminal frame from the DB.
+        async for frame in self._reattach_from_db(run_id, tenant_id, project_id, public):
+            yield frame
+
+    async def _reattach_from_db(
+        self, run_id: str, tenant_id: str, project_id: str | None, public: bool,
+    ) -> AsyncIterator[dict]:
+        """Fallback reattach: synthesize a single terminal frame from the persisted run + its
+        latest trace, so a late reconnect (after the in-memory broker was GC'd) still resolves
+        with the final answer instead of hanging."""
+        set_current_tenant(tenant_id)
+        async with SessionLocal() as session:
+            where = [Run.tenant_id == tenant_id, Run.id == run_id]
+            if project_id is not None:
+                where.append(Run.project_id == project_id)
+            run = (await session.execute(select(Run).where(*where))).scalar_one_or_none()
+            if run is None:
+                yield {"event": "error", "data": {"message": "run not found"}}
+                return
+            trace = (await session.execute(
+                select(Trace).where(Trace.run_id == run_id, Trace.tenant_id == tenant_id)
+                .order_by(Trace.created_at.desc())
+            )).scalars().first()
+            answer = (trace.ai_response if trace else "") or ""
+        if run.status == "done":
+            data: dict[str, Any] = {"status": "done", "answer": answer}
+            if not public:
+                data["total_tokens"] = run.total_tokens
+                data["total_cost_usd"] = run.total_cost_usd
+            yield {"event": "done", "data": data}
+        elif run.status == "canceled":
+            yield {"event": "done", "data": {"status": "canceled", "answer": answer, "canceled": True}}
+        elif run.status == "error":
+            yield {"event": "error", "data": {"message": _client_error(public, run_id, run.error or "run failed")}}
+        elif run.status == "interrupted":
+            # The interrupt payload isn't replayable from the DB; signal that input is still awaited.
+            yield {"event": "interrupt", "data": []}
+        else:
+            yield {"event": "error", "data": {"message": "run is not streaming on this server", "status": run.status}}
+
+    async def _execute(
+        self, *, run_id: str, tenant_id: str, project_id: str | None, public: bool,
+        run_context: dict | None, resume: bool, resume_value: Any, broker: _RunBroker,
+    ) -> None:
+        """Detached executor entrypoint. Drives the episode, then FINISHES the broker only after
+        the DB session has fully closed - so a subscriber that returns on the finish sentinel can
+        never race the session teardown (avoids cross-loop close errors under the test harness)."""
+        try:
+            await self._drive(
+                run_id=run_id, tenant_id=tenant_id, project_id=project_id, public=public,
+                run_context=run_context, resume=resume, resume_value=resume_value, broker=broker,
+            )
+        finally:
+            await broker.finish()
+
+    async def _drive(
+        self, *, run_id: str, tenant_id: str, project_id: str | None, public: bool,
+        run_context: dict | None, resume: bool, resume_value: Any, broker: _RunBroker,
+    ) -> None:
+        """Drive the run's graph to a terminal state, PUBLISHING each frame to `broker` (rather
+        than yielding). Runs (via `_execute`) as a detached background task so a client disconnect
+        never stops it; only a hard cancel, a real error, or normal completion ends it."""
+        set_current_tenant(tenant_id)  # bind tenant for the Postgres RLS GUC (no-op on SQLite)
+        async with SessionLocal() as session:
+            where = [Run.tenant_id == tenant_id, Run.id == run_id]
+            if project_id is not None:
+                where.append(Run.project_id == project_id)
+            run = (await session.execute(select(Run).where(*where))).scalar_one_or_none()
+            if run is None:
+                await broker.publish({"event": "error", "data": {"message": "run not found"}})
+                return
             wf = (await session.execute(select(Workflow).where(Workflow.id == run.workflow_id))).scalar_one()
             thread = (await session.execute(select(Thread).where(Thread.id == run.thread_id))).scalar_one()
 
@@ -248,6 +585,7 @@ class RunService:
             config: dict[str, Any] = {
                 "configurable": {"thread_id": thread.lg_thread_id},
                 "callbacks": [tracer],
+                "recursion_limit": _recursion_limit(wf.executable),
             }
             # finalized => we reached a terminal state (done/interrupt/error) and persisted it,
             # so the `finally` must NOT also mark the run canceled. It stays False if the
@@ -280,7 +618,7 @@ class RunService:
                         log.warning("compile error for run %s: %s", run.id, e)
                         await self._finalize_error(session, run, tracer, f"compile error: {e}")
                         finalized = True
-                        yield {"event": "error", "data": {"message": _client_error(public, run.id, f"compile error: {e}")}}
+                        await broker.publish({"event": "error", "data": {"message": _client_error(public, run.id, f"compile error: {e}")}})
                         return
 
                     # Expose the caller-facing DB thread id here (same handle as the create
@@ -288,7 +626,7 @@ class RunService:
                     # an internal checkpointer key (and embeds the tenant id); a caller that
                     # echoed it back could never match Thread.id, so its conversation reset
                     # every turn. Keeping every thread_id in the stream identical avoids that.
-                    yield {"event": "run", "data": {"run_id": run.id, "thread_id": run.thread_id}}
+                    await broker.publish({"event": "run", "data": {"run_id": run.id, "thread_id": run.thread_id}})
 
                     # subgraphs=True is required for token-by-token streaming: agent nodes
                     # compile to nested subgraphs, and without it the inner LLM tokens never
@@ -299,6 +637,15 @@ class RunService:
                     # Resume a HITL interrupt with Command(resume=...); a fresh run feeds its input.
                     from langgraph.types import Command
 
+                    # Cooperative cancellation + wall-clock timeout (audit H): register this loop
+                    # so a cancel request can signal it, and poll the flag / deadline between
+                    # frames. A hard asyncio task-cancel (from request_cancel) is the backstop for
+                    # a run wedged inside a single long frame - it propagates to the `finally`,
+                    # which marks the run canceled.
+                    cancel_ev = run_control.begin(run.id, tenant_id)
+                    wall_clock = RUN_WALL_CLOCK_TIMEOUT_SECONDS
+                    started_monotonic = time.monotonic()
+                    canceled = timed_out = False
                     driver = Command(resume=resume_value) if resume else run.input
                     async for ns, mode, chunk in graph.astream(
                         driver, config,
@@ -306,16 +653,27 @@ class RunService:
                         subgraphs=True,
                         durability=settings.run_durability,
                     ):
+                        if cancel_ev.is_set():
+                            canceled = True
+                            break
+                        if wall_clock and (time.monotonic() - started_monotonic) > wall_clock:
+                            timed_out = True
+                            break
                         if mode == "tasks" and isinstance(chunk, dict):
+                            # node_start / node_error expose internal workflow node names (and error
+                            # detail) - operator-only, never to an anonymous embed end user (H5).
+                            if public:
+                                continue
                             name = chunk.get("name")
                             if name in node_ids and "triggers" in chunk:
-                                yield {"event": "node_start", "data": {"node": name}}
+                                await broker.publish({"event": "node_start", "data": {"node": name}})
                             elif name in node_ids and chunk.get("error") is not None:
-                                yield {"event": "node_error", "data": {"node": name, "message": _client_error(public, run.id, str(chunk.get("error")))}}
+                                await broker.publish({"event": "node_error", "data": {"node": name, "message": _client_error(public, run.id, str(chunk.get("error")))}})
                             continue
-                        # Only surface top-level node transitions as run steps; skip the
-                        # subgraph-internal "model"/"tools" updates so the steps panel stays clean.
-                        if mode == "updates" and ns:
+                        # "updates" frames carry internal node names + intermediate node state
+                        # (retrieved knowledge, tool results); never send them to the public embed
+                        # surface (H5). For operators, still skip subgraph-internal updates.
+                        if mode == "updates" and (public or ns):
                             continue
                         # In messages mode, only stream the agent's own answer tokens - never
                         # tool-result / human-message content, nor a classifier/structured node's
@@ -327,9 +685,31 @@ class RunService:
                             meta = chunk[1] if isinstance(chunk, (list, tuple)) and len(chunk) == 2 else {}
                             if (meta or {}).get("langgraph_node") in suppressed_message_nodes:
                                 continue
-                        yield {"event": mode, "data": serialize_stream(mode, chunk)}
+                        data = serialize_stream(mode, chunk)
+                        # The internal node name rides along on message frames; strip it on the
+                        # public embed surface so node topology isn't exposed to end users (H5).
+                        if public and mode == "messages" and isinstance(data, dict):
+                            data.pop("node", None)
+                        await broker.publish({"event": mode, "data": data})
 
                     snapshot = await graph.aget_state(config)
+                    # Cooperative stop hit between frames: finalize with the right terminal state
+                    # and emit a closing frame, then stop (the tenant slot frees as we exit).
+                    if canceled or timed_out:
+                        if canceled:
+                            await self._finalize(session, run, tracer, snapshot, status="canceled")
+                            finalized = True
+                            await broker.publish({"event": "done", "data": {
+                                "status": "canceled",
+                                "answer": _last_ai_text(getattr(snapshot, "values", {}) or {}),
+                                "canceled": True,
+                            }})
+                        else:
+                            detail = f"run exceeded the wall-clock timeout ({wall_clock}s)"
+                            await self._finalize_error(session, run, tracer, detail, snapshot=snapshot)
+                            finalized = True
+                            await broker.publish({"event": "error", "data": {"message": _client_error(public, run.id, detail)}})
+                        return
                     interrupted = bool(getattr(snapshot, "next", ())) and any(
                         getattr(t, "interrupts", None) for t in getattr(snapshot, "tasks", [])
                     )
@@ -345,43 +725,61 @@ class RunService:
                             for t in getattr(snapshot, "tasks", [])
                             if getattr(t, "interrupts", None)
                         ]
-                        yield {"event": "interrupt", "data": payload}
+                        await broker.publish({"event": "interrupt", "data": payload})
                     else:
                         # The authoritative final answer comes from run state - this covers
                         # answers produced by non-LLM nodes that never stream as message
                         # tokens, so the UI can always render a final bubble.
                         done_data: dict[str, Any] = {
                             "status": run.status,
-                            "total_tokens": run.total_tokens,
-                            "total_cost_usd": run.total_cost_usd,
                             "answer": _last_ai_text(getattr(snapshot, "values", {}) or {}),
                         }
-                        # Run-step cost/debug is operator-only - never expose node names / cost
-                        # to an anonymous embed end user (memory: widget-no-operator-data).
+                        # Token counts, cost, run-step debug and node names are operator-only - never
+                        # expose them to an anonymous embed end user (audit H5 / memory:
+                        # widget-no-operator-data). Operators see all of it in the dashboard.
                         if not public:
+                            done_data["total_tokens"] = run.total_tokens
+                            done_data["total_cost_usd"] = run.total_cost_usd
                             done_data["debug"] = {"nodes": _debug_nodes(wf.executable or {}, tracer)}
-                        yield {"event": "done", "data": done_data}
+                        await broker.publish({"event": "done", "data": done_data})
             except ConcurrencyLimitExceeded as e:
                 # Slot was refused before the run started; it stays queued for the reaper.
                 finalized = True
-                yield {"event": "error", "data": {"message": e.message}}
+                await broker.publish({"event": "error", "data": {"message": e.message}})
             except Exception as e:  # noqa: BLE001 - runtime failure -> error frame + trace
                 log.exception("run %s failed", run.id)
                 await self._finalize_error(session, run, tracer, str(e))
                 finalized = True
-                yield {"event": "error", "data": {"message": _client_error(public, run.id, str(e))}}
+                # Graceful fallback: the workflow's on_error.message reached ONLY the text-channel
+                # path (run_to_completion) before; the streaming surface (Playground / embed / API)
+                # got a raw error. Deliver the configured fallback here too so end users on the
+                # surfaces they actually see get the operator's message instead of a stack error.
+                on_err = (wf.executable or {}).get("on_error") or {}
+                fallback = on_err.get("message")
+                if fallback:
+                    done_err: dict[str, Any] = {"status": "error", "answer": fallback, "error_handled": True}
+                    if not public:
+                        done_err["escalate"] = bool(on_err.get("escalate"))
+                    await broker.publish({"event": "done", "data": done_err})
+                else:
+                    await broker.publish({"event": "error", "data": {"message": _client_error(public, run.id, str(e))}})
             finally:
+                await run_control.end(run_id)
                 if display_token is not None:
                     reset_tool_display_names(display_token)
-                # Client disconnect / cancellation propagates here without `finalized` set -
-                # mark the otherwise-stranded run canceled in a fresh, shielded session so it
-                # never sticks at status="running" forever (audit F1).
+                # A HARD task-cancel (operator cancel of a run wedged in one long frame) lands here
+                # with finalized=False - mark the otherwise-stranded run canceled in a fresh,
+                # shielded session so it never sticks at status="running" (audit F1). NOTE: a mere
+                # client disconnect no longer reaches here (the executor is detached from the SSE
+                # subscription - finding #12), so a disconnect leaves the run RUNNING. The broker
+                # is finished by `_execute` AFTER this session closes.
                 if not finalized:
                     await self._mark_unfinished(run_id, tenant_id, status="canceled")
 
     async def run_to_completion(self, *, run_id: str, tenant_id: str, project_id: str | None = None, run_context: dict | None = None) -> dict:
         """Compile + run a created run to completion without SSE (used by the trigger
         dispatcher: webhook / schedule / email / chat). Returns the final answer."""
+        set_current_tenant(tenant_id)  # bind tenant for the Postgres RLS GUC (no-op on SQLite)
         async with SessionLocal() as session:
             where = [Run.tenant_id == tenant_id, Run.id == run_id]
             if project_id is not None:
@@ -400,7 +798,7 @@ class RunService:
 
                 checkpointer = InMemorySaver()
             tracer = ForgeTracer()
-            config = {"configurable": {"thread_id": thread.lg_thread_id}, "callbacks": [tracer]}
+            config = {"configurable": {"thread_id": thread.lg_thread_id}, "callbacks": [tracer], "recursion_limit": _recursion_limit(wf.executable)}
             tlock = await thread_locks.acquire_cm(thread.lg_thread_id)
             try:
                 async with tenant_concurrency.slot(tenant_id, settings.max_concurrent_runs_per_tenant), tlock:
@@ -416,15 +814,35 @@ class RunService:
                     graph = compile_workflow(wf.executable, ctx)
                     # Drive with the custom stream (not ainvoke) so `component` frames emitted by
                     # widget-tools are captured for channels that consume run_to_completion
-                    # (webhook/schedule/email/Teams/evals) - ainvoke discards custom-stream items
+                    # (webhook/schedule/email/evals) - ainvoke discards custom-stream items
                     # entirely (audit H1).
                     components: list = []
+                    # Cooperative cancel + wall-clock timeout on the non-SSE path too (audit H).
+                    cancel_ev = run_control.begin(run.id, tenant_id)
+                    wall_clock = RUN_WALL_CLOCK_TIMEOUT_SECONDS
+                    started_monotonic = time.monotonic()
+                    canceled = timed_out = False
                     async for _ns, _mode, _chunk in graph.astream(
                         run.input, config, stream_mode=["custom"], subgraphs=True, durability=settings.run_durability,
                     ):
+                        if cancel_ev.is_set():
+                            canceled = True
+                            break
+                        if wall_clock and (time.monotonic() - started_monotonic) > wall_clock:
+                            timed_out = True
+                            break
                         if _mode == "custom" and isinstance(_chunk, dict) and _chunk.get("channel") == "component":
                             components.append(_chunk.get("payload"))
                     snapshot = await graph.aget_state(config)
+                    if canceled or timed_out:
+                        detail = "run canceled by operator" if canceled else f"run exceeded the wall-clock timeout ({wall_clock}s)"
+                        if canceled:
+                            await self._finalize(session, run, tracer, snapshot, status="canceled")
+                        else:
+                            await self._finalize_error(session, run, tracer, detail, snapshot=snapshot)
+                        return {"run_id": run.id, "status": run.status, "interrupted": False,
+                                "answer": "", "components": components,
+                                "canceled": canceled, "error": None if canceled else detail}
                     interrupted = bool(getattr(snapshot, "next", ())) and any(
                         getattr(t, "interrupts", None) for t in getattr(snapshot, "tasks", [])
                     )
@@ -438,13 +856,13 @@ class RunService:
                     if getattr(t, "interrupts", None)
                 ] if interrupted else []
                 # Strip component-placement markers: this path feeds text-only channels
-                # (email/Teams/webhook/schedule/evals) that can't render a widget and would
+                # (email/webhook/schedule/evals) that can't render a widget and would
                 # otherwise show the literal [[forge:component:…]] token. The structured
                 # `components` list is still returned for richer consumers.
                 from forge.tools.components import strip_component_markers
 
                 answer = strip_component_markers(_last_ai_text(getattr(snapshot, "values", {}) or {}))
-                # Text-only surfaces (email/Teams/webhook) can't render a widget - make sure a
+                # Text-only surfaces (email/webhook) can't render a widget - make sure a
                 # component-only reply still sends something rather than an empty message (H1).
                 if not answer.strip() and components:
                     names = ", ".join(str((c or {}).get("name") or "result") for c in components if c)
@@ -469,11 +887,14 @@ class RunService:
                     "answer": fallback or "", "error_handled": bool(fallback),
                     "escalate": bool(on_err.get("escalate")),
                 }
+            finally:
+                await run_control.end(run_id)
 
-    async def resume(self, *, run_id: str, tenant_id: str, value, project_id: str | None = None, run_context: dict | None = None) -> dict:
+    async def resume(self, *, run_id: str, tenant_id: str, value, project_id: str | None = None, run_context: dict | None = None, public: bool = False) -> dict:
         """Resume an interrupted run (HITL) with `Command(resume=value)` on its thread."""
         from langgraph.types import Command
 
+        set_current_tenant(tenant_id)  # bind tenant for the Postgres RLS GUC (no-op on SQLite)
         async with SessionLocal() as session:
             where = [Run.tenant_id == tenant_id, Run.id == run_id]
             if project_id is not None:
@@ -489,7 +910,7 @@ class RunService:
             thread = (await session.execute(select(Thread).where(Thread.id == run.thread_id))).scalar_one()
 
             tracer = ForgeTracer()
-            config = {"configurable": {"thread_id": thread.lg_thread_id}, "callbacks": [tracer]}
+            config = {"configurable": {"thread_id": thread.lg_thread_id}, "callbacks": [tracer], "recursion_limit": _recursion_limit(wf.executable)}
             tlock = await thread_locks.acquire_cm(thread.lg_thread_id)
             try:
                 async with tenant_concurrency.slot(tenant_id, settings.max_concurrent_runs_per_tenant), tlock:
@@ -511,13 +932,60 @@ class RunService:
                         session, run, tracer, snapshot,
                         status="interrupted" if interrupted else "done",
                     )
-                return {"status": run.status, "messages": jsonable((out or {}).get("messages", [])), "interrupted": interrupted}
+                # Interrupt payloads for a RE-interrupt (chained HITL), so the handoff reply path
+                # can open a fresh handoff for the next step + surface the next ack (audit B).
+                interrupts = [
+                    jsonable(getattr(t, "interrupts", None))
+                    for t in getattr(snapshot, "tasks", [])
+                    if getattr(t, "interrupts", None)
+                ] if interrupted else []
+                if public:
+                    # Public embed: expose ONLY the final assistant message, not the full
+                    # transcript (which includes tool-result / internal messages) (audit H5).
+                    # Keep the single-element `messages` shape the widget already consumes.
+                    answer = _last_ai_text(out or {})
+                    pub_msgs = [{"type": "ai", "content": answer}] if answer else []
+                    return {"status": run.status, "messages": pub_msgs, "interrupted": interrupted, "interrupts": interrupts}
+                return {"status": run.status, "messages": jsonable((out or {}).get("messages", [])), "interrupted": interrupted, "interrupts": interrupts}
             except ConcurrencyLimitExceeded as e:
                 return {"error": e.message, "status": "busy"}
             except Exception as e:  # noqa: BLE001
                 log.exception("resume %s failed", run.id)
                 await self._finalize_error(session, run, tracer, str(e))
-                return {"error": str(e)}
+                # Redact internal error detail on the public embed surface (audit M6); the stream
+                # path already does this via _client_error, the resume path did not.
+                return {"error": _client_error(public, run.id, str(e))}
+
+    async def cancel_run(self, *, run_id: str, tenant_id: str, project_id: str | None = None) -> dict:
+        """Cooperatively cancel a run (audit H): mark it canceled, signal any live loop in this
+        process to stop (+ hard task-cancel backstop), free the tenant-concurrency slot (it frees
+        as the signaled loop exits), and close any open handoff. A terminal run is a no-op."""
+        set_current_tenant(tenant_id)
+        async with SessionLocal() as session:
+            where = [Run.tenant_id == tenant_id, Run.id == run_id]
+            if project_id is not None:
+                where.append(Run.project_id == project_id)
+            run = (await session.execute(select(Run).where(*where))).scalar_one_or_none()
+            if run is None:
+                return {"ok": False, "error": "run not found", "status": None}
+            if run.status in ("done", "error", "canceled"):
+                return {"ok": False, "status": run.status, "detail": f"run already {run.status}"}
+            prev = run.status
+            # Signal a live loop first so its own finalize converges on 'canceled'. For a queued /
+            # interrupted run (no live loop) the DB write below is the authoritative stop.
+            signaled = run_control.request_cancel(run_id, hard=True)
+            run.status = "canceled"
+            run.error = run.error or "run canceled by operator"
+            run.ended_at = datetime.utcnow()
+            await session.commit()
+            # Close any open handoff for this run (an interrupted run may have one waiting).
+            try:
+                from forge.services.handoff import HandoffService
+
+                await HandoffService.close_for_run(session, run_id, tenant_id, reason="run canceled")
+            except Exception:  # noqa: BLE001 - handoff close is best-effort
+                log.debug("cancel_run: handoff close failed for %s", run_id, exc_info=True)
+            return {"ok": True, "status": "canceled", "previous_status": prev, "signaled": signaled}
 
     async def _write_trace(self, session, run: Run, tracer: ForgeTracer, *, status: str, values: dict | None = None):
         """Persist a Trace + its Span rows from the tracer. Shared by the success,
@@ -656,19 +1124,31 @@ class RunService:
         except Exception:  # noqa: BLE001
             log.exception("failed to mark run %s as %s", run_id, status)
 
-    @staticmethod
-    async def reap_stale_runs(*, queued_max_age_s: int = 900, running_max_age_s: int = 3600) -> int:
+    async def reap_stale_runs(
+        self, *, queued_max_age_s: int = 900, running_max_age_s: int = 3600,
+        hitl_timeout_s: int | None = None,
+    ) -> int:
         """Mark runs stuck in non-terminal states as error so they never linger forever
         (audit F3): a `queued` run that was created but never streamed/driven, or a
         `running` run whose driver died (crash, missed disconnect, killed worker). Called
-        periodically from the app lifespan. Returns the number reaped."""
+        periodically from the app lifespan. Returns the number reaped.
+
+        Also expires `interrupted` runs awaiting a human approval for longer than
+        `hitl_timeout_s` (audit C). A Human Input node with ``timeout_default`` resumes its
+        durable checkpoint with that decision. Without a configured default (or without a live
+        checkpointer), the run fails and its handoff is closed with a fallback channel message."""
+        hitl_timeout_s = HITL_APPROVAL_TIMEOUT_SECONDS if hitl_timeout_s is None else hitl_timeout_s
+        hitl_on = bool(hitl_timeout_s and hitl_timeout_s > 0)
         now = datetime.utcnow()
         q_cut = now - timedelta(seconds=queued_max_age_s)
         r_cut = now - timedelta(seconds=running_max_age_s)
+        hitl_cut = now - timedelta(seconds=hitl_timeout_s) if hitl_on else None
         reaped = 0
+        expired_hitl: list[tuple[str, str, str]] = []  # (run_id, tenant_id, workflow_id)
         async with SessionLocal() as s:
+            statuses = ["queued", "running"] + (["interrupted"] if hitl_on else [])
             rows = (
-                await s.execute(select(Run).where(Run.status.in_(("queued", "running"))))
+                await s.execute(select(Run).where(Run.status.in_(statuses)))
             ).scalars().all()
             for run in rows:
                 if run.status == "queued" and (run.created_at or now) < q_cut:
@@ -681,8 +1161,139 @@ class RunService:
                     run.error = "run exceeded maximum duration and was reaped"
                     run.ended_at = now
                     reaped += 1
+                elif run.status == "interrupted" and hitl_cut is not None:
+                    # ended_at is stamped at each pause (_finalize), so it's the time the run last
+                    # went to await input - the right anchor for the approval deadline.
+                    paused_at = run.ended_at or run.started_at or run.created_at or now
+                    if paused_at < hitl_cut:
+                        expired_hitl.append((run.id, run.tenant_id, run.workflow_id))
             if reaped:
                 await s.commit()
+
+        resumed_defaults = 0
+        for run_id, tenant_id, workflow_id in expired_hitl:
+            if await self._resume_hitl_timeout_default(run_id, tenant_id):
+                reaped += 1
+                resumed_defaults += 1
+                continue
+            # No default: fail only if the run is STILL interrupted. A human may have answered
+            # between the scan and this write; never overwrite that concurrent completion.
+            async with SessionLocal() as s:
+                run = (
+                    await s.execute(
+                        select(Run).where(
+                            Run.id == run_id, Run.tenant_id == tenant_id,
+                            Run.status == "interrupted",
+                        )
+                    )
+                ).scalar_one_or_none()
+                if run is None:
+                    continue
+                run.status = "error"
+                run.error = f"HITL approval timed out after {hitl_timeout_s}s (no human reply)"
+                run.ended_at = now
+                await s.commit()
+                reaped += 1
+                try:
+                    await self._notify_hitl_timeout(s, run_id, tenant_id, workflow_id)
+                except Exception:  # noqa: BLE001 - one bad notify must not stop the reaper
+                    log.exception("HITL timeout notify failed for run %s", run_id)
         if reaped:
-            log.info("reaped %d stale run(s)", reaped)
+            log.info(
+                "reaped %d stale run(s) (%d HITL timeouts, %d resumed with defaults)",
+                reaped, len(expired_hitl), resumed_defaults,
+            )
         return reaped
+
+    async def _resume_hitl_timeout_default(self, run_id: str, tenant_id: str) -> bool:
+        """Resume an expired interrupt with its persisted default, if configured."""
+        if self.checkpointer is None:
+            return False
+        try:
+            from forge.models import HandoffRequest
+            from forge.services.handoff import HandoffService, interrupt_hitl_meta
+
+            set_current_tenant(tenant_id)
+            async with SessionLocal() as session:
+                run = (
+                    await session.execute(
+                        select(Run).where(
+                            Run.id == run_id, Run.tenant_id == tenant_id,
+                            Run.status == "interrupted",
+                        )
+                    )
+                ).scalar_one_or_none()
+                if run is None:
+                    return False
+                wf = await session.get(Workflow, run.workflow_id)
+                thread = await session.get(Thread, run.thread_id)
+                if wf is None or thread is None:
+                    return False
+                ctx = await build_compile_context(
+                    session, tenant_id=tenant_id, project_id=run.project_id,
+                    checkpointer=self.checkpointer, store=self.store,
+                    end_user=(thread.meta or {}).get("end_user"), run_context=None,
+                )
+                graph = compile_workflow(wf.executable, ctx)
+                config = {
+                    "configurable": {"thread_id": thread.lg_thread_id},
+                    "recursion_limit": _recursion_limit(wf.executable),
+                }
+                snapshot = await graph.aget_state(config)
+                interrupts = [
+                    jsonable(getattr(task, "interrupts", None))
+                    for task in getattr(snapshot, "tasks", [])
+                    if getattr(task, "interrupts", None)
+                ]
+                default = interrupt_hitl_meta(interrupts).get("timeout_default")
+                if default is None:
+                    return False
+                handoff = (
+                    await session.execute(
+                        select(HandoffRequest).where(
+                            HandoffRequest.run_id == run_id,
+                            HandoffRequest.tenant_id == tenant_id,
+                            HandoffRequest.status == "open",
+                        ).order_by(HandoffRequest.created_at)
+                    )
+                ).scalars().first()
+                if handoff is not None:
+                    result = await HandoffService.reply(
+                        session, self, handoff=handoff,
+                        agent_id="system:hitl-timeout", message=str(default),
+                    )
+                    resume_result = result.get("resume") or {}
+                    return bool(resume_result) and not resume_result.get("error")
+
+            result = await self.resume(run_id=run_id, tenant_id=tenant_id, value=default)
+            return not result.get("error")
+        except Exception:  # noqa: BLE001 - default resume is best-effort; fail branch remains
+            log.exception("HITL timeout default resume failed for run %s", run_id)
+            return False
+
+    @staticmethod
+    async def _notify_hitl_timeout(session, run_id: str, tenant_id: str, workflow_id: str) -> None:
+        """On HITL expiry: push the workflow's on_error fallback over the originating channel,
+        then close the open handoff(s) for the run (audit C)."""
+        from forge.models import Channel, HandoffRequest
+        from forge.services.handoff import HandoffService, _channel_reply_context, _deliver
+
+        wf = (await session.execute(select(Workflow).where(Workflow.id == workflow_id))).scalar_one_or_none()
+        on_err = ((wf.executable if wf else {}) or {}).get("on_error") or {}
+        fallback = on_err.get("message") or (
+            "We weren't able to reach a team member in time. Please reply and we'll follow up."
+        )
+        rows = list((await session.execute(
+            select(HandoffRequest).where(
+                HandoffRequest.tenant_id == tenant_id, HandoffRequest.run_id == run_id,
+                HandoffRequest.status.in_(("open", "answering")),
+            )
+        )).scalars())
+        for h in rows:
+            if not h.channel_id:
+                continue
+            ch = (await session.execute(select(Channel).where(Channel.id == h.channel_id))).scalar_one_or_none()
+            reply_ctx = _channel_reply_context(h.reply_context)
+            if ch is not None and reply_ctx:
+                await _deliver(ch, reply_ctx, fallback)
+        await HandoffService.close_for_run(session, run_id, tenant_id, reason="HITL approval timed out")

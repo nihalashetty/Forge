@@ -22,7 +22,6 @@ from langchain_core.messages import AIMessage
 from forge.engine.context import CompileContext
 from forge.tools import rest
 
-
 REST_CFG = {
     "name": "get_thing",
     "description": "Fetch a thing.",

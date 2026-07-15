@@ -63,6 +63,21 @@ def _warn_note(warnings: list | None) -> str:
     return f" VALIDATION WARNINGS (fix if unintended): {msgs}"
 
 
+def _split_csv(s: str) -> list[str]:
+    """Comma-separated tool params -> a clean list of names."""
+    return [p.strip() for p in (s or "").split(",") if p.strip()]
+
+
+def _model_is_offline(model) -> bool:
+    """True for the offline `fake:` chat model, so the build judge can report 'unverified'
+    instead of a bogus 'pass' when no real provider model is configured (finding F7)."""
+    try:
+        from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+        return isinstance(model, GenericFakeChatModel)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _canvas(nodes: list[dict], edges: list[dict]) -> dict:
     # The frontend (canvasToFlow) reads node config from data.config and the node kind
     # from data.nodeType. Emitting the bare config as `data` (the old bug) made the
@@ -126,12 +141,12 @@ def build_assistant_tools(tenant_id: str, project_id: str, mutated: list) -> lis
         async with SessionLocal() as s:
             def names(rows, attr="name"):
                 return [getattr(r, attr) for r in rows] or ["(none)"]
-            tools = (await s.execute(select(Tool).where(Tool.project_id == project_id))).scalars().all()
-            wfs = (await s.execute(select(Workflow).where(Workflow.project_id == project_id))).scalars().all()
-            agents = (await s.execute(select(Agent).where(Agent.project_id == project_id))).scalars().all()
-            aps = (await s.execute(select(AuthProvider).where(AuthProvider.project_id == project_id))).scalars().all()
-            srcs = (await s.execute(select(KbSource).where(KbSource.project_id == project_id))).scalars().all()
-            qas = (await s.execute(select(QaPair).where(QaPair.project_id == project_id))).scalars().all()
+            tools = (await s.execute(select(Tool).where(Tool.tenant_id == tenant_id, Tool.project_id == project_id))).scalars().all()
+            wfs = (await s.execute(select(Workflow).where(Workflow.tenant_id == tenant_id, Workflow.project_id == project_id))).scalars().all()
+            agents = (await s.execute(select(Agent).where(Agent.tenant_id == tenant_id, Agent.project_id == project_id))).scalars().all()
+            aps = (await s.execute(select(AuthProvider).where(AuthProvider.tenant_id == tenant_id, AuthProvider.project_id == project_id))).scalars().all()
+            srcs = (await s.execute(select(KbSource).where(KbSource.tenant_id == tenant_id, KbSource.project_id == project_id))).scalars().all()
+            qas = (await s.execute(select(QaPair).where(QaPair.tenant_id == tenant_id, QaPair.project_id == project_id))).scalars().all()
             return json.dumps({
                 "tools": [f"{t.name} ({t.kind})" for t in tools] or ["(none)"],
                 "workflows": [f"{w.name} [{w.status}]" for w in wfs] or ["(none)"],
@@ -142,7 +157,7 @@ def build_assistant_tools(tenant_id: str, project_id: str, mutated: list) -> lis
     async def describe_workflow(name_or_id: str = "") -> str:
         """Describe a workflow's structure (its nodes and how they connect) so you can explain how it works. Pass a name or id; empty picks the active workflow."""
         async with SessionLocal() as s:
-            wfs = (await s.execute(select(Workflow).where(Workflow.project_id == project_id))).scalars().all()
+            wfs = (await s.execute(select(Workflow).where(Workflow.tenant_id == tenant_id, Workflow.project_id == project_id))).scalars().all()
             wf = None
             if name_or_id:
                 wf = next((w for w in wfs if w.id == name_or_id or w.name.lower() == name_or_id.lower()), None)
@@ -196,13 +211,25 @@ def build_assistant_tools(tenant_id: str, project_id: str, mutated: list) -> lis
         mutated.append({"kind": "tool", "name": t.name})
         return f"Created builtin tool '{t.name}' (id {t.id})."
 
-    async def create_rest_tool(name: str, url_template: str, method: str = "GET", description: str = "", projection_jmespath: str = "") -> str:
-        """Create a REST API tool. url_template may contain {placeholders} that become required path params. projection_jmespath (optional) trims the response before it reaches the model."""
+    async def create_rest_tool(name: str, url_template: str, method: str = "GET", description: str = "",
+                               projection_jmespath: str = "", query_params: str = "", header_params: str = "",
+                               body_params: str = "") -> str:
+        """Create a REST API tool. url_template may contain {placeholders} that become required
+        path params. query_params / header_params / body_params are OPTIONAL comma-separated
+        names that become LLM-visible query-string / header / JSON-body args (body_params implies
+        a JSON body - use with method=POST/PUT/PATCH). projection_jmespath (optional) trims the
+        response before it reaches the model."""
         import re
 
         from forge.services.tools import ToolService
-        params = re.findall(r"\{(\w+)\}", url_template)
-        fields = [{"path": p, "type": "string", "in": "path", "required": True, "llm_visible": True, "description": p} for p in params]
+
+        def _fields(names: str, loc: str, required: bool) -> list[dict]:
+            return [{"path": p, "type": "string", "in": loc, "required": required, "llm_visible": True, "description": p}
+                    for p in _split_csv(names)]
+
+        path_params = re.findall(r"\{(\w+)\}", url_template)
+        fields = [{"path": p, "type": "string", "in": "path", "required": True, "llm_visible": True, "description": p} for p in path_params]
+        fields += _fields(query_params, "query", False) + _fields(header_params, "header", False) + _fields(body_params, "body", False)
         cfg: dict[str, Any] = {
             "description": description or f"{method} {url_template}",
             "request": {"method": method.upper(), "url_template": url_template, "fields": fields, "headers": [{"name": "Accept", "value": "application/json"}]},
@@ -212,7 +239,112 @@ def build_assistant_tools(tenant_id: str, project_id: str, mutated: list) -> lis
         async with SessionLocal() as s:
             t = await ToolService.create(s, tenant_id, project_id, name=name.strip().replace(" ", "_"), kind="rest_api", config=cfg)
         mutated.append({"kind": "tool", "name": t.name})
-        return f"Created REST tool '{t.name}' ({method.upper()} {url_template}) with {len(fields)} path param(s)."
+        return f"Created REST tool '{t.name}' ({method.upper()} {url_template}) with {len(fields)} param(s)."
+
+    async def create_graphql_tool(name: str, endpoint: str, query: str, variables: str = "",
+                                  description: str = "", projection_jmespath: str = "") -> str:
+        """Create a GraphQL tool. `query` is the GraphQL document; `variables` is an OPTIONAL
+        comma-separated list of variable names that become LLM-visible args, sent as the GraphQL
+        `variables`. projection_jmespath (optional) trims the response before it reaches the model."""
+        from forge.services.tools import ToolService
+        var_fields = [{"path": v, "type": "string", "required": True, "llm_visible": True, "description": v}
+                      for v in _split_csv(variables)]
+        cfg: dict[str, Any] = {
+            "description": description or f"GraphQL {endpoint}",
+            "endpoint": endpoint, "query": query, "variables": var_fields,
+            "response": {"projection_jmespath": projection_jmespath} if projection_jmespath else {},
+            "timeout_seconds": 30,
+        }
+        async with SessionLocal() as s:
+            t = await ToolService.create(s, tenant_id, project_id, name=name.strip().replace(" ", "_"), kind="graphql", config=cfg)
+        mutated.append({"kind": "tool", "name": t.name})
+        return f"Created GraphQL tool '{t.name}' (POST {endpoint}) with {len(var_fields)} variable(s)."
+
+    async def create_sql_tool(name: str, query: str, connection_ref: str = "", description: str = "",
+                              read_only: bool = True, max_rows: int = 100, arg_names: str = "") -> str:
+        """Create a SQL tool that runs a parameterized `query` against a database. `connection_ref`
+        is a secret ref (e.g. secret://proj/db_url) holding the connection URL - the user fills it
+        in afterward. `arg_names` is an OPTIONAL comma-separated list of LLM-visible query-parameter
+        names. read_only rejects writes; max_rows caps the result set."""
+        from forge.services.tools import ToolService
+        nm = name.strip().replace(" ", "_")
+        props = {a: {"type": "string"} for a in _split_csv(arg_names)}
+        cfg: dict[str, Any] = {
+            "name": nm, "description": description or "SQL query tool", "query": query,
+            "read_only": bool(read_only), "max_rows": int(max_rows),
+            "args_schema": {"type": "object", "properties": props, "required": list(props)} if props else {},
+        }
+        if connection_ref:
+            cfg["connection_ref"] = connection_ref
+        async with SessionLocal() as s:
+            t = await ToolService.create(s, tenant_id, project_id, name=nm, kind="sql", config=cfg)
+        mutated.append({"kind": "tool", "name": t.name})
+        note = "" if connection_ref else " Add a connection secret (connection_ref) in Auth/Secrets before it can run."
+        return f"Created SQL tool '{t.name}' (read_only={read_only}, max_rows={max_rows}, {len(props)} arg(s)).{note}"
+
+    async def create_code_tool(name: str, source: str, description: str = "", arg_names: str = "",
+                               timeout_seconds: int = 5) -> str:
+        """Create a sandboxed Python code tool. `source` is the Python body to execute; `arg_names`
+        is an OPTIONAL comma-separated list of LLM-visible argument names available to the code. The
+        code runs in the platform sandbox with a timeout."""
+        from forge.services.tools import ToolService
+        nm = name.strip().replace(" ", "_")
+        props = {a: {"type": "string"} for a in _split_csv(arg_names)}
+        cfg: dict[str, Any] = {
+            "name": nm, "description": description or "Python code tool", "language": "python",
+            "source": source, "timeout_seconds": int(timeout_seconds),
+            "args_schema": {"type": "object", "properties": props, "required": list(props)} if props else {},
+        }
+        async with SessionLocal() as s:
+            t = await ToolService.create(s, tenant_id, project_id, name=nm, kind="code", config=cfg)
+        mutated.append({"kind": "tool", "name": t.name})
+        return f"Created code tool '{t.name}' (python, timeout {timeout_seconds}s, {len(props)} arg(s))."
+
+    async def create_mcp_tool(name: str, url: str, transport: str = "http", headers_ref: str = "") -> str:
+        """Register an EXTERNAL MCP server so its tools become available to agents. `url` is the
+        server endpoint; `transport` is 'http' (default) or 'sse'; `headers_ref` (optional) is a
+        secret ref for auth headers. The server's tools are discovered at run time and can be
+        attached to an agent."""
+        from forge.models import McpClient
+        nm = name.strip().replace(" ", "_")
+        async with SessionLocal() as s:
+            m = McpClient(tenant_id=tenant_id, project_id=project_id, name=nm, transport=(transport or "http"),
+                          url=url, headers_ref=headers_ref or None, enabled=True)
+            s.add(m)
+            await s.commit()
+            await s.refresh(m)
+        mutated.append({"kind": "mcp_client", "name": m.name})
+        return f"Registered MCP server '{m.name}' ({transport} {url}). Its tools are discovered at run time; attach them to an agent."
+
+    async def create_component(name: str, html: str, title: str = "", description: str = "",
+                               css: str = "", props_schema_json: str = "", sample_props_json: str = "") -> str:
+        """Create OR UPDATE (idempotent by name) a generative-UI component: sandboxed HTML/CSS the
+        agent renders as a widget. `props_schema_json` (a JSON-Schema object) describes the props
+        the agent must supply; `sample_props_json` is example props for the preview. Attach it to
+        an agent (config.components) so the model can call it as a widget-tool."""
+        from forge.models import Component
+        from forge.services.components import ComponentService
+        nm = name.strip().replace(" ", "_")
+        try:
+            props_schema = json.loads(props_schema_json) if props_schema_json else {}
+            sample = json.loads(sample_props_json) if sample_props_json else {}
+        except json.JSONDecodeError as e:
+            return f"ERROR: props_schema_json/sample_props_json must be valid JSON: {e}"
+        async with SessionLocal() as s:
+            existing = (await s.execute(select(Component).where(
+                Component.tenant_id == tenant_id, Component.project_id == project_id, Component.name == nm
+            ))).scalar_one_or_none()
+            if existing:
+                comp = await ComponentService.update(s, existing, title=title or None, description=description,
+                                                     props_schema=props_schema, html=html, css=css, sample_props=sample)
+                verb = "Updated"
+            else:
+                comp = await ComponentService.create(s, tenant_id, project_id, name=nm, title=title or None,
+                                                     description=description, props_schema=props_schema, html=html,
+                                                     css=css, sample_props=sample)
+                verb = "Created"
+        mutated.append({"kind": "component", "name": comp.name})
+        return f"{verb} component '{comp.name}'. Attach it to an agent (config.components) to let the model render it as a widget."
 
     async def create_auth_provider(name: str, kind: str = "bearer") -> str:
         """Create an auth provider from a template. kind: bearer, api_key, basic, oauth2_client_credentials, or csrf_session. The user can fill in secrets afterward."""
@@ -564,9 +696,10 @@ def build_assistant_tools(tenant_id: str, project_id: str, mutated: list) -> lis
 
     async def evaluate_build(user_request: str, what_was_built: str, test_results: str) -> str:
         """LLM judge for your own work: grades whether what you built actually satisfies the
-        user's request, given the test_workflow results. Returns {verdict: pass|fail,
-        issues: [...], next_steps: [...]}. Call this AFTER test_workflow; if the verdict is
-        'fail', fix the issues and re-test before reporting success."""
+        user's request, given the test_workflow results. Returns {verdict: pass|fail|unverified,
+        issues: [...], next_steps: [...]}. 'unverified' means NO real model was available to judge
+        (offline) - it is NOT a pass. Call this AFTER test_workflow; if the verdict is 'fail', fix
+        the issues and re-test before reporting success."""
         schema = {
             "title": "BuildEvaluation",
             "type": "object",
@@ -580,6 +713,14 @@ def build_assistant_tools(tenant_id: str, project_id: str, mutated: list) -> lis
         async with SessionLocal() as s:
             ctx = await build_compile_context(s, tenant_id=tenant_id, project_id=project_id)
         model = resolve_model(_assistant_model_ref(ctx), ctx)
+        # Offline (fake) model can't actually judge anything - returning 'pass' would be a false
+        # green. Report 'unverified' so the caller knows the build was NOT independently checked (F7).
+        if _model_is_offline(model):
+            return json.dumps({
+                "verdict": "unverified",
+                "issues": ["No real model configured; ran on the offline model, so the build was NOT independently verified."],
+                "next_steps": ["Add a provider API key in project settings, then re-run evaluate_build; meanwhile self-review the test_workflow results."],
+            })
         prompt = (
             "You are a strict QA judge for an AI-workflow build. Decide if the build satisfies the request.\n"
             f"USER REQUEST:\n{user_request}\n\nWHAT WAS BUILT:\n{what_was_built}\n\n"
@@ -591,8 +732,8 @@ def build_assistant_tools(tenant_id: str, project_id: str, mutated: list) -> lis
         try:
             res = await model.with_structured_output(schema).ainvoke(prompt)
             return json.dumps(res if isinstance(res, dict) else getattr(res, "__dict__", {"verdict": "fail", "issues": ["judge returned an unexpected shape"]}))
-        except Exception as e:  # noqa: BLE001 - judge unavailable (offline model)
-            return json.dumps({"verdict": "pass", "issues": [f"judge unavailable ({e}); self-review the test results instead"]})
+        except Exception as e:  # noqa: BLE001 - judge call errored; inconclusive, NOT a pass
+            return json.dumps({"verdict": "unverified", "issues": [f"judge unavailable ({e}); self-review the test results instead"], "next_steps": []})
 
     async def delete_workflow(name_or_id: str) -> str:
         """Delete a workflow by its exact name or id (also removes its run history). Use this to
@@ -625,6 +766,11 @@ def build_assistant_tools(tenant_id: str, project_id: str, mutated: list) -> lis
         mk(create_agent_preset, "create_agent_preset"),
         mk(create_builtin_tool, "create_builtin_tool"),
         mk(create_rest_tool, "create_rest_tool"),
+        mk(create_graphql_tool, "create_graphql_tool"),
+        mk(create_sql_tool, "create_sql_tool"),
+        mk(create_code_tool, "create_code_tool"),
+        mk(create_mcp_tool, "create_mcp_tool"),
+        mk(create_component, "create_component"),
         mk(create_auth_provider, "create_auth_provider"),
         mk(add_qa_pair, "add_qa_pair"),
         mk(add_knowledge_text, "add_knowledge_text"),
@@ -644,7 +790,7 @@ by calling your tools, and you explain how Forge works.
 
 What you can do (use your tools to actually do these - don't just describe them):
 - Inspect the project (list_resources, describe_workflow) and the platform itself (list_node_types, get_node_schema, list_middleware_types - the LIVE node/middleware catalog; read these before building anything custom).
-- Create tools (create_rest_tool, create_builtin_tool - builtins include knowledge_search, which lets an agent search the knowledge base itself), reusable agent presets (create_agent_preset - takes instructions/model/tools), and auth providers (create_auth_provider).
+- Create tools of every kind: create_rest_tool (path/query/header/body params, any method), create_graphql_tool, create_sql_tool, create_code_tool (sandboxed Python), create_mcp_tool (register an external MCP server), and create_builtin_tool (builtins include knowledge_search, which lets an agent search the knowledge base itself). Also reusable agent presets (create_agent_preset - takes instructions/model/tools), auth providers (create_auth_provider), and generative-UI widgets (create_component - sandboxed HTML/CSS the agent renders, attached via an agent's config.components).
 - Grow the knowledge base (add_qa_pair - `kind` is a free-form category; add_knowledge_text - `folder` organizes documents).
 - Build workflows (all idempotent by name):
   • create_grounded_workflow - start → retrieval (BOTH docs + Q&A) → grounded agent → end. Use for "answer from my knowledge base" chatbots, including "check my Q&A/FAQs and the knowledge base" - the retrieval step pulls both. HITL options: review_before_reply=True (human approves the draft before it's final) and approve_tools='a, b' (those tool calls pause for approval).

@@ -3,7 +3,7 @@
 Forge is a self‑hosted platform for **building, testing, and shipping AI agents and
 workflows** - visually, without writing framework code. You wire together nodes (agents,
 tools, knowledge, logic) on a canvas, ground them in your own data, connect them to your
-systems, and deploy them to email, Microsoft Teams, an API, or as an MCP
+systems, and deploy them to email, an API, or as an MCP
 server. It runs on the open‑source LangChain/LangGraph engine; nothing is sent to a
 third‑party orchestration service.
 
@@ -39,7 +39,7 @@ knowledge, and settings live together and are isolated from other projects.
 | **Tools** | Capabilities an agent can call: REST, GraphQL, Code, SQL, MCP, built‑ins. |
 | **Auth Providers** | Reusable credential strategies (Bearer, API key, OAuth…) tools attach to. |
 | **Knowledge** | Documents + Q&A that ground answers (RAG). Add text, URLs, files, or crawl a site. |
-| **Channels** | Deploy a workflow to a surface: email or Microsoft Teams. |
+| **Channels** | Deploy a workflow to an email surface. |
 | **Triggers** | Event entry points - webhook URLs, schedules, pollers. |
 | **Evaluations** | Test datasets (input + expected) scored against a workflow. |
 | **Agent inbox** | Live conversations escalated to a human - reply to resume the run. |
@@ -59,7 +59,7 @@ knowledge, and settings live together and are isolated from other projects.
 - **Tool** - an external capability an agent (or a `tool_call` node) can invoke.
 - **Knowledge** - your documents + Q&A pairs, embedded for semantic search (RAG).
 - **Trigger** - what *starts* a workflow (a person chatting, a webhook, a schedule…).
-- **Channel** - where a workflow is *deployed* (email, Teams).
+- **Channel** - where a workflow is *deployed* (email).
 - **State** - the data carried through a run (always includes `messages`; you can add keys).
 
 ---
@@ -105,7 +105,6 @@ live; **Run** (or the Playground) to test.
 | **Webhook** | An external system POSTs to the workflow's hook URL (shown on **Triggers** after publish). | `message_path`, `require_signature`, `secret_ref` |
 | **Schedule** | A recurring time (interval or cron) - sends a fixed message each run. | `every_minutes` or `cron`, `message` |
 | **Email** | Mail arrives in the connected mailbox (configure an Email **channel**). | `mailbox`, `reply` |
-| **Chat** | A message comes from Microsoft Teams. | `channel`, `greeting` |
 | **App Event** | Polling a URL returns a **new** item (deduped) - turns any feed into events. | `poll_url`, `interval_minutes`, `items_path`, `dedupe_key` |
 
 > **Error fallback:** set a workflow's `on_error.message` (via the Forge Assistant) to send a
@@ -177,8 +176,6 @@ referenced (never pasted into config) as `secret://proj/<name>` - set the values
 - **Email** - create an Email channel, enter **SMTP** (host/port/user/from + a password
   secret) for replies. Your provider (Mailgun/SendGrid/Postmark) posts inbound mail to the
   channel's inbound URL.
-- **Microsoft Teams** - create a Teams channel with your **Azure bot app id + password
-  secret**; point the bot's messaging endpoint at the channel's endpoint URL.
 - **Live handoff** - add a **Human Handoff** node; escalated chats appear in the **Agent
   inbox**, and your reply is delivered back over the same channel.
 

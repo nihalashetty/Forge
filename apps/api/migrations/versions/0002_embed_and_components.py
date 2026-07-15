@@ -75,7 +75,13 @@ def upgrade() -> None:
         # Table predates the uniqueness constraint - add it (create_all never alters).
         existing_uqs = {u["name"] for u in insp.get_unique_constraints("components")}
         if _UQ not in existing_uqs:
-            op.create_unique_constraint(_UQ, "components", ["tenant_id", "project_id", "name"])
+            if op.get_bind().dialect.name == "sqlite":
+                # SQLite cannot ALTER TABLE ADD CONSTRAINT. Batch mode copies the table,
+                # applies the constraint, and renames it back while preserving its data.
+                with op.batch_alter_table("components") as batch:
+                    batch.create_unique_constraint(_UQ, ["tenant_id", "project_id", "name"])
+            else:
+                op.create_unique_constraint(_UQ, "components", ["tenant_id", "project_id", "name"])
 
 
 def downgrade() -> None:

@@ -10,15 +10,15 @@ from __future__ import annotations
 
 from sqlalchemy import select
 
-from forge.knowledge.store import ChromaStore
+from forge.knowledge.store import make_store
 from forge.models import Memory
 from forge.services.knowledge import KnowledgeService
 
 
 class MemoryService:
     @staticmethod
-    def _store(embedder) -> ChromaStore:
-        return ChromaStore(collection=f"forge_mem_{embedder.dim}")
+    def _store(embedder):
+        return make_store(collection=f"forge_mem_{embedder.dim}")
 
     @staticmethod
     async def remember(session, tenant_id: str, project_id: str, text: str, *, scope: str = "default", kind: str = "note") -> Memory:
@@ -39,6 +39,8 @@ class MemoryService:
 
     @staticmethod
     async def recall(session, tenant_id: str, project_id: str, query: str, *, scope: str = "default", top_k: int = 5) -> list[str]:
+        from forge.config import settings
+
         embedder = await KnowledgeService.embedder_for_project(session, tenant_id, project_id)
         emb = await embedder.aembed_query(query)
         where = {"$and": [
@@ -49,7 +51,11 @@ class MemoryService:
             hits = MemoryService._store(embedder).query_where(embedding=emb, where=where, top_k=top_k)
         except Exception:  # noqa: BLE001
             return []
-        return [h.text for h in hits if h.text]
+        # Drop memories below the configured cosine floor so unrelated ones don't pollute the
+        # prompt. Default 0.0 = off (return the top_k nearest regardless of distance), preserving
+        # prior behavior; raise settings.memory_recall_min_score to filter (~0.3-0.5 for BGE).
+        floor = settings.memory_recall_min_score
+        return [h.text for h in hits if h.text and (floor <= 0.0 or h.score >= floor)]
 
     @staticmethod
     async def list(session, tenant_id: str, project_id: str, *, scope: str | None = None) -> list[Memory]:

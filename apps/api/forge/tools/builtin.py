@@ -16,12 +16,20 @@ _OPS = {
     ast.Pow: op.pow, ast.Mod: op.mod, ast.USub: op.neg, ast.FloorDiv: op.floordiv,
 }
 
+# Bound exponentiation so an expression like `9**9**9` can't build a multi-gigabyte int and
+# lock the interpreter (DoS). Ordinary calculator use stays well within these limits.
+_MAX_POW_EXPONENT = 100
+_MAX_POW_BASE = 1_000_000
+
 
 def _calc(node: ast.AST) -> float:
     if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
         return node.value
     if isinstance(node, ast.BinOp) and type(node.op) in _OPS:
-        return _OPS[type(node.op)](_calc(node.left), _calc(node.right))
+        left, right = _calc(node.left), _calc(node.right)
+        if isinstance(node.op, ast.Pow) and (abs(right) > _MAX_POW_EXPONENT or abs(left) > _MAX_POW_BASE):
+            raise ValueError("exponent too large")
+        return _OPS[type(node.op)](left, right)
     if isinstance(node, ast.UnaryOp) and type(node.op) in _OPS:
         return _OPS[type(node.op)](_calc(node.operand))
     raise ValueError("Unsupported expression")
@@ -37,6 +45,17 @@ class _TimeArgs(BaseModel):
 
 class _FetchArgs(BaseModel):
     url: str = Field(description="URL to fetch")
+
+
+def _memory_scope(ctx) -> str:
+    """Per-end-user long-term-memory partition. Without this every end user of a deployed
+    multi-user workflow shares one project-global memory pool, so user A's remembered
+    facts (preferences, account details) are recalled for user B - a privacy leak. Falls
+    back to 'default' for anonymous / internal (operator) runs, preserving prior behavior
+    for single-user setups."""
+    eu = getattr(ctx, "end_user", None) or {}
+    uid = str(eu.get("id") or "").strip()
+    return f"user:{uid}" if uid else "default"
 
 
 def build_builtin_tool(cfg: dict, ctx):
@@ -84,6 +103,8 @@ def build_builtin_tool(cfg: dict, ctx):
 
         async def ksearch(query: str, folder: str = "", top_k: int = 4) -> str:
             from forge.db.base import SessionLocal
+            from forge.knowledge.embeddings import DEFAULT_MIN_SCORE
+            from forge.knowledge.store import citation_for
             from forge.services.knowledge import KnowledgeService
 
             async with SessionLocal() as s:
@@ -96,7 +117,9 @@ def build_builtin_tool(cfg: dict, ctx):
                     )
                 except Exception:  # noqa: BLE001 - store empty / not ready
                     hits = []
-                hits = [h for h in hits if h.score >= 0.18]
+                # Vector-only path here, so Hit.score IS the cosine; floor at the calibrated
+                # default so an off-topic query returns nothing (agent then says it doesn't know).
+                hits = [h for h in hits if h.score >= DEFAULT_MIN_SCORE]
                 try:
                     qa = await KnowledgeService.top_qa(
                         s, ctx.tenant_id, ctx.project_id, query, top_k=3, threshold=0.3,
@@ -104,7 +127,8 @@ def build_builtin_tool(cfg: dict, ctx):
                     )
                 except Exception:  # noqa: BLE001
                     qa = []
-            blocks = [f"[Doc {i + 1} · score {h.score:.2f}] {h.text}" for i, h in enumerate(hits)]
+            blocks = [f"[Doc {i + 1}{f' · {c}' if (c := citation_for(h.metadata)) else ''} · score {h.score:.2f}] {h.text}"
+                      for i, h in enumerate(hits)]
             blocks += [f"[FAQ] Q: {q['question']}\nA: {q['answer']}" for q in qa]
             return "\n\n".join(blocks) if blocks else "No relevant knowledge found for this query."
 
@@ -123,7 +147,7 @@ def build_builtin_tool(cfg: dict, ctx):
             from forge.services.memory import MemoryService
 
             async with SessionLocal() as s:
-                await MemoryService.remember(s, ctx.tenant_id, ctx.project_id, text)
+                await MemoryService.remember(s, ctx.tenant_id, ctx.project_id, text, scope=_memory_scope(ctx))
             return "Saved to long-term memory."
 
         return StructuredTool.from_function(
@@ -141,7 +165,7 @@ def build_builtin_tool(cfg: dict, ctx):
             from forge.services.memory import MemoryService
 
             async with SessionLocal() as s:
-                mems = await MemoryService.recall(s, ctx.tenant_id, ctx.project_id, query, top_k=5)
+                mems = await MemoryService.recall(s, ctx.tenant_id, ctx.project_id, query, scope=_memory_scope(ctx), top_k=5)
             return "\n".join(f"- {m}" for m in mems) if mems else "No relevant memories found."
 
         return StructuredTool.from_function(
@@ -177,13 +201,27 @@ def build_knowledge_capability_tools(knowledge: dict | None, ctx) -> list:
     qa = knowledge.get("qa") or {}
 
     if rag.get("enabled"):
+        from forge.knowledge.embeddings import DEFAULT_MIN_SCORE, DEFAULT_RERANK_MIN_SCORE
+        from forge.knowledge.store import citation_for
+
         folders = rag.get("folders") or None
         top_k = int(rag.get("top_k") or 4)
-        min_score = rag.get("min_score", 0.18)
+        min_score = rag.get("min_score", DEFAULT_MIN_SCORE)
+        rerank_min_score = rag.get("rerank_min_score", DEFAULT_RERANK_MIN_SCORE)
         hybrid = bool(rag.get("hybrid", False))
         rerank = bool(rag.get("rerank", False))
         rerank_top_n = rag.get("rerank_top_n")
+        mmr = bool(rag.get("mmr", False))
+        mmr_lambda = rag.get("mmr_lambda", 0.5)
         scope = f" (folders: {', '.join(folders)})" if folders else ""
+
+        def _floor_ok(h) -> bool:
+            # Threshold on the correct scale: rerank -> cross-encoder sigmoid (rerank_min_score);
+            # hybrid -> real cosine in vector_score (Hit.score there is the fused rank); else cosine.
+            if rerank:
+                return rerank_min_score is None or h.score >= rerank_min_score
+            cos = h.vector_score if hybrid else h.score
+            return min_score is None or cos is None or cos >= min_score
 
         async def search_knowledge_base(query: str) -> str:
             from forge.db.base import SessionLocal
@@ -196,15 +234,13 @@ def build_knowledge_capability_tools(knowledge: dict | None, ctx) -> list:
                     hits = await KnowledgeService.search(
                         s, ctx.tenant_id, ctx.project_id, query, top_k=top_k,
                         folders=folders, embedder=embedder, embedding=vec, hybrid=hybrid,
-                        rerank=rerank, rerank_top_n=rerank_top_n,
+                        rerank=rerank, rerank_top_n=rerank_top_n, mmr=mmr, mmr_lambda=mmr_lambda,
                     )
                 except Exception:  # noqa: BLE001 - store empty / not ready
                     hits = []
-                # min_score is a cosine floor; a reranked score is a cross-encoder relevance on a
-                # different scale, so don't apply the cosine floor to reranked hits (see rag.py).
-                if not rerank:
-                    hits = [h for h in hits if h.score >= min_score]
-            blocks = [f"[Doc {i + 1} · score {h.score:.2f}] {h.text}" for i, h in enumerate(hits)]
+                hits = [h for h in hits if _floor_ok(h)]
+            blocks = [f"[Doc {i + 1}{f' · {c}' if (c := citation_for(h.metadata)) else ''} · score {h.score:.2f}] {h.text}"
+                      for i, h in enumerate(hits)]
             return "\n\n".join(blocks) if blocks else "No relevant documents found in the knowledge base for this query."
 
         tools.append(StructuredTool.from_function(

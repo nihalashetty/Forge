@@ -6,7 +6,10 @@
   "properties": {
     "over": { "type": "string", "description": "State key holding a list." },
     "child_node": { "type": "string", "description": "Node id to run per item via Send." },
-    "item_key": { "type": "string", "description": "State key the item is written to for each child." }
+    "item_key": { "type": "string", "description": "State key the item is written to for each child." },
+    "index_key": { "type": "string", "default": "_fanout_index", "description": "Key each child receives its 0-based input index under (also gets _fanout_total), so results can be reordered deterministically despite parallel completion order." },
+    "on_item_error": { "type": "string", "enum": ["fail", "skip"], "default": "fail", "description": "fail: one item's error aborts the whole batch (default). skip: isolate it - log and drop that item's contribution, keep the rest. (Also enabled by workflow error_policy 'continue'.)" },
+    "item_timeout_seconds": { "type": "number", "description": "Optional per-item timeout. Applies to async children / subgraphs (sync children can't be preempted). A timed-out item follows on_item_error." }
   },
   "$comment": "ports: in:json, out:control[]"
 }

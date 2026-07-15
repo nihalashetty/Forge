@@ -63,13 +63,40 @@ def _require_adapters():
     return MultiServerMCPClient
 
 
+async def _validate_mcp_url(url: str | None) -> None:
+    """Screen an external MCP server URL through the SSRF egress guard before connecting.
+    REST/GraphQL/SQL tools already do this; the MCP client URL was handed straight to the
+    transport, so a project editor could point it at 169.254.169.254 or an internal service
+    (and any secret headers would be sent there). Enforce the same default-deny here."""
+    from forge.util.ssrf import EgressPolicy, validate_url
+
+    if not url:
+        raise McpUnavailable("MCP server URL is required for http/sse transport")
+    await validate_url(url, EgressPolicy.from_settings())
+
+
 async def _connection_for(client_row: McpClient, tenant_id: str, project_id: str) -> dict:
+    from forge.config import settings
+
     transport = client_row.transport or "streamable_http"
     if transport in ("http", "streamable_http"):
+        await _validate_mcp_url(client_row.url)
         conn: dict[str, Any] = {"url": client_row.url, "transport": "streamable_http"}
     elif transport == "sse":
+        await _validate_mcp_url(client_row.url)
         conn = {"url": client_row.url, "transport": "sse"}
     elif transport == "stdio":
+        # stdio launches a LOCAL PROCESS -> arbitrary command execution on the API host. Gate it
+        # behind an explicit deployment flag (default off, so it can't be enabled by any editor in
+        # a multi-tenant install) and an optional command allow-list.
+        if not settings.enable_mcp_stdio:
+            raise McpUnavailable(
+                "MCP stdio transport is disabled. It launches a local process (arbitrary command "
+                "execution); enable FORGE_ENABLE_MCP_STDIO=true only on a trusted single-tenant install."
+            )
+        allowed = settings.mcp_stdio_allowed_commands
+        if allowed and (client_row.command or "") not in allowed:
+            raise McpUnavailable(f"MCP stdio command {client_row.command!r} is not in the allowed list.")
         args = client_row.args or {}
         conn = {"command": client_row.command, "args": args.get("args", []) if isinstance(args, dict) else args, "transport": "stdio"}
     else:

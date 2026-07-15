@@ -9,8 +9,15 @@ Rates should be re-verified against provider price pages periodically.
 from __future__ import annotations
 
 import logging
+import re
 
 log = logging.getLogger("forge.pricing")
+
+# Cache-tier multipliers on the INPUT rate (provider-typical, Anthropic-style): a cache READ
+# bills ~0.1x input, a cache WRITE ~1.25x. Applied when usage carries prompt-caching token
+# details so cost is right precisely when the platform's own caching middleware is active.
+_CACHE_READ_MULT = 0.1
+_CACHE_WRITE_MULT = 1.25
 
 # (input_usd_per_1m, output_usd_per_1m)
 PRICING: dict[str, tuple[float, float]] = {
@@ -62,17 +69,51 @@ def _bare(model: str) -> str:
     return model.split(":", 1)[1] if ":" in model else model
 
 
-def price(model: str | None, input_tokens: int, output_tokens: int) -> float:
+# Trailing snapshot/alias suffixes that don't change the price: a date stamp
+# (gpt-4o-2024-11-20, claude-3-5-sonnet-20241022) or an alias (-latest / -preview).
+_SNAPSHOT_SUFFIX = re.compile(r"-(?:\d{4}-\d{2}-\d{2}|\d{8}|latest|preview)$")
+
+
+def _resolve_rate(model: str) -> tuple[float, float] | None:
+    """Resolve a (input, output) rate, tolerating date-stamped / unlisted model ids so a
+    snapshot like `openai:gpt-4o-2024-11-20` doesn't silently price at $0. Order: exact id,
+    bare name, date/alias-stripped name, then the longest known key that is a prefix of the
+    bare name (covers new dated variants of a listed family)."""
+    merged = {**PRICING, **_OVERRIDES}
+    bare = _bare(model)
+    for key in (model, bare):
+        if key in merged:
+            return merged[key]
+    stripped = _SNAPSHOT_SUFFIX.sub("", bare)
+    if stripped != bare and stripped in merged:
+        return merged[stripped]
+    best: str | None = None
+    for key in merged:
+        if bare.startswith(key) and (best is None or len(key) > len(best)):
+            best = key
+    return merged[best] if best else None
+
+
+def price(
+    model: str | None, input_tokens: int, output_tokens: int,
+    *, cache_read_tokens: int = 0, cache_creation_tokens: int = 0,
+) -> float:
     if not model:
         return 0.0
-    rate = (
-        _OVERRIDES.get(model) or _OVERRIDES.get(_bare(model))
-        or PRICING.get(model) or PRICING.get(_bare(model))
-    )
+    rate = _resolve_rate(model)
     if not rate:
         if model not in _warned and not model.startswith("fake"):
             _warned.add(model)
             log.warning("No pricing entry for model %r - its runs report $0 cost. Add it to forge/tracing/pricing.py.", model)
         return 0.0
     in_rate, out_rate = rate
-    return (input_tokens / 1_000_000) * in_rate + (output_tokens / 1_000_000) * out_rate
+    # `input_tokens` (from usage_metadata) is the TOTAL prompt tokens and already includes any
+    # cache read/write tokens, so subtract them before pricing at the full input rate, then
+    # bill each cache tier at its multiplier - otherwise cached reads (cheap) are over-charged.
+    cached = min(cache_read_tokens + cache_creation_tokens, input_tokens)
+    base_input = max(0, input_tokens - cached)
+    cost = (base_input / 1_000_000) * in_rate
+    cost += (cache_read_tokens / 1_000_000) * in_rate * _CACHE_READ_MULT
+    cost += (cache_creation_tokens / 1_000_000) * in_rate * _CACHE_WRITE_MULT
+    cost += (output_tokens / 1_000_000) * out_rate
+    return cost

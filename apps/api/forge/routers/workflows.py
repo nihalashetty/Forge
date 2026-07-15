@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from forge.deps import current_tenant_id, get_session
+from forge.deps import CurrentUser, current_tenant_id, get_session, require_role
 from forge.schemas.dto import (
     CanvasSaveIn,
     ExecutableIn,
@@ -14,6 +14,7 @@ from forge.schemas.dto import (
     WorkflowOut,
     WorkflowUpdate,
 )
+from forge.services.versions import safe_snapshot
 from forge.services.workflows import WorkflowService
 
 router = APIRouter(prefix="/v1/projects/{project_id}/workflows", tags=["workflows"])
@@ -34,12 +35,15 @@ async def create_workflow(
     body: WorkflowCreate,
     session: AsyncSession = Depends(get_session),
     tenant_id: str = Depends(current_tenant_id),
+    user: CurrentUser = Depends(require_role("editor")),
 ):
-    return await WorkflowService.create(
+    wf = await WorkflowService.create(
         session, tenant_id, project_id,
         name=body.name, description=body.description,
         executable=body.executable, canvas=body.canvas,
     )
+    await safe_snapshot(session, "workflow", wf, author=user)
+    return wf
 
 
 @router.post("/validate", response_model=ValidateOut)
@@ -68,6 +72,7 @@ async def update_workflow(
     body: WorkflowUpdate,
     session: AsyncSession = Depends(get_session),
     tenant_id: str = Depends(current_tenant_id),
+    user: CurrentUser = Depends(require_role("editor")),
 ):
     wf = await WorkflowService.get(session, tenant_id, workflow_id)
     if wf is None or wf.project_id != project_id:
@@ -75,7 +80,9 @@ async def update_workflow(
     name = body.name.strip() if body.name is not None else None
     if body.name is not None and not name:
         raise HTTPException(422, "Workflow name is required")
-    return await WorkflowService.update(session, wf, name=name, description=body.description)
+    wf = await WorkflowService.update(session, wf, name=name, description=body.description)
+    await safe_snapshot(session, "workflow", wf, author=user)
+    return wf
 
 
 @router.put("/{workflow_id}/executable", response_model=ValidateOut)
@@ -85,11 +92,14 @@ async def update_executable(
     body: ExecutableIn,
     session: AsyncSession = Depends(get_session),
     tenant_id: str = Depends(current_tenant_id),
+    user: CurrentUser = Depends(require_role("editor")),
 ):
     wf = await WorkflowService.get(session, tenant_id, workflow_id)
     if wf is None:
         raise HTTPException(404, "Workflow not found")
     result = await WorkflowService.update_executable(session, wf, body.executable, require_valid=True)
+    if result.valid:
+        await safe_snapshot(session, "workflow", wf, author=user)
     return ValidateOut(valid=result.valid, errors=result.errors, warnings=result.warnings)
 
 
@@ -99,6 +109,7 @@ async def publish_workflow(
     workflow_id: str,
     session: AsyncSession = Depends(get_session),
     tenant_id: str = Depends(current_tenant_id),
+    user: CurrentUser = Depends(require_role("editor")),
 ):
     """Validate the stored executable and mark the workflow active (a published version)."""
     wf = await WorkflowService.get(session, tenant_id, workflow_id)
@@ -107,11 +118,29 @@ async def publish_workflow(
     result = WorkflowService.validate(wf.executable or {})
     if not result.valid:
         raise HTTPException(422, detail={"errors": result.errors})
+    # Governance: reject publishing a workflow that uses a chat model the project's
+    # allowed_models forbids. Admission (services/budget.enforce_project_budget) validates the
+    # run's model at runtime; this catches EVERY per-node model before the workflow goes live.
+    # No-op unless the project configures an allow-list.
+    from sqlalchemy import select
+
+    from forge.models import Project
+    from forge.services.budget import disallowed_workflow_models
+
+    proj = (await session.execute(
+        select(Project).where(Project.tenant_id == tenant_id, Project.id == project_id)
+    )).scalar_one_or_none()
+    bad = disallowed_workflow_models(proj.config if proj else None, wf.executable or {})
+    if bad:
+        raise HTTPException(422, detail={"errors": [
+            f"model {m!r} is not in this project's allowed_models" for m in bad
+        ]})
     wf.status = "active"
     wf.active_version = (wf.active_version or 1) + 1
     await session.commit()
     await session.refresh(wf)
     await WorkflowService._sync_triggers(session, wf)  # (re)register webhook/schedule/etc.
+    await safe_snapshot(session, "workflow", wf, author=user)
     return wf
 
 
@@ -121,6 +150,7 @@ async def delete_workflow(
     workflow_id: str,
     session: AsyncSession = Depends(get_session),
     tenant_id: str = Depends(current_tenant_id),
+    _: CurrentUser = Depends(require_role("editor")),
 ):
     wf = await WorkflowService.get(session, tenant_id, workflow_id)
     if wf is None:
@@ -135,9 +165,11 @@ async def save_canvas(
     body: CanvasSaveIn,
     session: AsyncSession = Depends(get_session),
     tenant_id: str = Depends(current_tenant_id),
+    user: CurrentUser = Depends(require_role("editor")),
 ):
     wf = await WorkflowService.get(session, tenant_id, workflow_id)
     if wf is None:
         raise HTTPException(404, "Workflow not found")
     result = await WorkflowService.save_canvas(session, wf, body.canvas, body.executable)
+    await safe_snapshot(session, "workflow", wf, author=user)
     return ValidateOut(valid=result.valid, errors=result.errors, warnings=result.warnings)

@@ -215,17 +215,50 @@ export function AgentConfig({ config, onChange, tools = [], agents = [], folders
         <MiddlewareStack stack={config.middleware || []} onChange={(mw) => set({ middleware: mw })} />
       </CollapsibleSection>
 
-      {flavor === "deep_agent" && (
-        <Section label="Deep Agent">
-          <div className="row gap3 wrap">
-            <label className="row gap2"><Toggle on={config.planning !== false} onChange={(v) => set({ planning: v })} /><span className="t-body-sm">Planning (write_todos)</span></label>
-          </div>
-          <div className="field-help">Subagents, filesystem backend, and sandbox are configured in the full Deep Agent panel.</div>
-        </Section>
-      )}
+      {flavor === "deep_agent" && <DeepAgentPanel config={config} set={set} />}
       </>
       )}
     </div>
+  );
+}
+
+/* Deep Agent harness config: planning + filesystem + sandbox, plus a JSON escape hatch for
+   subagents. Replaces the old dead-end hint that pointed at a non-existent panel. */
+function DeepAgentPanel({ config, set }: { config: Cfg; set: (patch: Cfg) => void }) {
+  const fs = config.filesystem || {};
+  const sandbox = config.sandbox || {};
+  return (
+    <Section label="Deep Agent">
+      <label className="row gap2" style={{ cursor: "pointer" }}>
+        <Toggle on={config.planning !== false} onChange={(v) => set({ planning: v })} />
+        <span className="t-body-sm">Planning (write_todos)</span>
+      </label>
+
+      <CollapsibleSection label="Filesystem" hint="A virtual filesystem the agent can read/write across steps within a run.">
+        <Field label="Backend">
+          <select className="select" value={fs.backend || "memory"} onChange={(e) => set({ filesystem: { ...fs, backend: e.target.value } })}>
+            <option value="memory">In-memory (per run)</option>
+            <option value="none">None</option>
+          </select>
+        </Field>
+      </CollapsibleSection>
+
+      <CollapsibleSection label="Sandbox" hint="Run code steps in an isolated sandbox. Requires the remote-sandbox feature to be enabled in Settings → Advanced.">
+        <label className="row gap2" style={{ cursor: "pointer" }}>
+          <Toggle on={!!sandbox.enabled} onChange={(v) => set({ sandbox: { ...sandbox, enabled: v } })} />
+          <span className="t-body-sm">Enable sandbox for code execution</span>
+        </label>
+      </CollapsibleSection>
+
+      <CollapsibleSection label="Subagents (JSON)" hint='Named subagents the planner can delegate to. Each: { "name", "description", "prompt", "tools" }.'>
+        <textarea
+          className="textarea mono" rows={8} style={{ fontSize: 12 }}
+          defaultValue={JSON.stringify(config.subagents ?? [], null, 2)}
+          placeholder={'[\n  { "name": "researcher", "description": "Digs up facts", "prompt": "…", "tools": [] }\n]'}
+          onChange={(e) => { try { const v = e.target.value.trim(); set({ subagents: v ? JSON.parse(v) : undefined }); } catch { /* keep last valid */ } }}
+        />
+      </CollapsibleSection>
+    </Section>
   );
 }
 

@@ -5,6 +5,7 @@ import { ReactNode, useEffect, useState } from "react";
 import { Icon } from "../icons";
 import { CodeBlock, Field } from "../primitives";
 import { api } from "@/lib/api";
+import { EmbedPanel } from "./embed";
 
 /* Collapsible detail section - keeps the deep integration reference tucked away so the
    Connect screen stays scannable; expand only what you need. */
@@ -34,14 +35,25 @@ function Collapse({ title, sub, defaultOpen = false, children }: { title: string
 function FrameRow({ event, children }: { event: string; children: ReactNode }) {
   return (
     <div className="row gap2" style={{ alignItems: "baseline", padding: "5px 0", borderTop: "1px solid var(--line)" }}>
-      <span className="mono-sm" style={{ minWidth: 92, flex: "none", color: "var(--io-tool)" }}>{event}</span>
+      <span className="mono-sm" style={{ minWidth: 92, flex: "none", color: "var(--fg-2)" }}>{event}</span>
       <span className="t-caption fg-1">{children}</span>
     </div>
   );
 }
 
+/* Left secondary-nav sections (mirrors the Settings screen layout) so the Connect screen
+   is navigable instead of one long scroll. */
+type ConnSection = "run" | "reference" | "mcp" | "embed";
+const CONN_SECTIONS: { id: ConnSection; label: string; icon: string; sub: string }[] = [
+  { id: "run", label: "Run API", icon: "bolt", sub: "Call this project's workflow from your backend over one endpoint." },
+  { id: "reference", label: "Integration reference", icon: "traces", sub: "The wire format for streaming and non-streaming responses." },
+  { id: "mcp", label: "MCP server", icon: "connect", sub: "Expose this project's tools to Claude Desktop, Cursor, or VS Code." },
+  { id: "embed", label: "Embed", icon: "grid", sub: "Drop this project's chatbot into any website as a widget." },
+];
+
 /* ============ CONNECT (MCP) ============ */
 export function ConnectScreen({ project }: { project: any }) {
+  const [section, setSection] = useState<ConnSection>("run");
   const [tools, setTools] = useState<any[]>([]);
   const [apiKey, setApiKey] = useState("");
   const [save, setSave] = useState<"idle" | "saving" | "saved">("idle");
@@ -138,14 +150,35 @@ export function ConnectScreen({ project }: { project: any }) {
   }
   const genKey = () => saveKey("fmcp_" + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2));
 
+  const activeMeta = CONN_SECTIONS.find((s) => s.id === section)!;
   return (
-    <div className="scroll-y" style={{ flex: 1, padding: "24px 28px" }}>
-      <div className="fade-up" style={{ maxWidth: 820, margin: "0 auto" }}>
-        <div className="t-display" style={{ marginBottom: 4 }}>Connect</div>
-        <div className="fg-1" style={{ marginBottom: 18 }}>Integrate this project: call its workflows from your backend over the run API, or expose its tools over MCP.</div>
+    <div className="col" style={{ flex: 1, minHeight: 0 }}>
+      <div className="row" style={{ flex: 1, minHeight: 0, alignItems: "stretch" }}>
+        {/* secondary nav (same pattern as Settings) */}
+        <nav className="scroll-y" style={{ width: 224, flex: "none", borderRight: "1px solid var(--line)", background: "var(--bg-1)", padding: 10 }}>
+          <div className="t-micro" style={{ padding: "6px 8px 8px" }}>Connect</div>
+          {CONN_SECTIONS.map((s) => {
+            const on = section === s.id;
+            return (
+              <button key={s.id} onClick={() => setSection(s.id)} className={"sidenav-item" + (on ? " active" : "")}
+                style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", height: 34, padding: "0 10px", marginBottom: 1, borderRadius: 7, border: "none", cursor: "pointer", textAlign: "left", color: on ? "var(--accent)" : "var(--fg-1)", fontSize: 13, fontWeight: on ? 600 : 500, fontFamily: "var(--font-ui)" }}>
+                <Icon name={s.icon as any} size={16} style={{ flex: "none" }} />
+                <span className="grow truncate">{s.label}</span>
+              </button>
+            );
+          })}
+        </nav>
 
-        {/* ---- Run API: ONE endpoint per project (server-to-server) ---- */}
-        <div className="t-h2" style={{ margin: "4px 0 10px" }}>Run this project from your backend</div>
+        {/* content */}
+        <div className="scroll-y grow" style={{ minWidth: 0 }}>
+          <div className="fade-up" style={{ maxWidth: 820, margin: "0 auto", padding: "24px 28px" }}>
+            <div style={{ marginBottom: 18 }}>
+              <div className="t-display">{activeMeta.label}</div>
+              <div className="fg-1" style={{ marginTop: 3 }}>{activeMeta.sub}</div>
+            </div>
+
+            {section === "run" && (
+              <>
         <div className="card" style={{ padding: 16, marginBottom: 14 }}>
           <div className="row gap3" style={{ flexWrap: "wrap" }}>
             <div style={{ flex: 1, minWidth: 240 }}>
@@ -177,9 +210,11 @@ export function ConnectScreen({ project }: { project: any }) {
           <div className="t-h3" style={{ marginBottom: 8 }}>Example (curl)</div>
           <CodeBlock code={curl} />
         </div>
+              </>
+            )}
 
-        {/* ---- Integration reference: collapsed so the screen stays readable ---- */}
-        <div className="t-h3" style={{ margin: "18px 0 8px", color: "var(--fg-1)" }}>How the integration works</div>
+            {section === "reference" && (
+              <>
         <div className="fg-2 t-caption" style={{ marginBottom: 10 }}>The same endpoint responds two ways depending on the <span className="mono-sm">stream</span> flag. Expand a section for the wire format.</div>
 
         <Collapse title="Streaming — stream: true" sub="Server-Sent Events (text/event-stream): tokens, steps and tool activity as they happen." defaultOpen>
@@ -222,10 +257,11 @@ export function ConnectScreen({ project }: { project: any }) {
           <div className="field-help" style={{ marginTop: 8 }}>Identify the end user for quotas/analytics with <span className="mono-sm">{"{ \"end_user\": { \"id\": \"user-123\" } }"}</span> in the body.</div>
         </Collapse>
 
-        <div style={{ marginBottom: 24 }} />
+              </>
+            )}
 
-        {/* ---- MCP server ---- */}
-        <div className="t-h2" style={{ margin: "4px 0 10px" }}>MCP server (Claude Desktop / Cursor / VS Code)</div>
+            {section === "mcp" && (
+              <>
         <div className="card" style={{ padding: 16, marginBottom: 14 }}>
           <div className="t-h3" style={{ marginBottom: 8 }}>MCP endpoint</div>
           <CodeBlock code={url} />
@@ -247,9 +283,15 @@ export function ConnectScreen({ project }: { project: any }) {
           <div className="t-h3" style={{ marginBottom: 10 }}>Exposed tools ({tools.filter((t) => t.enabled).length})</div>
           <div className="col gap2">
             {tools.map((t) => (
-              <div key={t.id} className="row gap2"><Icon name="tools" size={14} style={{ color: "var(--io-tool)" }} /><span className="mono-sm">{t.name}</span><span className="typechip">{t.kind}</span>{!t.enabled && <span className="pill pill-muted" style={{ height: 16 }}>disabled</span>}</div>
+              <div key={t.id} className="row gap2"><Icon name="tools" size={14} style={{ color: "var(--fg-2)" }} /><span className="mono-sm">{t.name}</span><span className="typechip">{t.kind}</span>{!t.enabled && <span className="pill pill-muted" style={{ height: 16 }}>disabled</span>}</div>
             ))}
             {tools.length === 0 && <div className="fg-2 t-caption">No tools to expose yet - add some on the Tools screen.</div>}
+          </div>
+        </div>
+              </>
+            )}
+
+            {section === "embed" && <EmbedPanel project={project} />}
           </div>
         </div>
       </div>

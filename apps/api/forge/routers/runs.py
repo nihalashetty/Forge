@@ -77,6 +77,7 @@ async def create_run(
 
     # Per-tenant DAILY quota, enforced atomically with run creation so concurrent POSTs
     # can't all pass a stale pre-insert count (audit F2).
+    from forge.services.budget import BudgetExceeded, ModelNotAllowed
     from forge.services.quota import QuotaExceeded, run_admission
     try:
         async with run_admission(session, tenant_id):
@@ -92,6 +93,10 @@ async def create_run(
             )
     except QuotaExceeded as e:
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, e.message) from e
+    except ModelNotAllowed as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, e.message) from e
+    except BudgetExceeded as e:
+        raise HTTPException(status.HTTP_402_PAYMENT_REQUIRED, e.message) from e
     out = RunOut(id=run.id, status=run.status, thread_id=run.thread_id)
     if idempotency_key:
         idempotency.put(f"run:{tenant_id}:{idempotency_key}", out)
@@ -106,10 +111,18 @@ async def stream_run(
     tenant_id: str = Depends(current_tenant_id),
     run_service: RunService = Depends(get_run_service),
     rc: dict | None = Depends(run_context),
+    last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
 ):
+    # Reconnect/reattach: a browser's EventSource resends the last id it saw as Last-Event-ID;
+    # we replay frames after it then follow live. Absent/garbage -> start from the beginning.
+    start_from = int(last_event_id) if (last_event_id or "").isdigit() else 0
+
     async def event_gen():
-        async for frame in run_service.stream(run_id=run_id, tenant_id=tenant_id, project_id=project_id, run_context=rc):
-            yield {"event": frame["event"], "data": json.dumps(frame["data"], default=str)}
+        async for frame in run_service.stream(
+            run_id=run_id, tenant_id=tenant_id, project_id=project_id, run_context=rc,
+            last_event_id=start_from,
+        ):
+            yield {"event": frame["event"], "data": json.dumps(frame["data"], default=str), "id": frame.get("id")}
 
     return EventSourceResponse(event_gen(), headers=SSE_HEADERS)
 
@@ -128,7 +141,12 @@ async def rerun(
 
     from forge.models import Run
 
-    orig = (await session.execute(select(Run).where(Run.tenant_id == tenant_id, Run.id == run_id))).scalar_one_or_none()
+    orig = (await session.execute(select(Run).where(
+        Run.tenant_id == tenant_id,
+        Run.project_id == project_id,
+        Run.workflow_id == workflow_id,
+        Run.id == run_id,
+    ))).scalar_one_or_none()
     if orig is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "run not found")
     run = await run_service.create_run(
@@ -149,3 +167,20 @@ async def resume_run(
     rc: dict | None = Depends(run_context),
 ):
     return await run_service.resume(run_id=run_id, tenant_id=tenant_id, value=body.value, project_id=project_id, run_context=rc)
+
+
+@router.post("/{run_id}/cancel")
+async def cancel_run(
+    project_id: str,
+    workflow_id: str,
+    run_id: str,
+    tenant_id: str = Depends(current_tenant_id),
+    run_service: RunService = Depends(get_run_service),
+    _: CurrentUser = Depends(get_current_user),
+):
+    """Cancel a run: mark it canceled and cooperatively stop it (frees the tenant-concurrency
+    slot). A terminal run (done/error/canceled) returns ok=False with its current status."""
+    result = await run_service.cancel_run(run_id=run_id, tenant_id=tenant_id, project_id=project_id)
+    if result.get("error") == "run not found":
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "run not found")
+    return result

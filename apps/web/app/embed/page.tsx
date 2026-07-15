@@ -41,7 +41,7 @@ function parseInterrupt(payload: any): { prompt: string; decisions: string[]; mi
 export default function EmbedWidget() {
   const [key, setKey] = useState<string | null>(null);
   const [sessionToken, setSessionToken] = useState<string | null>(null);
-  const [cfg, setCfg] = useState<{ name: string; workflow_id: string } | null>(null);
+  const [cfg, setCfg] = useState<{ name: string } | null>(null);
   const [compDefs, setCompDefs] = useState<Record<string, any>>({});
   const [err, setErr] = useState<string | null>(null);
   const [msgs, setMsgs] = useState<Msg[]>([]);

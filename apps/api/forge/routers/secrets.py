@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from forge.deps import current_tenant_id, get_session
+from forge.deps import CurrentUser, current_tenant_id, get_session, require_role
 from forge.schemas.dto import SecretCreate, SecretOut
 from forge.services.secrets import SecretService
 
@@ -18,7 +18,8 @@ async def list_secrets(project_id: str, session: AsyncSession = Depends(get_sess
 
 
 @router.post("", response_model=SecretOut, status_code=201)
-async def create_secret(project_id: str, body: SecretCreate, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id)):
+async def create_secret(project_id: str, body: SecretCreate, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id),
+                        _: CurrentUser = Depends(require_role("admin"))):
     return await SecretService.write(session, tenant_id, project_id, name=body.name, value=body.value, kind=body.kind)
 
 
@@ -29,7 +30,8 @@ async def secret_usage(project_id: str, name: str, session: AsyncSession = Depen
 
 
 @router.delete("/{name}", status_code=204)
-async def delete_secret(project_id: str, name: str, force: bool = False, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id)):
+async def delete_secret(project_id: str, name: str, force: bool = False, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id),
+                        _: CurrentUser = Depends(require_role("admin"))):
     if not force:
         refs = await SecretService.usage(session, tenant_id, project_id, name=name)
         if refs:

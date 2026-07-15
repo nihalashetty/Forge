@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from forge.deps import current_tenant_id, get_session
+from forge.deps import CurrentUser, current_tenant_id, get_session, require_role
 from forge.schemas.dto import (
     KbSourceCreate,
     KbSourceOut,
@@ -13,10 +13,12 @@ from forge.schemas.dto import (
     KnowledgeSearchIn,
     QaPairCreate,
     QaPairOut,
+    QaPairUpdate,
     RechunkBulkIn,
     RechunkIn,
 )
-from forge.services.knowledge import KnowledgeService
+from forge.services.knowledge import KnowledgeService, _strip_html
+from forge.services.versions import safe_snapshot
 from forge.util.tasks import spawn
 
 router = APIRouter(prefix="/v1/projects/{project_id}/knowledge", tags=["knowledge"])
@@ -25,6 +27,110 @@ qa_router = APIRouter(prefix="/v1/projects/{project_id}/qa-pairs", tags=["knowle
 # Shown on a source when the background ingest task can't be scheduled (in-flight ceiling
 # reached). Better to fail the source visibly than leave it stuck "queued" forever.
 _QUEUE_FULL_MSG = "ingest queue is full; please retry in a moment"
+
+# Upload DoS bounds (audit M3): cap the in-memory read and the PDF page count so a huge file or a
+# small decompression-bomb PDF can't exhaust the process. A global request-body-size limit is best
+# enforced at the reverse proxy / uvicorn in front of the app.
+_MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+_MAX_PDF_PAGES = 500
+
+# Extensions we KNOW are binary containers - decoding them as text yields mojibake garbage that
+# then gets embedded, so reject with a clear message instead (finding: binary files ingested as
+# latin-1). PDFs are handled separately (extractable text); these have no text-decode path here.
+_BINARY_EXTS = frozenset({
+    ".docx", ".xlsx", ".pptx", ".doc", ".xls", ".ppt", ".odt", ".ods", ".odp", ".rtf",
+    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".webp", ".ico", ".svgz",
+    ".zip", ".gz", ".tar", ".7z", ".rar", ".bz2", ".xz",
+    ".mp3", ".mp4", ".mov", ".avi", ".wav", ".flac", ".ogg", ".webm", ".mkv",
+    ".exe", ".dll", ".so", ".dylib", ".bin", ".class", ".jar", ".parquet", ".sqlite", ".db",
+})
+_SUPPORTED_HINT = "Supported: .txt, .md, .pdf, .csv, .json, .html and other UTF-8 text files."
+
+
+def _csv_to_text(text: str) -> str:
+    """CSV -> one header-qualified record per block ("col: value | col: value"), so each row is
+    self-describing after chunking instead of an opaque comma soup. Falls back to raw text if it
+    doesn't parse as tabular."""
+    import csv
+    import io
+
+    try:
+        rows = list(csv.reader(io.StringIO(text)))
+    except Exception:  # noqa: BLE001 - not valid CSV -> ingest as-is
+        return text
+    if len(rows) < 2:
+        return text
+    header = [h.strip() for h in rows[0]]
+    blocks: list[str] = []
+    for row in rows[1:]:
+        parts = [f"{(header[i] if i < len(header) else f'col{i + 1}')}: {v}"
+                 for i, v in enumerate(row) if str(v).strip()]
+        if parts:
+            blocks.append(" | ".join(parts))
+    return "\n\n".join(blocks) if blocks else text
+
+
+def _json_record(item) -> str:
+    import json
+
+    if isinstance(item, dict):
+        return " | ".join(
+            f"{k}: {v if isinstance(v, (str, int, float, bool)) else json.dumps(v, ensure_ascii=False)}"
+            for k, v in item.items()
+        )
+    return json.dumps(item, ensure_ascii=False)
+
+
+def _json_to_text(text: str) -> str:
+    """JSON -> one record per block. A list becomes one block per element; a top-level object
+    with a single list value expands that list (the common {"items": [...]} shape); otherwise the
+    object is one header-qualified block. Falls back to raw text if it doesn't parse."""
+    import json
+
+    try:
+        data = json.loads(text)
+    except Exception:  # noqa: BLE001 - not valid JSON -> ingest as-is
+        return text
+    if isinstance(data, dict):
+        list_vals = [v for v in data.values() if isinstance(v, list)]
+        if len(data) == 1 and list_vals:
+            data = list_vals[0]
+    if isinstance(data, list):
+        blocks = [_json_record(x) for x in data]
+        return "\n\n".join(b for b in blocks if b.strip()) or text
+    return _json_record(data)
+
+
+def _decode_upload(name: str, raw: bytes) -> str:
+    """Turn uploaded bytes into ingestible text, or raise 422. Rejects known binary containers
+    and null-byte binaries (finding: binaries decoded as latin-1 mojibake); strips HTML; parses
+    CSV/JSON into per-record, header-qualified text (finding: tabular ingested opaquely)."""
+    import os
+
+    ext = os.path.splitext(name.lower())[1]
+    if ext in _BINARY_EXTS:
+        raise HTTPException(422, f"'{ext}' files aren't a readable text format. {_SUPPORTED_HINT}")
+    # Null bytes are the strongest signal of a binary we don't recognize by extension.
+    if b"\x00" in raw:
+        raise HTTPException(422, f"File looks binary, not text. {_SUPPORTED_HINT}")
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        # Retry as latin-1 ONLY for genuinely-textual non-UTF-8 files; if the result is mostly
+        # unprintable it was binary after all -> reject rather than embed garbage.
+        text = raw.decode("latin-1", errors="replace")
+        printable = sum(c.isprintable() or c.isspace() for c in text)
+        if not text or printable / len(text) < 0.85:
+            raise HTTPException(422, f"File isn't a readable text format. {_SUPPORTED_HINT}") from None
+    if ext in (".html", ".htm"):
+        text = _strip_html(text)
+    elif ext == ".csv":
+        text = _csv_to_text(text)
+    elif ext == ".json":
+        text = _json_to_text(text)
+    if not text.strip():
+        raise HTTPException(422, "File is empty or not a readable text format.")
+    return text
 
 
 async def _queue_ingest(session, tenant_id: str, src, *, reingest: bool = False, label: str = "ingest") -> None:
@@ -40,8 +146,9 @@ async def list_sources(project_id: str, session: AsyncSession = Depends(get_sess
 
 
 @router.post("/sources", response_model=KbSourceOut, status_code=201)
-async def add_source(project_id: str, body: KbSourceCreate, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id)):
-    src = await KnowledgeService.create_source(session, tenant_id, project_id, kind=body.kind, name=body.name, uri=body.uri, text=body.text, folder=body.folder, chunking_strategy=body.chunking_strategy)
+async def add_source(project_id: str, body: KbSourceCreate, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id), user: CurrentUser = Depends(require_role("editor"))):
+    src = await KnowledgeService.create_source(session, tenant_id, project_id, kind=body.kind, name=body.name, uri=body.uri, text=body.text, folder=body.folder, chunking_strategy=body.chunking_strategy, meta=body.meta)
+    await safe_snapshot(session, "kb_source", src, author=user, label="added")
     # Ingest (fetch/chunk/embed) off the request: a real embedder takes seconds+ for a large
     # source, which would time out the HTTP call. The source returns as "queued"; the UI polls.
     await _queue_ingest(session, tenant_id, src)
@@ -56,31 +163,39 @@ async def upload_source(
     chunking_strategy: str = Form(""),
     session: AsyncSession = Depends(get_session),
     tenant_id: str = Depends(current_tenant_id),
+    user: CurrentUser = Depends(require_role("editor")),
 ):
     """Upload a document file (.txt/.md/.pdf and other text formats) into the knowledge base."""
-    raw = await file.read()
+    # Bound the in-memory read so an oversized upload can't exhaust memory (audit M3): read one byte
+    # past the cap to detect oversize without materializing the whole body.
+    raw = await file.read(_MAX_UPLOAD_BYTES + 1)
+    if len(raw) > _MAX_UPLOAD_BYTES:
+        raise HTTPException(413, f"file too large (max {_MAX_UPLOAD_BYTES // (1024 * 1024)} MB)")
     name = file.filename or "upload"
     lower = name.lower()
     if lower.endswith(".pdf"):
+        import io
+
+        from pypdf import PdfReader
         try:
-            import io
-
-            from pypdf import PdfReader
-
             reader = PdfReader(io.BytesIO(raw))
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(422, f"Could not read PDF: {e}") from e
+        # Cap page count: a small but deeply-compressed / many-page PDF can make extract_text
+        # explode CPU/memory (a decompression bomb) (audit M3).
+        if len(reader.pages) > _MAX_PDF_PAGES:
+            raise HTTPException(413, f"PDF has too many pages (max {_MAX_PDF_PAGES})")
+        try:
             text = "\n\n".join((page.extract_text() or "") for page in reader.pages).strip()
         except Exception as e:  # noqa: BLE001
             raise HTTPException(422, f"Could not read PDF: {e}") from e
         if not text:
             raise HTTPException(422, "PDF contains no extractable text (scanned image PDFs need OCR).")
     else:
-        try:
-            text = raw.decode("utf-8")
-        except UnicodeDecodeError:
-            text = raw.decode("latin-1", errors="replace")
-        if not text.strip():
-            raise HTTPException(422, "File is empty or not a readable text format.")
+        # Strip HTML, parse CSV/JSON into per-record text, and reject binaries with a clear 422.
+        text = _decode_upload(name, raw)
     src = await KnowledgeService.create_source(session, tenant_id, project_id, kind="file", name=name, text=text, folder=folder, chunking_strategy=(chunking_strategy or None))
+    await safe_snapshot(session, "kb_source", src, author=user, label="added")
     # The file bytes are fully read above; only the chunk+embed runs in the background so a
     # large upload doesn't block (and time out) the request. Returns "queued"; the UI polls.
     await _queue_ingest(session, tenant_id, src)
@@ -102,7 +217,8 @@ async def embedding_health(project_id: str, session: AsyncSession = Depends(get_
 @router.post("/sources/{source_id}/reingest")
 async def reingest_source(project_id: str, source_id: str, body: RechunkIn | None = None,
                           session: AsyncSession = Depends(get_session),
-                          tenant_id: str = Depends(current_tenant_id)):
+                          tenant_id: str = Depends(current_tenant_id),
+                          _: CurrentUser = Depends(require_role("editor"))):
     """Re-fetch + re-embed a source (re-crawl a site, or re-embed under the current model).
     An optional body overrides the chunking (strategy / size / overlap) before re-ingest."""
     from sqlalchemy import select
@@ -116,7 +232,8 @@ async def reingest_source(project_id: str, source_id: str, body: RechunkIn | Non
             src, chunking_strategy=body.chunking_strategy,
             chunk_size=body.chunk_size, chunk_overlap=body.chunk_overlap,
         )
-    # Mark pending + persist overrides, then re-embed off the request (see add_source).
+    # Mark pending + persist overrides, then re-embed off the request (see add_source). Re-embed /
+    # re-chunk is NOT snapshotted: it's frequent config churn, not an add/remove worth logging.
     src.status = "queued"
     await session.commit()
     await _queue_ingest(session, tenant_id, src, reingest=True, label="reingest")
@@ -125,7 +242,8 @@ async def reingest_source(project_id: str, source_id: str, body: RechunkIn | Non
 
 @router.post("/sources/rechunk")
 async def rechunk_sources(project_id: str, body: RechunkBulkIn, session: AsyncSession = Depends(get_session),
-                          tenant_id: str = Depends(current_tenant_id)):
+                          tenant_id: str = Depends(current_tenant_id),
+                          _: CurrentUser = Depends(require_role("editor"))):
     """Re-chunk a multi-selected set of sources with one shared set of overrides
     (strategy / size / overlap), then re-embed each (in the background). Tenant/project-scoped."""
     from sqlalchemy import select
@@ -152,8 +270,9 @@ async def rechunk_sources(project_id: str, body: RechunkBulkIn, session: AsyncSe
 
 
 @router.patch("/sources/{source_id}", response_model=KbSourceOut)
-async def update_source(project_id: str, source_id: str, body: dict, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id)):
-    """Move a source between folders (the only mutable field; content requires re-ingest)."""
+async def update_source(project_id: str, source_id: str, body: dict, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id), _: CurrentUser = Depends(require_role("editor"))):
+    """Move a source between folders (the only mutable field; content requires re-ingest).
+    Not snapshotted: a folder move is minor bookkeeping, not an add/remove worth logging."""
     from sqlalchemy import select
 
     from forge.models import KbSource
@@ -168,13 +287,15 @@ async def update_source(project_id: str, source_id: str, body: dict, session: As
 
 
 @router.delete("/sources/{source_id}", status_code=204)
-async def delete_source(project_id: str, source_id: str, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id)):
+async def delete_source(project_id: str, source_id: str, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id), user: CurrentUser = Depends(require_role("editor"))):
     from sqlalchemy import select
 
     from forge.models import KbSource
     src = (await session.execute(select(KbSource).where(KbSource.tenant_id == tenant_id, KbSource.id == source_id))).scalar_one_or_none()
     if src is None:
         raise HTTPException(404, "Source not found")
+    # Log the removal (name captured in the snapshot) before the row is gone.
+    await safe_snapshot(session, "kb_source", src, author=user, label="removed")
     await KnowledgeService.delete_source(session, src)
 
 
@@ -185,7 +306,7 @@ async def search(project_id: str, body: KnowledgeSearchIn, session: AsyncSession
 
 
 @router.post("/dedupe")
-async def dedupe_chunks(project_id: str, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id)):
+async def dedupe_chunks(project_id: str, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id), _: CurrentUser = Depends(require_role("editor"))):
     """Remove exact-duplicate chunks (identical text) project-wide, keeping one copy of each.
     Returns {removed, groups, sources_affected, remaining}."""
     return await KnowledgeService.dedupe_chunks(session, tenant_id, project_id)
@@ -224,16 +345,43 @@ async def list_qa_kinds(project_id: str, session: AsyncSession = Depends(get_ses
 
 
 @qa_router.post("", response_model=QaPairOut, status_code=201)
-async def add_qa(project_id: str, body: QaPairCreate, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id)):
-    return await KnowledgeService.create_qa(session, tenant_id, project_id, question=body.question, answer=body.answer, kind=body.kind, tags=body.tags)
+async def add_qa(project_id: str, body: QaPairCreate, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id), user: CurrentUser = Depends(require_role("editor"))):
+    qa = await KnowledgeService.create_qa(session, tenant_id, project_id, question=body.question, answer=body.answer, kind=body.kind, tags=body.tags)
+    await safe_snapshot(session, "qa_pair", qa, author=user, label="added")
+    return qa
 
 
-@qa_router.delete("/{qa_id}", status_code=204)
-async def delete_qa(project_id: str, qa_id: str, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id)):
+@qa_router.patch("/{qa_id}", response_model=QaPairOut)
+async def update_qa(project_id: str, qa_id: str, body: QaPairUpdate,
+                    session: AsyncSession = Depends(get_session),
+                    tenant_id: str = Depends(current_tenant_id),
+                    user: CurrentUser = Depends(require_role("editor"))):
     from sqlalchemy import select
 
     from forge.models import QaPair
-    qa = (await session.execute(select(QaPair).where(QaPair.tenant_id == tenant_id, QaPair.id == qa_id))).scalar_one_or_none()
+
+    qa = (await session.execute(select(QaPair).where(
+        QaPair.tenant_id == tenant_id, QaPair.project_id == project_id, QaPair.id == qa_id,
+    ))).scalar_one_or_none()
     if qa is None:
         raise HTTPException(404, "Q&A pair not found")
+    changes = body.model_dump(exclude_unset=True)
+    if changes.get("question") is not None and not changes["question"].strip():
+        raise HTTPException(422, "Question cannot be empty")
+    qa = await KnowledgeService.update_qa(session, qa, **changes)
+    await safe_snapshot(session, "qa_pair", qa, author=user, label="changed")
+    return qa
+
+
+@qa_router.delete("/{qa_id}", status_code=204)
+async def delete_qa(project_id: str, qa_id: str, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id), user: CurrentUser = Depends(require_role("editor"))):
+    from sqlalchemy import select
+
+    from forge.models import QaPair
+    qa = (await session.execute(select(QaPair).where(
+        QaPair.tenant_id == tenant_id, QaPair.project_id == project_id, QaPair.id == qa_id,
+    ))).scalar_one_or_none()
+    if qa is None:
+        raise HTTPException(404, "Q&A pair not found")
+    await safe_snapshot(session, "qa_pair", qa, author=user, label="removed")
     await KnowledgeService.delete_qa(session, qa)

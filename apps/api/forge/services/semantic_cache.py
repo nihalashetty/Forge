@@ -11,14 +11,21 @@ from __future__ import annotations
 import hashlib
 import time
 
-from forge.knowledge.store import ChromaStore
+from forge.config import settings
+from forge.knowledge.store import make_store
 from forge.services.knowledge import KnowledgeService
+
+# Cache defaults (env-overridable: FORGE_SEMANTIC_CACHE_THRESHOLD / _TTL_SECONDS). Threshold is
+# deliberately HIGH: a wrong cached answer to a not-really-equivalent question is worse than a
+# cache miss, so only near-identical paraphrases hit. Per-agent middleware config can override.
+CACHE_DEFAULT_THRESHOLD = settings.semantic_cache_threshold
+CACHE_DEFAULT_TTL_SECONDS = settings.semantic_cache_ttl_seconds
 
 
 class SemanticCacheService:
     @staticmethod
-    def _store(embedder) -> ChromaStore:
-        return ChromaStore(collection=f"forge_cache_{embedder.dim}")
+    def _store(embedder):
+        return make_store(collection=f"forge_cache_{embedder.dim}")
 
     @staticmethod
     def _id(tenant_id: str, project_id: str, scope: str, question: str) -> str:
@@ -60,3 +67,35 @@ class SemanticCacheService:
             )
         except Exception:  # noqa: BLE001 - cache write failure is non-fatal
             pass
+
+    @staticmethod
+    async def purge(session, tenant_id, project_id, *, scope: str | None = None,
+                    ttl: int = CACHE_DEFAULT_TTL_SECONDS) -> int:
+        """Delete cache entries older than `ttl` seconds for a tenant/project (optionally a
+        single scope). TTL is checked on read too, but stale rows otherwise accumulate forever
+        in Chroma (they still cost storage + widen every vector query), so this reclaims them.
+        Returns how many were purged. Non-fatal: a store error yields 0. `ttl<=0` purges all."""
+        embedder = await KnowledgeService.embedder_for_project(session, tenant_id, project_id)
+        store = SemanticCacheService._store(embedder)
+        clauses = [{"tenant_id": {"$eq": tenant_id}}, {"project_id": {"$eq": project_id}}]
+        if scope is not None:
+            clauses.append({"scope": {"$eq": scope}})
+        where = {"$and": clauses} if len(clauses) > 1 else clauses[0]
+        try:
+            rows = store.list_docs(where)
+        except Exception:  # noqa: BLE001
+            return 0
+        now = time.time()
+        ids = rows.get("ids") or []
+        metas = rows.get("metadatas") or []
+        expired = [
+            ids[i] for i in range(len(ids))
+            if ttl <= 0 or (now - float((metas[i] or {}).get("ts", 0))) > ttl
+        ]
+        if not expired:
+            return 0
+        try:
+            store.delete_ids(expired)
+        except Exception:  # noqa: BLE001
+            return 0
+        return len(expired)

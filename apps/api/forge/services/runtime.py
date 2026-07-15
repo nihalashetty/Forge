@@ -45,8 +45,13 @@ async def build_compile_context(
     session, *, tenant_id: str, project_id: str, checkpointer=None, store=None,
     end_user: dict | None = None, run_context: dict | None = None,
 ) -> CompileContext:
+    # Scope the project load by tenant too (audit H4): callers pass the CALLER's tenant_id, so a
+    # cross-tenant project_id resolves to None here (empty config) instead of loading another
+    # tenant's project. Belt-and-suspenders behind the router-level ownership check.
     project = (
-        await session.execute(select(Project).where(Project.id == project_id))
+        await session.execute(
+            select(Project).where(Project.id == project_id, Project.tenant_id == tenant_id)
+        )
     ).scalar_one_or_none()
     pconfig = (project.config or {}) if project else {}
 

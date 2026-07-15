@@ -6,6 +6,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Icon } from "../icons";
 import { Tile } from "../primitives";
+import { VersionHistory } from "../version-history";
 import { api, ComponentT } from "@/lib/api";
 import { ComponentRenderer } from "../component-renderer";
 
@@ -100,7 +101,7 @@ export function ComponentsScreen({ project, onOpen }: { project: any; onOpen: (c
     <div className="col grow scroll-y" style={{ minHeight: 0 }}>
       <div className="row spread" style={{ padding: "16px 20px", borderBottom: "1px solid var(--line)" }}>
         <div className="row gap2">
-          <Tile icon="grid" color="var(--io-vector)" size={30} />
+          <Tile icon="grid" color="var(--accent)" size={30} />
           <div>
             <div className="t-h2">Components</div>
             <div className="fg-2 t-caption">UI widgets the agent can render in chat - attached to agents like tools.</div>
@@ -116,7 +117,7 @@ export function ComponentsScreen({ project, onOpen }: { project: any; onOpen: (c
         {!loaded && <div className="fg-2 t-body-sm">Loading…</div>}
         {loaded && items.length === 0 && !err && (
           <div className="col center" style={{ minHeight: 220, gap: 8, color: "var(--fg-2)", textAlign: "center" }}>
-            <Tile icon="grid" color="var(--io-vector)" size={40} />
+            <Tile icon="grid" color="var(--accent)" size={40} />
             <div className="t-h3" style={{ color: "var(--fg-1)" }}>No components yet</div>
             <div className="t-caption" style={{ maxWidth: 380 }}>
               Author an HTML/CSS widget - a table, product card, or form - then attach it to an agent. The agent renders it in chat when relevant.
@@ -136,7 +137,7 @@ export function ComponentsScreen({ project, onOpen }: { project: any; onOpen: (c
               onClick={() => onOpen(c)}
             >
               <div className="row gap2" style={{ alignItems: "center" }}>
-                <Tile icon="grid" color="var(--io-vector)" size={26} />
+                <Tile icon="grid" color="var(--accent)" size={26} />
                 <div className="grow" style={{ minWidth: 0 }}>
                   <div className="t-h3 truncate">{c.title || c.name}</div>
                   <div className="mono-sm fg-2 truncate">{c.name}</div>
@@ -201,6 +202,7 @@ export function ComponentBuilderScreen({
   const [enabled, setEnabled] = useState(true);
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     if (!project?.id || !componentId) {
@@ -223,7 +225,7 @@ export function ComponentBuilderScreen({
         setLoaded(true);
       })
       .catch(() => setLoaded(true));
-  }, [project?.id, componentId]);
+  }, [project?.id, componentId, reloadKey]);
 
   const sample = useMemo(() => tryParse(sampleText), [sampleText]);
   const actionsParsed = useMemo(() => tryParse(actionsText), [actionsText]);
@@ -304,6 +306,7 @@ export function ComponentBuilderScreen({
             <span className={"toggle" + (enabled ? " on" : "")} onClick={() => setEnabled((v) => !v)} role="switch" aria-checked={enabled} />
             enabled
           </label>
+          {componentId && <VersionHistory entityType="component" entityId={componentId} entityLabel={name} onRestored={() => setReloadKey((k) => k + 1)} />}
           {componentId && (
             <button className="btn btn-danger btn-sm" onClick={del}>
               Delete

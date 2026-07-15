@@ -124,7 +124,7 @@ export function Avatar({ name, size = 26, color }: { name: string; size?: number
   const init = (name || "?").split(/\s|_|-/).filter(Boolean).slice(0, 2).map((s) => s[0]).join("").toUpperCase();
   const hue = useMemo(() => { let h = 0; for (const c of name || "") h = (h * 31 + c.charCodeAt(0)) % 360; return h; }, [name]);
   return (
-    <div style={{ width: size, height: size, borderRadius: "50%", flex: "none", background: color || `oklch(0.62 0.13 ${hue})`, color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: size * 0.4, fontWeight: 700, fontFamily: "var(--font-display)", letterSpacing: "-.02em" }}>
+    <div style={{ width: size, height: size, borderRadius: "50%", flex: "none", background: color || `oklch(0.58 0.045 ${hue})`, color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: size * 0.4, fontWeight: 700, fontFamily: "var(--font-display)", letterSpacing: "-.02em" }}>
       {init}
     </div>
   );

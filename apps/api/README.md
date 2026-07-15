@@ -49,7 +49,7 @@ apps/api/
     tools/               tool materialization (rest, graphql, code, sql, mcp, builtin) + projection
     auth_providers/      Auth Provider resolver (csrf_session, oauth2, bearer, ...)
     secrets/             Fernet-encrypted, reference-only secret store
-    channels/            outbound deploy surfaces (email, Microsoft Teams)
+    channels/            email deployment surface
     knowledge/           EmbeddingStore (Chroma), ingestion/crawl, splitter, hybrid + rerank
     tracing/             ForgeTracer callback + span sink + pricing + tool-I/O capture
     util/                cross-cutting helpers (SSRF guard, http client, rate limit, mailer, ...)

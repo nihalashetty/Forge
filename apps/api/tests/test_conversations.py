@@ -83,6 +83,29 @@ async def test_filter_by_actor_and_source():
     assert [c.thread_id for c in system] == ["thS"]
 
 
+async def test_search_matches_any_turn_and_keeps_the_full_conversation():
+    pid = _pid()
+    await _add_trace(project=pid, thread_id="match-user", actor="Alice", source="api",
+                     user="Find the quarterly invoice", ai="Here it is",
+                     started=datetime.utcnow() - timedelta(minutes=3))
+    await _add_trace(project=pid, thread_id="match-user", actor="Alice", source="api",
+                     user="Thanks", ai="You're welcome",
+                     started=datetime.utcnow() - timedelta(minutes=2))
+    await _add_trace(project=pid, thread_id="match-ai", actor="Bob", source="playground",
+                     user="What was the result?", ai="The needle is in this answer")
+    await _add_trace(project=pid, thread_id="miss", actor="Carol", source="api",
+                     user="Unrelated", ai="Nothing to see")
+
+    async with SessionLocal() as s:
+        user_match = await ConversationService.list(s, TENANT, pid, search="QUARTERLY")
+        ai_match = await ConversationService.list(s, TENANT, pid, search="needle")
+
+    assert [c.thread_id for c in user_match] == ["match-user"]
+    assert user_match[0].turns == 2
+    assert user_match[0].total_tokens == 20
+    assert [c.thread_id for c in ai_match] == ["match-ai"]
+
+
 async def test_turns_endpoint_returns_transcript_in_order():
     pid = _pid()
     await _add_trace(project=pid, thread_id="thT", actor="Al", source="api", user="first", ai="r1",
@@ -174,3 +197,20 @@ async def test_run_captures_source_and_transcript_end_to_end():
         assert turn["trace_id"]
         spans = (await c.get(f"/v1/projects/{pid}/traces/{turn['trace_id']}", headers=h)).json()
         assert "spans" in spans
+
+        # The Traces "Run again" action must replay only through the original workflow.
+        other_wid = (await c.post(
+            f"/v1/projects/{pid}/workflows", json={"name": "Other", "executable": _WF}, headers=h,
+        )).json()["id"]
+        cross_workflow = await c.post(
+            f"/v1/projects/{pid}/workflows/{other_wid}/runs/{turn['run_id']}/rerun", headers=h,
+        )
+        assert cross_workflow.status_code == 404
+
+        replay = await c.post(
+            f"/v1/projects/{pid}/workflows/{wid}/runs/{turn['run_id']}/rerun", headers=h,
+        )
+        assert replay.status_code == 201, replay.text
+        replayed = replay.json()
+        assert replayed["id"] != turn["run_id"]
+        assert replayed["thread_id"] != conv["thread_id"]

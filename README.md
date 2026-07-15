@@ -4,7 +4,7 @@
 
 **The open-source, self-hosted platform for visually building, testing, and shipping AI agents & workflows.**
 
-Wire agents, tools, knowledge, and logic on a canvas - ground them in your data, connect them to your systems, and deploy to email, Microsoft Teams, an API, an MCP server, or an embeddable web widget. No framework code required.
+Wire agents, tools, knowledge, and logic on a canvas - ground them in your data, connect them to your systems, and deploy to email, an API, an MCP server, or an embeddable web widget. No framework code required.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.11–3.13-3776AB?logo=python&logoColor=white)](apps/api/pyproject.toml)
@@ -83,8 +83,8 @@ Every run is captured as a **span waterfall** - model calls, tools, chains, late
 ### And many more
 
 - **Visual workflow canvas** (React Flow) - routers, loops, parallel fan-out/join, transforms, and reusable subworkflows with typed, validated connections.
-- **Channels** - deploy a workflow to **Email** or **Microsoft Teams**.
-- **Triggers** - webhooks, schedules (interval/cron), inbound email, chat, and polling "app events".
+- **Channels** - deploy a workflow to **Email**.
+- **Triggers** - webhooks, schedules (interval/cron), inbound email, and polling "app events".
 - **Human-in-the-loop** - approve/reject pauses and live **handoff** to an Agent inbox, with the reply delivered back over the same channel.
 - **Auth Providers** - Bearer, API key, Basic, OAuth2 (client-credentials **and** 3-legged user login with auto-refresh), and CSRF/session - backed by encrypted, reference-only secrets (`secret://…`).
 - **MCP, both ways** - expose your project's tools as an **MCP server**, and consume tools from external MCP servers.

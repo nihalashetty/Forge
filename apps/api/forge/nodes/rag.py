@@ -11,8 +11,19 @@ from typing import Any
 
 from forge.engine.context import CompileContext
 from forge.engine.registry import NodeSpec, Port, register
+from forge.knowledge.embeddings import DEFAULT_MIN_SCORE, DEFAULT_RERANK_MIN_SCORE
+from forge.knowledge.store import citation_for
 
 _KB_TAG = "forge_kb"
+
+
+def _passes_floor(h: Any, min_score: float, hybrid: bool) -> bool:
+    """Cosine-floor a hit on the RIGHT scale. In hybrid mode Hit.score is the fused RANK (top≈1.0),
+    NOT cosine, so threshold Hit.vector_score (the real cosine) instead; a BM25-only hit has no
+    cosine (vector_score None) and is kept (a strong exact-term match shouldn't be floored out).
+    In vector-only mode Hit.score IS the cosine."""
+    cos = h.vector_score if hybrid else h.score
+    return cos is None or cos >= min_score
 
 
 def _kb_removals(msgs: list[Any]) -> list[Any]:
@@ -59,9 +70,16 @@ def retrieval_factory(cfg: dict, ctx: CompileContext):
     # Restrict retrieval to sources in these folders (resolved to source ids at run
     # time, so it composes with source_filter and needs no Chroma re-ingest).
     folders = cfg.get("folders") or None
-    # Default a gentle floor so wildly off-topic queries surface no context (and the
-    # grounded agent downstream refuses instead of answering from the closest chunk).
-    min_score = cfg.get("min_score", 0.18)
+    # Cosine floor so wildly off-topic queries surface no context (the grounded agent then refuses
+    # instead of answering from the nearest chunk). Calibrated to the default BGE embedder (~0.6;
+    # related pairs ~0.75+, unrelated ~0.4-0.5) - lower it for a hosted model on a smaller scale.
+    min_score = cfg.get("min_score", DEFAULT_MIN_SCORE)
+    # When rerank is on, Hit.score is the cross-encoder sigmoid (a DIFFERENT scale from cosine), so
+    # min_score can't apply; this separate floor lets an off-topic reranked query still yield empty.
+    rerank_min_score = cfg.get("rerank_min_score", DEFAULT_RERANK_MIN_SCORE)
+    # Optional MMR diversity pass (trade a little relevance for less-redundant top_k).
+    mmr = bool(cfg.get("mmr", False))
+    mmr_lambda = cfg.get("mmr_lambda", 0.5)
     include_qa = cfg.get("include_qa", False)
     qa_threshold = cfg.get("qa_threshold", 0.3)
     qa_top_k = cfg.get("qa_top_k", 3)
@@ -104,18 +122,22 @@ def retrieval_factory(cfg: dict, ctx: CompileContext):
                 hits = await KnowledgeService.search(
                     s, ctx.tenant_id, ctx.project_id, query, top_k=top_k,
                     source_ids=source_filter, folders=folders, embedder=embedder, embedding=qvec,
-                    hybrid=hybrid, rerank=rerank, rerank_top_n=rerank_top_n,
+                    hybrid=hybrid, rerank=rerank, rerank_top_n=rerank_top_n, mmr=mmr, mmr_lambda=mmr_lambda,
                 ) if (include_docs and embedder) else []
             except Exception:  # noqa: BLE001 - store not ready / empty
                 hits = []
-            # min_score is a cosine-similarity floor. A reranked hit's score is a cross-encoder
-            # relevance on a different scale (often much lower for genuinely relevant passages),
-            # so applying the cosine floor to it would silently drop good docs - skip the floor
-            # when reranking (the cross-encoder already ordered by relevance and kept top_k).
-            if min_score is not None and not rerank:
-                hits = [h for h in hits if h.score >= min_score]
+            # Apply the relevance floor on the correct scale. Reranked hits use the cross-encoder
+            # sigmoid floor (rerank_min_score); otherwise the cosine floor (min_score) on the real
+            # cosine - Hit.vector_score in hybrid mode (Hit.score there is the fused rank, not cosine).
+            if rerank:
+                if rerank_min_score is not None:
+                    hits = [h for h in hits if h.score >= rerank_min_score]
+            elif min_score is not None:
+                hits = [h for h in hits if _passes_floor(h, min_score, hybrid)]
             for i, h in enumerate(hits):
-                blocks.append(f"[Doc {i + 1}] {h.text}")
+                cite = citation_for(h.metadata)
+                label = f"Doc {i + 1} · {cite}" if cite else f"Doc {i + 1}"
+                blocks.append(f"[{label}] {h.text}")
             if include_qa:
                 try:
                     qa = await KnowledgeService.top_qa(

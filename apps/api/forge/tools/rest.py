@@ -14,11 +14,13 @@ payload before it reaches the model - the primary token lever.
 # keep the real class on the signature for both langgraph injection and langchain_core
 # pass-through.
 import asyncio
+import hashlib
 import json as _json
 import random
 import re
 import time
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 from langchain.tools import ToolRuntime
@@ -34,15 +36,34 @@ from forge.util.ssrf import EgressPolicy, guarded_request, validate_url
 
 _PY = {"string": str, "integer": int, "number": float, "boolean": bool, "object": dict, "array": list}
 
+# Hard ceiling on a response body we will PARSE, guarding against an out-of-memory blowup from a
+# pathologically large payload (a non-streaming httpx request has already buffered the bytes, but
+# json.loads amplifies them several-fold into Python objects - that is the part that OOMs). Over
+# this we skip parsing and return a small truncated marker. Wanted setting: `tool_max_download_bytes`
+# (default 50 MB); a module constant until it is added to config.
+_MAX_DOWNLOAD_BYTES = 50_000_000
+
 # --- reliability: response cache + retry classification (Doc tool config) ----------
 _RESP_CACHE: dict[str, tuple[float, Any]] = {}
 
 
-def _cache_key(name: str, method: str, url: str, params: dict | None, body: Any) -> str:
+def _cache_key(
+    name: str, method: str, url: str, params: dict | None, body: Any,
+    *, tenant_id: str = "", project_id: str = "", provider_id: str = "", context: dict | None = None,
+) -> str:
+    # The process-global response cache MUST be partitioned by tenant/project, the auth
+    # provider, AND a fingerprint of the per-run context (end_user + injected {{ctx.*}}
+    # secrets such as a session cookie / CSRF token). Without this, a per-user-authenticated
+    # GET produces an identical key for every caller, so enabling caching would serve one
+    # user's private response to another (and could collide across tenants).
+    ctx_fp = hashlib.sha256(
+        _json.dumps(context or {}, sort_keys=True, default=str).encode()
+    ).hexdigest()[:16]
     return "|".join([
-        name, method, url,
+        tenant_id, project_id, provider_id, name, method, url,
         _json.dumps(params or {}, sort_keys=True, default=str),
         _json.dumps(body or {}, sort_keys=True, default=str),
+        ctx_fp,
     ])
 
 
@@ -59,10 +80,23 @@ def _cache_put(key: str, value: Any) -> None:
     _RESP_CACHE[key] = (time.monotonic(), value)
 
 
+# Methods safe to retry automatically. POST/PATCH are non-idempotent (a retry can double-create
+# / double-apply), so they are retried only when the tool explicitly opts in via
+# retry.retry_non_idempotent. GET/HEAD/PUT/DELETE are idempotent by HTTP semantics.
+_IDEMPOTENT_METHODS = frozenset({"GET", "HEAD", "PUT", "DELETE", "OPTIONS", "TRACE"})
+
+
 def _retry_types(names: list[str]) -> tuple[type[BaseException], ...]:
-    """Map retry_on names -> exception types. Empty => retry transient HTTP/network errors."""
+    """Map retry_on names -> exception types.
+
+    Empty (the default) => retry only TRANSIENT transport/network failures. It deliberately does
+    NOT include httpx.HTTPError, because HTTPStatusError is a subclass of it: with HTTPError in the
+    set, raise_for_status()'s 4xx (a permanent client error - bad request, auth, not-found) would
+    be retried pointlessly. 5xx is handled separately (see `_should_retry`) so a transient server
+    error is still retried without dragging 4xx along. An explicit `retry_on: [http_error]` still
+    opts into retrying every HTTP status."""
     if not names:
-        return (httpx.HTTPError, httpx.TransportError, ConnectionError, TimeoutError)
+        return (httpx.TransportError, httpx.TimeoutException, ConnectionError, TimeoutError)
     out: list[type[BaseException]] = []
     for n in names:
         k = str(n).strip().lower()
@@ -81,6 +115,44 @@ def _retry_types(names: list[str]) -> tuple[type[BaseException], ...]:
         elif k == "runtime_error":
             out.append(RuntimeError)
     return tuple(out) or (Exception,)
+
+
+def _resolve_retry(cfg: dict) -> tuple[int, dict, tuple[type[BaseException], ...], bool]:
+    """Resolve the retry policy: (max_retries, retry_cfg, retry_types, retry_5xx).
+
+    No `retry` block at all (key absent) => no retries (max_retries 0), preserving the historic
+    "retry is opt-in" default. When a retry block IS present (even an empty {}), an omitted
+    max_retries defaults to 2 to match the schema (common.json RetryPolicy.max_retries default).
+    `retry_5xx` is True only for the DEFAULT classification (empty retry_on): a transient 5xx is
+    retried, while an explicit retry_on list is honored verbatim (so retry_on:[timeout] never
+    drags in 5xx)."""
+    retry_cfg = cfg.get("retry")
+    if retry_cfg is None:
+        return 0, {}, _retry_types([]), True
+    retry_cfg = retry_cfg or {}  # tolerate an explicit null/empty block
+    mr = retry_cfg.get("max_retries", 2)
+    max_retries = int(mr) if mr is not None else 2
+    retry_on = retry_cfg.get("retry_on") or []
+    return max_retries, retry_cfg, _retry_types(retry_on), not retry_on
+
+
+def _should_retry(
+    e: BaseException, retry_types: tuple[type[BaseException], ...], retry_5xx: bool, method: str, retry_cfg: dict,
+) -> bool:
+    """Decide whether a failed attempt is retryable.
+
+    Two gates: (1) idempotency - never auto-retry a POST/PATCH unless the tool set
+    retry.retry_non_idempotent (a retry could double-create); (2) failure kind - a configured/
+    transient exception, or (only for the default classification) a 5xx server error surfaced by
+    raise_for_status. A 4xx is never retried by default."""
+    if method.upper() not in _IDEMPOTENT_METHODS and not retry_cfg.get("retry_non_idempotent"):
+        return False
+    if isinstance(e, retry_types):
+        return True
+    if retry_5xx and isinstance(e, httpx.HTTPStatusError):
+        resp = getattr(e, "response", None)
+        return resp is not None and resp.status_code >= 500
+    return False
 
 
 def build_args_schema(cfg: dict, fields_key: str = "fields"):
@@ -120,7 +192,11 @@ def _render_url(template: str, values: dict) -> str:
         if val is None:
             missing.append(key)
             return m.group(0)
-        return str(val)
+        # URL-encode as a single path segment: an LLM-supplied value containing '/', '?', '#'
+        # or '..' must not be able to alter the URL structure (path traversal / injected query
+        # string). safe="" encodes reserved chars including '/'. Query params go through httpx
+        # (already encoded); this closes the path-parameter lane.
+        return quote(str(val), safe="")
 
     url = re.sub(r"\{([a-zA-Z0-9_]+)\}", _sub, template)
     if missing:
@@ -193,14 +269,63 @@ def _resolve_body_encoding(req: dict, headers: dict, body: Any) -> str:
     repeated keys, and sets the Content-Type for you - so callers no longer hand-encode a
     body_template. This is generic to any x-www-form-urlencoded endpoint, not a specific API."""
     enc = str(req.get("body_encoding") or "").strip().lower()
-    if enc in ("json", "form", "raw"):
+    if enc in ("json", "form", "multipart", "raw"):
         return enc
     ct = next((str(v) for k, v in (headers or {}).items() if k.lower() == "content-type"), "").lower()
+    if "multipart/form-data" in ct and isinstance(body, dict):
+        return "multipart"
     if "application/x-www-form-urlencoded" in ct and isinstance(body, dict):
         return "form"
     if "application/json" in ct:
         return "json"
     return "json" if isinstance(body, (dict, list)) else "raw"
+
+
+def _split_multipart(body: Any) -> tuple[dict, dict]:
+    """Split a structured body into (files, data) for httpx multipart encoding.
+
+    A file-shaped value - a [filename, content] / [filename, content, content_type] list/tuple, or
+    a {content, filename?, content_type?} dict - becomes a `files=` part; every other value is a
+    plain form field in `data=`. If NO value is file-shaped, all fields are sent as text parts so
+    httpx still emits multipart/form-data (with `data=` only it would fall back to urlencoded)."""
+    files: dict[str, Any] = {}
+    data: dict[str, Any] = {}
+    if isinstance(body, dict):
+        for k, v in body.items():
+            if isinstance(v, (list, tuple)) and 2 <= len(v) <= 3:
+                files[k] = tuple(v)
+            elif isinstance(v, dict) and "content" in v:
+                ct = v.get("content_type")
+                part = (v.get("filename"), v.get("content"))
+                files[k] = (*part, ct) if ct else part
+            else:
+                data[k] = v
+    if not files and data:
+        files = {k: (None, "" if val is None else str(val)) for k, val in data.items()}
+        data = {}
+    return files, data
+
+
+def _read_body_capped(r: httpx.Response) -> Any:
+    """Parse the response body, refusing to parse an over-large payload.
+
+    See `_MAX_DOWNLOAD_BYTES`: this can't stop httpx buffering the bytes (that needs streaming in
+    the egress layer, out of scope here), but it stops the far larger parse-amplification OOM by
+    not calling json.loads on a giant body - it returns a small truncated marker instead."""
+    body = r.content or b""
+    if _MAX_DOWNLOAD_BYTES and len(body) > _MAX_DOWNLOAD_BYTES:
+        preview = body[:2000].decode(r.encoding or "utf-8", errors="replace")
+        return {
+            "error": "response_too_large",
+            "bytes": len(body),
+            "limit": _MAX_DOWNLOAD_BYTES,
+            "note": "response exceeded the max download size and was not parsed; add a narrower query or server-side filter",
+            "body_preview": preview,
+        }
+    try:
+        return r.json()
+    except Exception:  # noqa: BLE001 - non-JSON response
+        return r.text
 
 
 def _redirect_info(r: httpx.Response, followed: bool) -> dict | None:
@@ -260,11 +385,12 @@ def _tool_return(res: dict, cfg: dict) -> Any:
     Projection is applied to the model observation (see `project_observation`): with no projection
     the model gets the raw body, or - on a redirect - the {"body", "redirect"} envelope carrying the
     target URL; a `redirect.location` projection collapses that envelope to just the URL. A
-    non-JMESPath result is char-capped so a huge un-projected payload can't blow the model's
-    context (JMESPath output is trusted to be already small)."""
-    has_jmespath = bool((cfg.get("response") or {}).get("projection_jmespath"))
+    result is char-capped so a huge un-projected payload can't blow the model's context. The
+    cap is applied to JMESPath output too: a broken/typo'd expression falls back to the full
+    raw payload and a broad expression (e.g. `@`) selects everything, so trusting JMESPath to
+    be small let an un-projected payload through - always cap as a backstop."""
     _observation, projected = project_observation(res, cfg)
-    return projected if has_jmespath else cap_payload(projected, settings.max_tool_response_chars)
+    return cap_payload(projected, settings.max_tool_response_chars)
 
 
 def _capture_tool_io(
@@ -416,7 +542,10 @@ async def execute_rest(
 
     # Response cache (config.cache.ttl_seconds), idempotent GETs only.
     ttl = (cfg.get("cache") or {}).get("ttl_seconds", 0) or 0
-    cache_key = _cache_key(name, method, url, params, body) if (ttl and method.upper() == "GET") else None
+    cache_key = _cache_key(
+        name, method, url, params, body,
+        tenant_id=tenant_id, project_id=project_id, provider_id=provider_id or "", context=context,
+    ) if (ttl and method.upper() == "GET") else None
     if cache_key:
         cached = _cache_get(cache_key, ttl)
         if cached is not None:
@@ -444,9 +573,7 @@ async def execute_rest(
     # construction costs ~470ms on Windows; select_client returns the shared singleton.)
     skip_verify = bool(req.get("tls_skip_verify"))
     timeout = cfg.get("timeout_seconds", settings.tool_request_timeout_seconds)
-    retry_cfg = cfg.get("retry") or {}
-    max_retries = int(retry_cfg.get("max_retries", 0) or 0)
-    retry_types = _retry_types(retry_cfg.get("retry_on") or [])
+    max_retries, retry_cfg, retry_types, retry_5xx = _resolve_retry(cfg)
 
     async def _send() -> httpx.Response:
         kw: dict[str, Any] = dict(headers=headers, params=params or None, cookies=cookies or None, timeout=timeout)
@@ -463,6 +590,20 @@ async def execute_rest(
                     headers.setdefault("Content-Type", "application/x-www-form-urlencoded")
                 else:
                     kw["data"] = body  # dict / list-of-pairs -> httpx urlencodes + sets Content-Type
+            elif enc == "multipart":
+                # multipart/form-data via httpx `files=` (+ `data=` for scalar fields). httpx sets
+                # the Content-Type with its own boundary, so any pre-declared multipart header is
+                # dropped to avoid a boundary mismatch. Falls back to raw for a non-dict body.
+                files, data = _split_multipart(body)
+                if files or data:
+                    headers.pop("Content-Type", None)
+                    headers.pop("content-type", None)
+                    if files:
+                        kw["files"] = files
+                    if data:
+                        kw["data"] = data
+                else:
+                    kw["content"] = body if isinstance(body, str) else _json.dumps(body)
             elif enc == "raw":
                 kw["content"] = body if isinstance(body, str) else _json.dumps(body)
             else:
@@ -502,13 +643,10 @@ async def execute_rest(
             try:
                 r = await _once()
                 status = r.status_code
-                try:
-                    raw = r.json()
-                except Exception:  # noqa: BLE001 - non-JSON response
-                    raw = r.text
+                raw = _read_body_capped(r)
                 break
             except Exception as e:  # noqa: BLE001 - retry classification below
-                if attempt >= max_retries or not isinstance(e, retry_types):
+                if attempt >= max_retries or not _should_retry(e, retry_types, retry_5xx, method, retry_cfg):
                     raise
                 delay = min(
                     float(retry_cfg.get("max_delay", 60.0)),

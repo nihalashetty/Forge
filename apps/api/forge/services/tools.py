@@ -44,7 +44,6 @@ class ToolService:
             tool.name = name
         if config is not None:
             tool.config = config
-            tool.version += 1
         if auth_provider_id is not None:
             tool.auth_provider_id = auth_provider_id or None
         if enabled is not None:

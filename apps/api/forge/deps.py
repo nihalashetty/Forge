@@ -18,11 +18,12 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 from fastapi import Depends, HTTPException, Request, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from forge.config import settings
 from forge.db import SessionLocal
-from forge.security import TokenError, decode_token
+from forge.security import TokenError, decode_token, tokens_revoked_after
 from forge.services.auth import AuthService, role_at_least
 from forge.services.runs import RunService
 from forge.util.clientip import resolve_client_ip
@@ -64,10 +65,26 @@ async def get_current_user(request: Request) -> CurrentUser:
             if not tenant_id:
                 raise HTTPException(status.HTTP_401_UNAUTHORIZED, "service token: workspace not initialized")
             return CurrentUser(id="service", tenant_id=tenant_id, role="editor", email="service@forge.local")
+        # Per-tenant, role-scoped, revocable API keys (finding h). Recognizable by prefix and
+        # not a JWT, so resolve before the JWT decode. Identity is `apikey:<id>` in a specific
+        # tenant with the key's assigned role.
+        from forge.services.apikeys import ApiKeyService, looks_like_api_key
+
+        if looks_like_api_key(token):
+            async with SessionLocal() as s:
+                key = await ApiKeyService.resolve(s, token)
+            if key is None:
+                raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid or revoked API key")
+            return CurrentUser(id=f"apikey:{key.id}", tenant_id=key.tenant_id, role=key.role,
+                               email=f"apikey:{key.name}")
         try:
             claims = decode_token(token, expected_type="access")
         except TokenError as e:
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, f"invalid token: {e}") from e
+        # Logout-all / password-change cutoff: reject an access token minted before the user's
+        # current revocation horizon even though it's otherwise still valid (finding d).
+        if tokens_revoked_after(claims):
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "session has been signed out")
         async with SessionLocal() as s:
             user = await AuthService.get_user(s, claims.get("sub", ""))
         if user is None or user.status != "active":
@@ -85,16 +102,56 @@ async def get_current_user(request: Request) -> CurrentUser:
 
 
 def current_tenant_id(user: CurrentUser = Depends(get_current_user)) -> str:
+    # Bind the tenant for this request so the Postgres RLS GUC listener (forge.db.base) sets
+    # app.current_tenant on every transaction that follows in the route body. No-op on SQLite.
+    from forge.db.scoping import set_current_tenant
+
+    set_current_tenant(user.tenant_id)
     return user.tenant_id
 
 
-def require_role(minimum: str):
-    """Dependency factory: require the caller's role to be at least `minimum`
-    (owner > admin > editor > viewer). Use on mutating/administrative routes."""
+def _more_privileged(a: str, b: str) -> str:
+    """Return whichever of two roles carries MORE privilege (owner > admin > editor > viewer)."""
+    return a if role_at_least(a, b) else b
 
-    async def _dep(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
-        if not role_at_least(user.role, minimum):
+
+async def effective_role(user: CurrentUser, request: Request) -> str:
+    """The caller's role on the request's project: a per-project ProjectMember grant ELEVATES the
+    tenant-wide role (never demotes it), so this is additive (finding h). Falls back to the global
+    role when there is no project in the path, no membership row, or a non-user identity (service /
+    API key / dev fallback)."""
+    project_id = request.path_params.get("project_id")
+    if not project_id or user.is_fallback or user.id.startswith(("apikey:", "service")):
+        return user.role
+    from forge.models.entities import ProjectMember
+
+    async with SessionLocal() as s:
+        pm = (
+            await s.execute(
+                select(ProjectMember).where(
+                    ProjectMember.tenant_id == user.tenant_id,
+                    ProjectMember.project_id == project_id,
+                    ProjectMember.user_id == user.id,
+                )
+            )
+        ).scalar_one_or_none()
+    return user.role if pm is None else _more_privileged(user.role, pm.role)
+
+
+def require_role(minimum: str):
+    """Dependency factory: require the caller's EFFECTIVE role to be at least `minimum`
+    (owner > admin > editor > viewer). The effective role is the tenant-wide role, optionally
+    elevated by a per-project ProjectMember grant for the request's {project_id} (finding h).
+    Use on mutating/administrative routes."""
+
+    async def _dep(request: Request, user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+        role = await effective_role(user, request)
+        if not role_at_least(role, minimum):
             raise HTTPException(status.HTTP_403_FORBIDDEN, f"requires role '{minimum}' or higher")
+        # Reflect the (possibly elevated) effective role back to the route body.
+        if role != user.role:
+            return CurrentUser(id=user.id, tenant_id=user.tenant_id, role=role,
+                               email=user.email, is_fallback=user.is_fallback)
         return user
 
     return _dep

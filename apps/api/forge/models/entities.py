@@ -38,8 +38,9 @@ class Tenant(PkTimestamp, Base):
 
 class User(PkTimestamp, Base):
     __tablename__ = "users"
+    __table_args__ = (UniqueConstraint("tenant_id", "email", name="uq_users_tenant_email"),)
     tenant_id: Mapped[str] = mapped_column(String(36), ForeignKey("tenants.id"), index=True)
-    email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
+    email: Mapped[str] = mapped_column(String(320), index=True)
     password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
     role: Mapped[str] = mapped_column(String(30), default="owner")  # owner|admin|editor|viewer
     status: Mapped[str] = mapped_column(String(20), default="active")
@@ -82,7 +83,6 @@ class Tool(PkTimestamp, Base):
     config: Mapped[dict] = mapped_column(JSON, default=dict)
     auth_provider_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
-    version: Mapped[int] = mapped_column(Integer, default=1)
     last_tested: Mapped[str | None] = mapped_column(String(20), nullable=True)  # pass|fail|untested
 
 
@@ -119,7 +119,6 @@ class Agent(PkTimestamp, Base):
     project_id: Mapped[str] = mapped_column(String(36), index=True)
     name: Mapped[str] = mapped_column(String(120))
     config: Mapped[dict] = mapped_column(JSON, default=dict)  # validated vs forge/nodes/agent
-    version: Mapped[int] = mapped_column(Integer, default=1)
     # Creator attribution (denormalized email snapshot for display without a join).
     created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
     created_by_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
@@ -222,7 +221,7 @@ class Run(PkTimestamp, Base):
     workflow_id: Mapped[str] = mapped_column(String(36), index=True)
     thread_id: Mapped[str] = mapped_column(String(36), index=True)
     # Where this run originated, for the Traces conversation view. Set at create_run by each
-    # caller: playground|api|embed|channel_email|channel_teams|webhook|schedule (assistant runs
+    # caller: playground|api|embed|channel_email|webhook|schedule (assistant runs
     # have no Run row). Copied onto the Trace at finalize.
     source: Mapped[str] = mapped_column(String(40), default="playground")
     status: Mapped[str] = mapped_column(String(20), default="queued")  # queued|running|interrupted|done|error
@@ -274,7 +273,7 @@ class Trigger(PkTimestamp, Base):
     project_id: Mapped[str] = mapped_column(String(36), index=True)
     workflow_id: Mapped[str] = mapped_column(String(36), index=True)
     node_id: Mapped[str] = mapped_column(String(64))
-    kind: Mapped[str] = mapped_column(String(20))  # webhook_in|schedule|email_in|chat_in|app_event
+    kind: Mapped[str] = mapped_column(String(20))  # webhook_in|schedule|email_in|app_event
     key: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)  # webhook URL key
     config: Mapped[dict] = mapped_column(JSON, default=dict)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -285,15 +284,15 @@ class Trigger(PkTimestamp, Base):
 
 
 class Channel(PkTimestamp, Base):
-    """A deployment surface that feeds a workflow: email mailbox or Microsoft Teams bot.
-    `config` holds type-specific settings (secret refs for SMTP/IMAP or Teams app creds).
-    `key` is the public, unguessable id used in inbound endpoint URLs (teams/email-inbound)."""
+    """An email deployment surface that feeds a workflow.
+    `config` holds SMTP/IMAP settings and secret refs. `key` is the public,
+    unguessable id used in inbound endpoint URLs."""
 
     __tablename__ = "channels"
     tenant_id: Mapped[str] = mapped_column(String(36), index=True)
     project_id: Mapped[str] = mapped_column(String(36), index=True)
     workflow_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    type: Mapped[str] = mapped_column(String(20))  # email|teams
+    type: Mapped[str] = mapped_column(String(20))  # email
     name: Mapped[str] = mapped_column(String(120))
     key: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
     config: Mapped[dict] = mapped_column(JSON, default=dict)
@@ -375,6 +374,28 @@ class AuditLog(PkTimestamp, Base):
     meta: Mapped[dict] = mapped_column("metadata", JSON, default=dict)
 
 
+class EntityVersion(PkTimestamp, Base):
+    """Immutable point-in-time snapshot of a versionable entity's config, captured on each
+    save so a user can view history and restore a prior version. Generic across entity types
+    (workflow|agent|tool|component|auth_provider|kb_source|project) - the `snapshot` JSON holds
+    the entity's restorable fields. Retention is pruned to the configured version_history_limit
+    per (entity_type, entity_id). See forge.services.versions."""
+
+    __tablename__ = "entity_versions"
+    __table_args__ = (
+        UniqueConstraint("entity_type", "entity_id", "version_no", name="uq_entity_version"),
+    )
+    tenant_id: Mapped[str] = mapped_column(String(36), index=True)
+    project_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    entity_type: Mapped[str] = mapped_column(String(40), index=True)
+    entity_id: Mapped[str] = mapped_column(String(36), index=True)
+    version_no: Mapped[int] = mapped_column(Integer, default=1)
+    label: Mapped[str | None] = mapped_column(String(300), nullable=True)  # entity name at snapshot time / note
+    snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    author_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    author_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+
+
 class Span(PkTimestamp, Base):
     __tablename__ = "spans"
     tenant_id: Mapped[str] = mapped_column(String(36), index=True)
@@ -393,3 +414,55 @@ class Span(PkTimestamp, Base):
     cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     attributes: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+# --- Platform-hardening tables (finding h/j). All new: dev create_all builds them; prod needs
+# an Alembic migration + the tenant-isolation policies in infra/postgres_rls.sql. -------------
+
+
+class ApiKey(PkTimestamp, Base):
+    """A hashed, revocable API key for server-to-server callers (finding h). Scoped to a tenant
+    with a fixed role; the plaintext is shown ONCE at creation and only its SHA-256 hash is
+    stored. Presented as `Authorization: Bearer <key>` and resolved in get_current_user. This
+    is per-tenant and per-role, unlike the single static FORGE_SERVICE_API_TOKEN."""
+
+    __tablename__ = "api_keys"
+    tenant_id: Mapped[str] = mapped_column(String(36), index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    # Non-secret lookup hint (the key's leading chars), safe to display in the console.
+    prefix: Mapped[str] = mapped_column(String(16), index=True)
+    key_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)  # sha256 hex of the full key
+    role: Mapped[str] = mapped_column(String(30), default="editor")  # owner|admin|editor|viewer
+    status: Mapped[str] = mapped_column(String(20), default="active")  # active|revoked
+    last_used_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(nullable=True)  # optional hard expiry
+    created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+
+
+class ProjectMember(PkTimestamp, Base):
+    """Per-project role grant (finding h). Present => the member's EFFECTIVE role on that project
+    is the higher of this and their tenant-wide role; absent => the tenant-wide role applies, so
+    this is purely additive and backward-compatible."""
+
+    __tablename__ = "project_members"
+    __table_args__ = (UniqueConstraint("project_id", "user_id", name="uq_project_member"),)
+    tenant_id: Mapped[str] = mapped_column(String(36), index=True)
+    project_id: Mapped[str] = mapped_column(String(36), index=True)
+    user_id: Mapped[str] = mapped_column(String(36), index=True)
+    role: Mapped[str] = mapped_column(String(30), default="viewer")  # owner|admin|editor|viewer
+
+
+class UserSecurity(PkTimestamp, Base):
+    """Per-user auth state kept OFF the `users` row (finding j) so it can be added without an
+    ALTER of an existing table: email-verification flag + optional TOTP MFA. NOTE: `totp_secret`
+    is stored as a base32 string; encrypt it at rest (secret store / KMS) before enabling MFA on
+    a shared production install."""
+
+    __tablename__ = "user_security"
+    __table_args__ = (UniqueConstraint("user_id", name="uq_user_security_user"),)
+    tenant_id: Mapped[str] = mapped_column(String(36), index=True)
+    user_id: Mapped[str] = mapped_column(String(36), index=True)
+    email_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    email_verified_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    totp_secret: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    totp_enabled: Mapped[bool] = mapped_column(Boolean, default=False)

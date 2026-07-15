@@ -48,6 +48,7 @@ from forge.routers import (
     stats,
     tools,
     traces,
+    versions,
     workflows,
 )
 from forge.routers import (
@@ -94,20 +95,39 @@ async def _make_checkpointer(stack: AsyncExitStack):
     return cp
 
 
-async def _reaper_loop() -> None:
+async def _reaper_loop(app: FastAPI) -> None:
     """Periodically reap runs stuck in queued/running (never streamed, or driver died) so
     they can't linger forever (audit F3)."""
     from forge.services.runs import RunService
 
     log = logging.getLogger("forge.reaper")
+    run_service = RunService(checkpointer=app.state.checkpointer, store=app.state.store)
     while True:
         try:
             await asyncio.sleep(300)
-            await RunService.reap_stale_runs()
+            await run_service.reap_stale_runs()
         except asyncio.CancelledError:
             break
         except Exception:  # noqa: BLE001 - keep the reaper alive across failures
             log.exception("reaper tick failed")
+
+
+async def _retention_loop() -> None:
+    """Purge traces/spans/runs past each project's retention horizon and audit logs past the
+    workspace horizon, on a timer (finding e). Leader-only (like the reaper) so a multi-replica
+    deployment purges once. No-op unless a retention window is configured."""
+    from forge.services.retention import RetentionService
+
+    log = logging.getLogger("forge.retention")
+    interval = max(60, int(settings.retention_interval_seconds or 3600))
+    while True:
+        try:
+            await asyncio.sleep(interval)
+            await RetentionService.purge_expired()
+        except asyncio.CancelledError:
+            break
+        except Exception:  # noqa: BLE001 - keep the retention loop alive across failures
+            log.exception("retention tick failed")
 
 
 async def _scheduler_loop(app: FastAPI) -> None:
@@ -178,7 +198,10 @@ async def lifespan(app: FastAPI):
         bg_tasks.append(asyncio.create_task(_scheduler_loop(app), name="forge-scheduler"))
     # The reaper is safe to run everywhere (idempotent), but one instance is enough.
     if settings.scheduler_leader:
-        bg_tasks.append(asyncio.create_task(_reaper_loop(), name="forge-reaper"))
+        bg_tasks.append(asyncio.create_task(_reaper_loop(app), name="forge-reaper"))
+    # Data-retention purge (leader-only): ages out traces/spans/runs + audit logs (finding e).
+    if settings.enable_retention and settings.scheduler_leader:
+        bg_tasks.append(asyncio.create_task(_retention_loop(), name="forge-retention"))
     yield
     for t in bg_tasks:
         t.cancel()
@@ -219,17 +242,24 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    # Coarse per-IP request ceiling (api_rate_limit_per_minute) as a blunt DoS guard;
+    # complements the per-surface limits. Health/SSE exempt (finding a).
+    if settings.enable_global_rate_limit:
+        from forge.util.ratelimit import GlobalRateLimitMiddleware
+
+        app.add_middleware(GlobalRateLimitMiddleware)
     # Audit all successful mutations (pure ASGI; safe with SSE streams).
     from forge.audit_middleware import AuditMiddleware
 
     app.add_middleware(AuditMiddleware)
     for r in (
-        health.router, auth.router, auth.team_router, audit.router, oauth.router, hooks.router,
+        health.router, auth.router, auth.team_router, auth.workspace_router, auth.apikeys_router,
+        audit.router, oauth.router, hooks.router,
         nodes.router, projects.router, workflows.router, runs.router, project_run.router,
         tools.router, components.router, embed.router, embed_public.router, auth_providers.router, secrets.router, agents.router,
         knowledge.router, knowledge.qa_router, traces.router, conversations.router, assistant.router, stats.router,
         triggers_router.router, channels.router, channels.public, handoff.router, evals.router,
-        pricing.router, mcp_server.router, mcp_clients.router,
+        pricing.router, mcp_server.router, mcp_clients.router, versions.router,
     ):
         app.include_router(r)
     return app

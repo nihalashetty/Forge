@@ -10,6 +10,7 @@ plumbing for auth'd tools; retrieval needs the Chroma store.)
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import jmespath
@@ -18,17 +19,58 @@ from forge.auth_providers.templates import render_value
 from forge.engine.context import CompileContext
 from forge.engine.registry import NodeSpec, Port, register
 
+log = logging.getLogger("forge.data")
+
+
+def _jq_transform(expr: str, input_key: str | None, output_key: str):
+    """Build a jq-powered transform node. jq is optional; if the `jq` package isn't installed
+    we raise a clear ValueError WHEN THE NODE RUNS rather than silently falling back to
+    JMESPath (which speaks a different language and would quietly produce wrong data) - audit
+    F7. Compile succeeds so the rest of the workflow still previews."""
+    try:
+        import jq as _jq
+    except ImportError:
+        def _unavailable(state: dict) -> dict:
+            raise ValueError(
+                "transform engine 'jq' requires the `jq` package, which is not installed. "
+                "Install it (pip install jq) or switch this transform's engine to 'jmespath'."
+            )
+        return _unavailable
+
+    try:
+        program = _jq.compile(expr)  # a malformed program surfaces here, at compile time
+    except Exception as e:  # noqa: BLE001 - re-raise as a clear config error
+        raise ValueError(f"Invalid jq expression {expr!r}: {e}") from e
+
+    def _node(state: dict) -> dict:
+        src = state.get(input_key) if input_key else dict(state)
+        try:
+            result: Any = program.input(src).first()
+        except Exception as e:  # noqa: BLE001 - a runtime jq failure -> None, but log it
+            log.warning("transform jq %r failed: %s: %s", expr, type(e).__name__, e)
+            result = None
+        return {output_key: result}
+
+    return _node
+
 
 def transform_factory(cfg: dict, ctx: CompileContext):
     expr = cfg["expression"]
+    engine = cfg.get("engine", "jmespath")
     input_key = cfg.get("input_key")
     output_key = cfg.get("output_key", "data")
+
+    if engine == "jq":
+        return _jq_transform(expr, input_key, output_key)
 
     def _node(state: dict) -> dict:
         src = state.get(input_key) if input_key else dict(state)
         try:
             result: Any = jmespath.search(expr, src)
-        except jmespath.exceptions.JMESPathError:
+        except jmespath.exceptions.JMESPathError as e:
+            # Previously swallowed to None silently, which hid typo'd expressions; log it so a
+            # broken transform is traceable in the run log (audit F7).
+            log.warning("transform jmespath %r failed: %s: %s", expr, type(e).__name__, e)
             result = None
         return {output_key: result}
 
@@ -39,6 +81,8 @@ def human_input_factory(cfg: dict, ctx: CompileContext):
     from langchain_core.messages import HumanMessage
     from langgraph.types import interrupt
 
+    from forge.services.runs import HITL_APPROVAL_TIMEOUT_SECONDS
+
     prompt = cfg["prompt"]
     decisions = cfg.get("allowed_decisions", ["approve", "reject"])
     schema = cfg.get("schema")
@@ -46,14 +90,32 @@ def human_input_factory(cfg: dict, ctx: CompileContext):
     # can branch on it (approve → continue, reject → end). The key must be declared in
     # workflow state (the canvas auto-declares node-written keys).
     output_key = cfg.get("output_key")
+    # Deadline surfaced on the interrupt so operators/UI see how long the approval waits before
+    # the reaper expires it (audit C). Per-node override, else the global HITL timeout (0 = none).
+    timeout_seconds = cfg.get("timeout_seconds") or HITL_APPROVAL_TIMEOUT_SECONDS or None
+    timeout_default = cfg.get("timeout_default")
+    if timeout_default not in decisions:
+        timeout_default = None
 
     def _node(state: dict) -> dict:
         # Pauses the run; resumed via Command(resume=value). Node re-runs from the
         # top on resume, so the side effect (writing the decision) is placed after.
-        decision = interrupt({"prompt": prompt, "allowed_decisions": decisions, "schema": schema})
+        decision = interrupt({
+            "prompt": prompt, "allowed_decisions": decisions, "schema": schema,
+            "timeout_seconds": timeout_seconds, "timeout_default": timeout_default,
+        })
         out: dict[str, Any] = {"messages": [HumanMessage(content=f"[human decision] {decision}")]}
         if output_key:
-            out[output_key] = str(decision)
+            # Coerce a free-text resume value to one of allowed_decisions for the ROUTING key so a
+            # Router keyed on approve/reject matches even on a direct API resume (audit C). The
+            # transcript message above keeps the human's raw wording; only the routed value is
+            # normalized. Structured (dict) input is left as-is.
+            routed: Any = decision
+            if isinstance(decision, str) and decisions:
+                from forge.services.handoff import coerce_to_allowed_decision
+
+                routed = coerce_to_allowed_decision(decision, list(decisions))
+            out[output_key] = str(routed)
         return out
 
     return _node

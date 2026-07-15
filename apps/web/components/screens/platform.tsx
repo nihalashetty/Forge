@@ -74,10 +74,8 @@ export function ChannelsScreen({ project }: { project: any }) {
   const reload = useCallback(() => { if (project?.id) api.listChannels(project.id).then(setChannels).catch(() => setChannels([])); }, [project?.id]);
   useEffect(() => { reload(); }, [reload]);
 
-  const setCfg = (patch: any) => setForm((f) => ({ ...f, config: { ...f.config, ...patch } }));
   const setSmtp = (patch: any) => setForm((f) => ({ ...f, config: { ...f.config, smtp: { ...(f.config.smtp || {}), ...patch } } }));
-  const c = form.config || {};
-  const smtp = c.smtp || {};
+  const smtp = (form.config || {}).smtp || {};
 
   async function save() {
     if (!form.name.trim()) return;
@@ -87,11 +85,11 @@ export function ChannelsScreen({ project }: { project: any }) {
   }
   function edit(ch: Channel) { setForm({ id: ch.id, type: ch.type, name: ch.name, workflow_id: ch.workflow_id || "", config: ch.config || {} }); setOpen(true); }
   async function remove(id: string) { if (window.confirm("Delete this channel?")) { await api.deleteChannel(project.id, id); reload(); } }
-  const urlOf = (ch: Channel) => ch.inbound_url || ch.messaging_endpoint;
+  const urlOf = (ch: Channel) => ch.inbound_url;
 
   return (
     <Shell>
-      <Header title="Channels" subtitle="Deploy a workflow to a surface: email or Microsoft Teams."
+      <Header title="Channels" subtitle="Deploy a workflow to an email surface."
         action={<button className="btn btn-primary btn-sm" onClick={() => { setForm(BLANK_CHANNEL); setOpen(true); }}><Icon name="plus" size={14} />New channel</button>} />
       <div className="col gap2">
         {channels.map((ch) => (
@@ -107,7 +105,6 @@ export function ChannelsScreen({ project }: { project: any }) {
       </div>
       <Modal open={open} onClose={() => setOpen(false)} title={form.id ? "Configure channel" : "New channel"} width={500}
         footer={<><button className="btn btn-ghost" onClick={() => setOpen(false)}>Cancel</button><button className="btn btn-primary" onClick={save}>{form.id ? "Save" : "Create"}</button></>}>
-        {!form.id && <Field label="Type"><select className="select" value={form.type} onChange={(e) => setForm((f) => ({ ...f, type: e.target.value }))}><option value="email">Email</option><option value="teams">Microsoft Teams</option></select></Field>}
         <Field label="Name"><input className="input" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} placeholder="Support channel" /></Field>
         <Field label="Workflow" help="Which workflow handles messages on this channel."><select className="select" value={form.workflow_id} onChange={(e) => setForm((f) => ({ ...f, workflow_id: e.target.value }))}><option value="">First active workflow</option>{wfs.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}</select></Field>
 
@@ -123,14 +120,6 @@ export function ChannelsScreen({ project }: { project: any }) {
               <Field label="From address"><input className="input mono" value={smtp.from || ""} onChange={(e) => setSmtp({ from: e.target.value })} placeholder="support@yourco.com" /></Field>
             </div>
             <Field label="Password secret ref" help="A secret holding the SMTP password (Settings → Secrets)."><input className="input mono" value={smtp.password_ref || ""} onChange={(e) => setSmtp({ password_ref: e.target.value })} placeholder="secret://proj/smtp_password" /></Field>
-          </>
-        )}
-
-        {form.type === "teams" && (
-          <>
-            <div className="field-help" style={{ marginTop: 0 }}>From your Azure Bot registration. Point the bot&apos;s messaging endpoint at the channel&apos;s endpoint URL (shown after save).</div>
-            <Field label="Azure app id"><input className="input mono" value={c.app_id || ""} onChange={(e) => setCfg({ app_id: e.target.value })} /></Field>
-            <Field label="App password secret ref" help="Secret holding the bot app password."><input className="input mono" value={c.app_password_ref || ""} onChange={(e) => setCfg({ app_password_ref: e.target.value })} placeholder="secret://proj/teams_app_password" /></Field>
           </>
         )}
       </Modal>
@@ -288,34 +277,74 @@ export function DatasetsScreen({ project }: { project: any }) {
 export function HandoffScreen({ project }: { project: any }) {
   const [items, setItems] = useState<Handoff[]>([]);
   const [reply, setReply] = useState<Record<string, string>>({});
-  const reload = useCallback(() => { if (project?.id) api.listHandoffs(project.id, "open").then(setItems).catch(() => setItems([])); }, [project?.id]);
-  useEffect(() => { reload(); }, [reload]);
+  const [filter, setFilter] = useState<"open" | "closed">("open");
+  const [openCount, setOpenCount] = useState(0);
+  const reload = useCallback(async () => {
+    if (!project?.id) return;
+    try {
+      const current = await api.listHandoffs(project.id, filter);
+      setItems(current);
+      if (filter === "open") setOpenCount(current.length);
+      else setOpenCount((await api.listHandoffs(project.id, "open")).length);
+    } catch { /* keep the last good queue visible during a transient refresh failure */ }
+  }, [project?.id, filter]);
+  useEffect(() => {
+    reload();
+    const timer = window.setInterval(reload, 10_000);
+    return () => window.clearInterval(timer);
+  }, [reload]);
 
   async function send(h: Handoff) {
     const msg = (reply[h.id] || "").trim();
     if (!msg) return;
     await api.replyHandoff(project.id, h.id, msg);
-    setReply((r) => ({ ...r, [h.id]: "" })); reload();
+    setReply((r) => ({ ...r, [h.id]: "" }));
+    window.dispatchEvent(new CustomEvent("forge:counts-changed"));
+    reload();
   }
 
   return (
     <Shell>
-      <Header title="Agent inbox" subtitle="Conversations escalated to a human. Replying resumes the paused run and delivers your message over its channel." />
+      <Header
+        title="Agent inbox"
+        subtitle="Conversations escalated to a human. Replying resumes the paused run and delivers your message over its channel."
+        action={(
+          <div className="row gap2">
+            <span className="badge" title="Open handoffs">{openCount} unread</span>
+            {(["open", "closed"] as const).map((value) => (
+              <button
+                key={value}
+                className={filter === value ? "btn btn-secondary btn-sm" : "btn btn-ghost btn-sm"}
+                onClick={() => setFilter(value)}
+              >
+                {value === "open" ? "Open" : "Closed"}
+              </button>
+            ))}
+          </div>
+        )}
+      />
       <div className="col gap2">
         {items.map((h) => (
           <div key={h.id} className="card" style={{ padding: 14 }}>
             <div className="row spread" style={{ marginBottom: 8 }}>
               <div className="row gap2"><Icon name="user" size={15} /><span className="t-h3">{h.customer || "Customer"}</span></div>
-              <span className="fg-2 t-caption">{h.reason}</span>
+              <div className="row gap2">
+                <span className="fg-2 t-caption">{h.reason}</span>
+                {filter === "closed" && <span className="pill">{h.status}</span>}
+              </div>
             </div>
             {h.customer_message && <div style={{ background: "var(--bg-3)", padding: "8px 11px", borderRadius: 10, fontSize: 13, marginBottom: 8 }}>{h.customer_message}</div>}
-            <div className="row gap2">
-              <input className="input" placeholder="Type your reply…" value={reply[h.id] || ""} onChange={(e) => setReply((r) => ({ ...r, [h.id]: e.target.value }))} onKeyDown={(e) => e.key === "Enter" && send(h)} style={{ flex: 1 }} />
-              <button className="btn btn-primary btn-sm" onClick={() => send(h)}><Icon name="bolt" size={13} />Reply &amp; resume</button>
-            </div>
+            {filter === "open" ? (
+              <div className="row gap2">
+                <input className="input" placeholder="Type your reply…" value={reply[h.id] || ""} onChange={(e) => setReply((r) => ({ ...r, [h.id]: e.target.value }))} onKeyDown={(e) => e.key === "Enter" && send(h)} style={{ flex: 1 }} />
+                <button className="btn btn-primary btn-sm" onClick={() => send(h)} disabled={!(reply[h.id] || "").trim()}><Icon name="bolt" size={13} />Reply &amp; resume</button>
+              </div>
+            ) : (
+              <div className="t-caption fg-2">Closed {h.at ? `· opened ${new Date(h.at).toLocaleString()}` : ""}</div>
+            )}
           </div>
         ))}
-        {items.length === 0 && <div className="fg-2 t-caption">No open handoffs. Add a Human Handoff node to a workflow to route conversations here.</div>}
+        {items.length === 0 && <div className="fg-2 t-caption">{filter === "open" ? "No open handoffs. Add a Human Handoff node to a workflow to route conversations here." : "No closed handoffs yet."}</div>}
       </div>
     </Shell>
   );
