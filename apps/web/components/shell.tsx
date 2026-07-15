@@ -48,6 +48,53 @@ export function GlobalRail({ theme, setTheme, onCommand, onAssistant, onHome }: 
   );
 }
 
+/* ---------------- Account menu (avatar + sign out) ---------------- */
+function AccountMenu() {
+  const [open, setOpen] = useState(false);
+  const [me, setMe] = useState<{ email: string; role: string } | null>(null);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    let live = true;
+    import("@/lib/api")
+      .then(({ api }) => api.me())
+      .then((m: any) => { if (live) setMe({ email: m.email, role: m.role }); })
+      .catch(() => {});
+    return () => { live = false; };
+  }, []);
+  useEffect(() => {
+    if (!open) return;
+    const h = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    window.addEventListener("mousedown", h);
+    return () => window.removeEventListener("mousedown", h);
+  }, [open]);
+  async function signOut() {
+    const { clearTokens } = await import("@/lib/api");
+    clearTokens();
+    window.location.reload();
+  }
+  return (
+    <div ref={ref} style={{ position: "relative", flex: "none" }}>
+      <button onClick={() => setOpen((o) => !o)} title="Account" aria-label="Account"
+        style={{ border: "none", background: "none", cursor: "pointer", padding: 0, borderRadius: "50%", display: "flex" }}>
+        <Avatar name={me?.email || "You"} size={30} />
+      </button>
+      {open && (
+        <div className="card fade-in" style={{ position: "absolute", top: "100%", right: 0, marginTop: 6, zIndex: 6000, minWidth: 210, padding: 6, boxShadow: "var(--sh-pop)" }}>
+          <div style={{ padding: "6px 9px 8px" }}>
+            <div className="t-body-sm truncate" style={{ fontWeight: 600 }}>{me?.email || "Signed in"}</div>
+            {me?.role && <div className="t-caption fg-2" style={{ textTransform: "capitalize", marginTop: 1 }}>{me.role}</div>}
+          </div>
+          <div className="divider" style={{ margin: "2px 0 4px" }} />
+          <button onClick={signOut}
+            style={{ display: "flex", alignItems: "center", gap: 9, width: "100%", textAlign: "left", padding: "7px 9px", border: "none", background: "none", cursor: "pointer", borderRadius: 6, fontSize: 13, fontFamily: "var(--font-ui)", color: "var(--err)" }}>
+            <Icon name="logout" size={15} />Sign out
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ---------------- Topbar ---------------- */
 export interface Crumb { label: string; onClick?: () => void }
 export function Topbar({ crumbs, right, left, onCommand }: { crumbs: Crumb[]; right?: ReactNode; left?: ReactNode; onCommand: () => void }) {
@@ -73,6 +120,7 @@ export function Topbar({ crumbs, right, left, onCommand }: { crumbs: Crumb[]; ri
         <span className="kbd">⌘K</span>
       </button>
       {right}
+      <AccountMenu />
     </div>
   );
 }
