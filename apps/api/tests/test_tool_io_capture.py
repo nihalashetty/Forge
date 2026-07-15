@@ -14,7 +14,6 @@ import httpx
 import pytest
 
 from forge.config import settings
-from forge.tools import rest as rest_mod
 from forge.tools.rest import execute_rest
 from forge.tracing import tool_io
 from forge.tracing.tracer import ForgeTracer

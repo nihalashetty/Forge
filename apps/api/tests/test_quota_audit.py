@@ -10,7 +10,7 @@ import pytest
 from forge.db.base import SessionLocal
 from forge.db.scoping import tenant_scoped
 from forge.main import create_app
-from forge.models import Project, Run, Tenant
+from forge.models import Run, Tenant
 from forge.services.quota import QuotaExceeded, check_run_quota, usage_today
 
 

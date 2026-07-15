@@ -12,10 +12,9 @@ from datetime import datetime, timedelta
 import pytest
 
 from forge.db.base import SessionLocal
-from forge.models import Component, Run, Tenant, Workflow
+from forge.models import Run, Tenant, Workflow
 from forge.services.components import ComponentService
 from forge.services.runs import RunService
-
 
 # --- S1: runs are scoped by project, not just tenant -------------------------------------
 

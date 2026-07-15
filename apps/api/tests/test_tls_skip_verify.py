@@ -6,7 +6,12 @@ from __future__ import annotations
 
 import httpx
 
-from forge.util.http import aclose_shared_client, insecure_async_client, select_client, shared_async_client
+from forge.util.http import (
+    aclose_shared_client,
+    insecure_async_client,
+    select_client,
+    shared_async_client,
+)
 from forge.util.ssrf import EgressPolicy
 
 

@@ -15,7 +15,6 @@ from forge.config import settings
 from forge.deps import get_current_user
 from forge.util.ssrf import EgressBlocked, EgressPolicy, validate_url
 
-
 # --- service token ---------------------------------------------------------------------------
 
 

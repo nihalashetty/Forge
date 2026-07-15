@@ -72,7 +72,8 @@ async def test_sql_tool_reads_rows(tmp_path):
     db = tmp_path / "demo.db"
     con = sqlite3.connect(db)
     con.executescript("CREATE TABLE t(id INTEGER, name TEXT); INSERT INTO t VALUES (1,'a'),(2,'b');")
-    con.commit(); con.close()
+    con.commit()
+    con.close()
 
     cfg = {"name": "q", "kind": "sql", "connection_url": f"sqlite+aiosqlite:///{db.as_posix()}",
            "query": "SELECT id, name FROM t WHERE id = :id",

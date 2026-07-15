@@ -5,7 +5,6 @@ from __future__ import annotations
 import uuid
 
 import httpx
-import pytest
 
 from forge.config import settings
 from forge.main import create_app

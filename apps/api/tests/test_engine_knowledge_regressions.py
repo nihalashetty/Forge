@@ -7,7 +7,6 @@ and the embedder cache.
 from __future__ import annotations
 
 import httpx
-import pytest
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
 

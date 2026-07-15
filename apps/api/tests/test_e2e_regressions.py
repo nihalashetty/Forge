@@ -40,7 +40,10 @@ async def test_tool_test_supports_code_and_sql(tmp_path, monkeypatch):
     assert r["ok"] and r["projected"] == "HI"
 
     db = tmp_path / "t.db"
-    con = sqlite3.connect(db); con.executescript("CREATE TABLE t(id int, name text); INSERT INTO t VALUES (1,'x');"); con.commit(); con.close()
+    con = sqlite3.connect(db)
+    con.executescript("CREATE TABLE t(id int, name text); INSERT INTO t VALUES (1,'x');")
+    con.commit()
+    con.close()
     sql = {"name": "q", "kind": "sql", "description": "q", "connection_url": f"sqlite+aiosqlite:///{db.as_posix()}",
            "query": "SELECT name FROM t WHERE id = :id", "args_schema": {"properties": {"id": {"type": "integer"}}}}
     r = await ToolService.test("t", "p", sql, {"id": 1})
