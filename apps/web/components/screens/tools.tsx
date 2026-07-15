@@ -190,7 +190,7 @@ function Checkbox({ checked }: { checked: boolean }) {
 
 function SideItem({ label, count, active, onClick, alert }: { label: string; count: number; active: boolean; onClick: () => void; alert?: boolean }) {
   return (
-    <div onClick={onClick} className="sidenav-item" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 10px", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 13.5, background: active ? "var(--accent-glow)" : undefined, color: active ? "var(--accent)" : "var(--fg-0)" }}>
+    <div onClick={onClick} className="sidenav-item" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 10px", borderRadius: 8, cursor: "pointer", fontWeight: active ? 600 : 500, fontSize: 13.5, background: active ? "var(--accent-glow)" : undefined, color: active ? "var(--accent)" : "var(--fg-1)" }}>
       <span style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
         <span className="truncate">{label}</span>
         {alert && <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--warn)", flex: "none" }} />}
@@ -316,7 +316,7 @@ function ManageToolsetsDrawer({ project, tools, toolSets, open, initialSel, onCl
             const active = sel === s.id;
             return (
               <div key={s.id} onClick={() => setSel(s.id)} className="sidenav-item" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 10px", borderRadius: 8, cursor: "pointer", background: active ? "var(--accent-glow)" : undefined }}>
-                <span className="truncate" style={{ minWidth: 0, fontSize: 13, fontWeight: 600, color: active ? "var(--accent)" : "var(--fg-0)" }}>{s.name}</span>
+                <span className="truncate" style={{ minWidth: 0, fontSize: 13, fontWeight: active ? 600 : 500, color: active ? "var(--accent)" : "var(--fg-1)" }}>{s.name}</span>
                 <span className="fg-2 t-caption">{s.tool_ids.length}</span>
               </div>
             );
@@ -548,7 +548,7 @@ export function ToolBuilderScreen({ project, toolId, onBack }: { project: any; t
           </div>
         </div>
         <div className="row gap2">
-          <VersionHistory entityType="tool" entityId={tool.id} entityLabel={tool.name} onRestored={() => setReloadKey((k) => k + 1)} />
+          <VersionHistory entityType="tool" entityId={tool.id} entityLabel={tool.name} buttonClassName="btn btn-secondary" onRestored={() => setReloadKey((k) => k + 1)} />
           <button className="btn btn-primary" onClick={save} disabled={saving}><Icon name="save" size={15} />{saving ? "Saving…" : saved ? "Saved ✓" : "Save"}</button>
         </div>
       </div>

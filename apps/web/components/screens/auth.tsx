@@ -193,7 +193,7 @@ function ProviderDetail({ project, provider, onSaved }: { project: any; provider
           <div><div className="t-display mono" style={{ fontSize: 18 }}>{provider.name}</div><div className="fg-2 t-caption">{KIND_LABEL[kind] || kind} · ttl {cfg.cache_ttl_seconds || 1800}s</div></div>
         </div>
         <div className="row gap2">
-          <VersionHistory entityType="auth_provider" entityId={provider.id} entityLabel={provider.name} onRestored={onSaved} />
+          <VersionHistory entityType="auth_provider" entityId={provider.id} entityLabel={provider.name} buttonClassName="btn btn-secondary" onRestored={onSaved} />
           <button className="btn btn-secondary" onClick={runTest}><Icon name="validate" size={15} />Test connection</button>
           <button className="btn btn-primary" onClick={save} disabled={saving}><Icon name="save" size={15} />{saving ? "Saving…" : saved ? "Saved ✓" : "Save"}</button>
         </div>

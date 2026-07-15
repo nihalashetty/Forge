@@ -6,54 +6,60 @@
 
 :root,
 :root[data-theme="light"] {
-  --bg-0:#F6F7F9; --bg-1:#FFFFFF; --bg-2:#FFFFFF; --bg-3:#F0F2F5; --bg-hover:#E9ECF1;
-  --line:#E2E6EC; --line-strong:#CDD4DD;
-  --fg-0:#11161C; --fg-1:#46505C; --fg-2:#7A848F; --fg-on-accent:#FFFFFF;
-  --accent:#E8541F; --accent-bright:#FF6A3D; --accent-dim:#B8420F;
-  --accent-glow:rgba(232,84,31,0.14);
-  --signal:#0E9C90; --signal-dim:#0B7068; --signal-glow:rgba(14,156,144,0.12);
-  --ok:#1F9D57;   --ok-bg:rgba(31,157,87,0.10);
-  --warn:#B9821C; --warn-bg:rgba(185,130,28,0.12);
-  --err:#D23A34;  --err-bg:rgba(210,58,52,0.10);
-  --info:#2F6FD0; --info-bg:rgba(47,111,208,0.10);
-  --io-messages:#0E9C90; --io-text:#6B7480; --io-json:#7C5CE0;
-  --io-tool:#E8541F; --io-vector:#C53FB8; --io-control:#7A848F; --io-any:#9AA3AD;
-  --canvas-bg:#F1F3F6; --canvas-grid:rgba(17,22,28,0.07); --canvas-grid-strong:rgba(17,22,28,0.12);
-  --node-shadow:0 1px 2px rgba(17,22,28,.08), 0 6px 20px rgba(17,22,28,.07);
-  --sh-1:0 1px 0 rgba(17,22,28,.04), 0 1px 2px rgba(17,22,28,.06);
-  --sh-2:0 4px 16px rgba(17,22,28,.10);
-  --sh-pop:0 12px 40px rgba(17,22,28,.16);
+  /* shadcn/ui (new-york, Neutral) — page is muted gray, cards are white */
+  --bg-0:#F5F5F5; --bg-1:#FFFFFF; --bg-2:#FFFFFF; --bg-3:#F0F0F0; --bg-hover:#E8E8E8;
+  --line:#E5E5E5; --line-strong:#D4D4D4;
+  --fg-0:#0A0A0A; --fg-1:#404040; --fg-2:#737373; --fg-on-accent:#FAFAFA;
+  /* primary action = solid near-black (shadcn primary) */
+  --primary:#0A0A0A; --primary-fg:#FAFAFA; --primary-hover:#262626;
+  /* brand accent = indigo */
+  --accent:#4F46E5; --accent-bright:#6366F1; --accent-dim:#4338CA;
+  --accent-glow:rgba(79,70,229,0.10);
+  --signal:#4F46E5; --signal-dim:#4338CA; --signal-glow:rgba(79,70,229,0.14);
+  --ok:#16A34A;   --ok-bg:rgba(22,163,74,0.10);
+  --warn:#D97706; --warn-bg:rgba(217,119,6,0.12);
+  --err:#DC2626;  --err-bg:rgba(220,38,38,0.10);
+  --info:#2563EB; --info-bg:rgba(37,99,235,0.10);
+  --io-messages:#0D9488; --io-text:#6B7280; --io-json:#7C3AED;
+  --io-tool:#4F46E5; --io-vector:#C026D3; --io-control:#737373; --io-any:#A3A3A3;
+  --canvas-bg:#FAFAFA; --canvas-grid:rgba(10,10,10,0.05); --canvas-grid-strong:rgba(10,10,10,0.09);
+  --node-shadow:0 1px 3px rgba(0,0,0,.1), 0 1px 2px -1px rgba(0,0,0,.1);
+  --sh-1:0 1px 2px 0 rgba(0,0,0,.05);
+  --sh-2:0 4px 6px -1px rgba(0,0,0,.1), 0 2px 4px -2px rgba(0,0,0,.1);
+  --sh-pop:0 20px 25px -5px rgba(0,0,0,.1), 0 8px 10px -6px rgba(0,0,0,.1);
 }
 
 :root[data-theme="dark"] {
-  --bg-0:#0A0C0F; --bg-1:#0F1318; --bg-2:#151A21; --bg-3:#1C232C; --bg-hover:#222A34;
-  --line:#2A323D; --line-strong:#3A4452;
-  --fg-0:#EEF2F6; --fg-1:#AAB4C0; --fg-2:#6E7884; --fg-on-accent:#1A0E08;
-  --accent:#FF6A3D; --accent-bright:#FF855E; --accent-dim:#C24E2B;
-  --accent-glow:rgba(255,106,61,0.22);
-  --signal:#34D6C6; --signal-dim:#1F8C82; --signal-glow:rgba(52,214,198,0.18);
-  --ok:#46C97E; --ok-bg:rgba(70,201,126,0.12);
-  --warn:#F0B23C; --warn-bg:rgba(240,178,60,0.12);
-  --err:#F2615B; --err-bg:rgba(242,97,91,0.12);
-  --info:#5B9BF2; --info-bg:rgba(91,155,242,0.12);
-  --io-messages:#34D6C6; --io-text:#8A93A0; --io-json:#A78BFA;
-  --io-tool:#FF6A3D; --io-vector:#EC6FE0; --io-control:#6E7884; --io-any:#C0C7D0;
-  --canvas-bg:#0A0C0F; --canvas-grid:rgba(255,255,255,0.05); --canvas-grid-strong:rgba(255,255,255,0.09);
-  --node-shadow:0 1px 0 rgba(0,0,0,.4), 0 6px 24px rgba(0,0,0,.5);
-  --sh-1:0 1px 0 rgba(0,0,0,.4), 0 1px 2px rgba(0,0,0,.3);
-  --sh-2:0 4px 16px rgba(0,0,0,.45);
-  --sh-pop:0 12px 40px rgba(0,0,0,.55);
+  --bg-0:#0A0A0A; --bg-1:#171717; --bg-2:#1F1F1F; --bg-3:#262626; --bg-hover:#2E2E2E;
+  --line:rgba(255,255,255,0.10); --line-strong:rgba(255,255,255,0.16);
+  --fg-0:#FAFAFA; --fg-1:#D4D4D4; --fg-2:#A3A3A3; --fg-on-accent:#FFFFFF;
+  /* dark: primary flips to light with dark text (shadcn convention) */
+  --primary:#FAFAFA; --primary-fg:#171717; --primary-hover:#E5E5E5;
+  --accent:#818CF8; --accent-bright:#A5B4FC; --accent-dim:#6366F1;
+  --accent-glow:rgba(129,140,248,0.18);
+  --signal:#818CF8; --signal-dim:#6366F1; --signal-glow:rgba(129,140,248,0.18);
+  --ok:#4ADE80; --ok-bg:rgba(74,222,128,0.12);
+  --warn:#FBBF24; --warn-bg:rgba(251,191,36,0.12);
+  --err:#F87171; --err-bg:rgba(248,113,113,0.12);
+  --info:#60A5FA; --info-bg:rgba(96,165,250,0.12);
+  --io-messages:#2DD4BF; --io-text:#9CA3AF; --io-json:#A78BFA;
+  --io-tool:#818CF8; --io-vector:#E879F9; --io-control:#A3A3A3; --io-any:#C0C7D0;
+  --canvas-bg:#0A0A0A; --canvas-grid:rgba(255,255,255,0.05); --canvas-grid-strong:rgba(255,255,255,0.09);
+  --node-shadow:0 1px 3px rgba(0,0,0,.5), 0 1px 2px -1px rgba(0,0,0,.4);
+  --sh-1:0 1px 2px 0 rgba(0,0,0,.4);
+  --sh-2:0 4px 6px -1px rgba(0,0,0,.5), 0 2px 4px -2px rgba(0,0,0,.5);
+  --sh-pop:0 20px 25px -5px rgba(0,0,0,.6), 0 8px 10px -6px rgba(0,0,0,.5);
 }
 
 :root {
-  --font-display:"Hubot Sans","Schibsted Grotesk",system-ui,sans-serif;
-  --font-ui:"Hanken Grotesk","Hubot Sans",system-ui,sans-serif;
-  --font-mono:"Commit Mono","IBM Plex Mono",ui-monospace,monospace;
+  --font-display:"Geist",ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  --font-ui:"Geist",ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  --font-mono:"Geist Mono",ui-monospace,SFMono-Regular,"Menlo","Consolas","Liberation Mono",monospace;
   --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:20px; --s6:24px; --s8:32px; --s10:40px; --s12:48px;
-  --r-xs:4px; --r-sm:6px; --r-md:8px; --r-lg:10px; --r-xl:14px;
+  --r-xs:4px; --r-sm:8px; --r-md:8px; --r-lg:12px; --r-xl:14px;
   --ease:cubic-bezier(.2,.8,.2,1); --dur-fast:120ms; --dur:180ms; --dur-slow:260ms;
-  --glow-accent:0 0 0 1px var(--accent), 0 0 18px var(--accent-glow);
-  --glow-signal:0 0 0 1px var(--signal), 0 0 16px var(--signal-glow);
+  --glow-accent:0 0 0 1px var(--accent), 0 0 0 3px var(--accent-glow);
+  --glow-signal:0 0 0 3px var(--signal-glow);
 }
 
 * { box-sizing:border-box; }
@@ -100,8 +106,8 @@ body {
 }
 .btn:active { transform:translateY(.5px); }
 .btn svg { width:15px; height:15px; }
-.btn-primary { background:var(--accent); color:var(--fg-on-accent); border-color:var(--accent-dim); box-shadow:0 1px 0 rgba(0,0,0,.06), 0 0 0 0 var(--accent-glow); }
-.btn-primary:hover { background:var(--accent-bright); box-shadow:0 0 0 3px var(--accent-glow); }
+.btn-primary { background:var(--primary); color:var(--primary-fg); border-color:transparent; box-shadow:var(--sh-1); }
+.btn-primary:hover { background:var(--primary-hover); box-shadow:var(--sh-1); }
 .btn-secondary { background:var(--bg-1); color:var(--fg-0); border-color:var(--line-strong); }
 .btn-secondary:hover { background:var(--bg-hover); border-color:var(--fg-2); }
 .btn-ghost { background:transparent; color:var(--fg-1); }
@@ -138,6 +144,10 @@ body {
   background-repeat:no-repeat; background-position:right var(--s3) center; }
 .field-label { display:block; font-size:12px; font-weight:600; color:var(--fg-1); margin-bottom:6px; }
 .field-help { font-size:11.5px; color:var(--fg-2); margin-top:5px; line-height:15px; }
+
+/* ---------- native checkbox / radio (brand accent instead of browser blue) ---------- */
+input[type="checkbox"], input[type="radio"] { accent-color:var(--accent); cursor:pointer; width:15px; height:15px; }
+input[type="checkbox"]:disabled, input[type="radio"]:disabled { cursor:not-allowed; opacity:.5; }
 
 /* ---------- toggle ---------- */
 .toggle { position:relative; width:34px; height:20px; border-radius:999px; background:var(--line-strong); border:none; cursor:pointer; transition:background var(--dur); flex:none; }
@@ -223,9 +233,9 @@ body {
 
 .no-scrollbar::-webkit-scrollbar { display:none; }
 
-.sidenav-item { background:transparent; }
+.sidenav-item { background:transparent; font-weight:500; }
 .sidenav-item:not(.active):hover { background:var(--bg-3); }
-.sidenav-item.active { background:var(--accent-glow); }
+.sidenav-item.active { background:var(--accent-glow); color:var(--accent); font-weight:600; }
 
 /* ---------- markdown (assistant replies: Feature 1 - structured responses) ----------
    Inherits font-size from the chat bubble; only sets structure + theme-aware colors. */
