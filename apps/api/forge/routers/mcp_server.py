@@ -10,6 +10,7 @@ request/response JSON-RPC works with HTTP MCP clients.
 from __future__ import annotations
 
 import hmac
+import logging
 
 from fastapi import APIRouter, HTTPException, Request, status
 from sqlalchemy import select
@@ -19,6 +20,8 @@ from forge.db.base import SessionLocal
 from forge.models import Project
 from forge.services.runtime import build_compile_context
 from forge.util.ratelimit import rate_limiter
+
+log = logging.getLogger("forge.routers.mcp_server")
 
 router = APIRouter(prefix="/v1/mcp", tags=["mcp-server"])
 
@@ -148,8 +151,10 @@ async def mcp_rpc(project_id: str, request: Request):
                 result = await run_service.run_to_completion(run_id=run.id, tenant_id=proj.tenant_id, project_id=project_id)
                 text = result.get("answer") or ""
                 return _rpc(rid, {"content": [{"type": "text", "text": text}], "isError": result.get("status") == "error"})
-            except Exception as e:  # noqa: BLE001
-                return _rpc(rid, {"content": [{"type": "text", "text": f"error: {e}"}], "isError": True})
+            except Exception:  # noqa: BLE001
+                # Don't leak internal error/stack detail to the external MCP client; log it server-side.
+                log.exception("mcp workflow run failed (project=%s)", project_id)
+                return _rpc(rid, {"content": [{"type": "text", "text": "error: workflow run failed"}], "isError": True})
         if allow is not None and name not in allow:
             return _rpc(rid, error={"code": -32602, "message": f"tool {name!r} is not exposed"})
         tool = next((sp["tool"] for sp in ctx.tool_specs.values() if sp["tool"].name == name), None)

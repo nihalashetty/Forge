@@ -47,7 +47,6 @@ class AgentService:
             agent.name = name
         if config is not None:
             agent.config = config
-            agent.version += 1
         await session.commit()
         await session.refresh(agent)
         return agent

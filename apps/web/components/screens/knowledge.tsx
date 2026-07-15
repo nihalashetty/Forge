@@ -3,10 +3,9 @@
    (free-form kinds/categories + tags), and the search debugger. */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Icon } from "../icons";
-import { Field, Modal, Segmented, StatusPill } from "../primitives";
-import { api, KbSource, QaPair, SearchHit } from "@/lib/api";
+import { Drawer, Field, Modal, Segmented, StatusPill } from "../primitives";
+import { api, ActivityEntry, KbSource, QaPair, SearchHit } from "@/lib/api";
 import { ChunkMap } from "./chunk-map";
-import { VersionHistory } from "../version-history";
 
 const VTABS = [
   { value: "files", label: "Files", icon: "knowledge" },
@@ -26,12 +25,19 @@ const CHUNK_HELP = "Recursive suits most documents; By section keeps each Markdo
 
 export function KnowledgeScreen({ project }: { project: any }) {
   const [tab, setTab] = useState<string>("files");
+  const [histOpen, setHistOpen] = useState(false);
   return (
     <div className="col" style={{ flex: 1, minHeight: 0 }}>
-      <div style={{ padding: "20px 28px 14px" }}>
-        <div className="t-display">Knowledge</div>
-        <div className="fg-1" style={{ marginTop: 3 }}>Ground agents in your docs (Chroma vectors, organized in folders) and deflect FAQs with categorized Q&A pairs.</div>
+      <div className="row spread" style={{ padding: "20px 28px 14px", alignItems: "flex-start" }}>
+        <div>
+          <div className="t-display">Knowledge</div>
+          <div className="fg-1" style={{ marginTop: 3 }}>Ground agents in your docs (Chroma vectors, organized in folders) and deflect FAQs with categorized Q&A pairs.</div>
+        </div>
+        <button className="btn btn-secondary btn-sm" style={{ flex: "none" }} onClick={() => setHistOpen(true)} disabled={!project?.id} title="What was added, changed or removed">
+          <Icon name="clock" size={14} />History
+        </button>
       </div>
+      <KnowledgeHistory project={project} open={histOpen} onClose={() => setHistOpen(false)} />
       <div className="row" style={{ flex: 1, minHeight: 0, alignItems: "stretch" }}>
         {/* vertical tab rail */}
         <nav className="col" style={{ width: 184, flex: "none", padding: "4px 0 16px 20px", gap: 2 }}>
@@ -62,6 +68,71 @@ export function KnowledgeScreen({ project }: { project: any }) {
         </div>
       </div>
     </div>
+  );
+}
+
+/* Compact "3m ago" / "2d ago" relative time, falling back to a locale date. */
+function knRelTime(iso?: string | null): string {
+  if (!iso) return "";
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return String(iso);
+  const s = Math.round((Date.now() - t) / 1000);
+  if (s < 60) return "just now";
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.round(h / 24);
+  if (d < 30) return `${d}d ago`;
+  return new Date(iso).toLocaleDateString();
+}
+
+/* Read-only, project-wide activity: what files / Q&A pairs were added, changed or removed.
+   Opened from the Knowledge header - no per-row clutter, no restore (content lives in the
+   vector store, so there's nothing to roll back). */
+function KnowledgeHistory({ project, open, onClose }: { project: any; open: boolean; onClose: () => void }) {
+  const [rows, setRows] = useState<ActivityEntry[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    if (!open || !project?.id) return;
+    setRows(null); setErr(null);
+    api.knowledgeActivity(project.id).then(setRows).catch((e) => setErr(String(e?.message || e)));
+  }, [open, project?.id]);
+
+  const ACTION: Record<string, { label: string; cls: string; icon: string }> = {
+    added: { label: "Added", cls: "pill-ok", icon: "plus" },
+    changed: { label: "Changed", cls: "pill-muted", icon: "edit" },
+    removed: { label: "Removed", cls: "pill-err", icon: "trash" },
+  };
+  return (
+    <Drawer open={open} onClose={onClose} title="Knowledge history" sub={project?.name} width={440}>
+      <div className="col" style={{ padding: 14, gap: 8 }}>
+        {err && <div className="card" style={{ padding: 12, color: "var(--err)" }}>{err}</div>}
+        {!err && rows === null && <div className="fg-2 t-caption" style={{ padding: "8px 2px" }}>Loading…</div>}
+        {!err && rows?.length === 0 && (
+          <div className="col center" style={{ padding: "40px 16px", textAlign: "center", gap: 8, color: "var(--fg-2)" }}>
+            <Icon name="clock" size={22} />
+            <div className="t-body-sm">No changes yet.</div>
+            <div className="t-caption">Adding, editing or removing files and Q&A pairs shows up here.</div>
+          </div>
+        )}
+        {rows?.map((r) => {
+          const a = ACTION[r.action || ""] || { label: r.action || "changed", cls: "pill-muted", icon: "minus" };
+          return (
+            <div key={r.id} className="card" style={{ padding: "10px 12px" }}>
+              <div className="row gap2" style={{ alignItems: "center", minWidth: 0 }}>
+                <span className={"pill " + a.cls} style={{ height: 18, flex: "none" }}><Icon name={a.icon as any} size={11} />{a.label}</span>
+                <span className="typechip" style={{ flex: "none" }}>{r.entity_type === "qa_pair" ? "Q&A" : "File"}</span>
+                <span className="t-body-sm truncate" style={{ minWidth: 0 }}>{r.title}</span>
+              </div>
+              <div className="t-caption fg-2 truncate" style={{ marginTop: 4 }}>
+                {r.author_email || "unknown"}{r.created_at ? ` · ${knRelTime(r.created_at)}` : ""}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </Drawer>
   );
 }
 
@@ -333,8 +404,6 @@ function Files({ project }: { project: any }) {
                   </td>
                   <td style={{ textAlign: "right" }}>
                     <div className="row gap1" style={{ justifyContent: "flex-end" }}>
-                      {/* Config history only (folder/name/chunking); content isn't versioned, so read-only. */}
-                      <VersionHistory entityType="kb_source" entityId={s.id} entityLabel={s.name} buttonClassName="iconbtn" buttonLabel="" allowRestore={false} />
                       <button className="iconbtn" title="Re-chunk & re-embed" onClick={() => openRechunk([s.id])}><Icon name="layers" size={14} /></button>
                       <button className="iconbtn" title="Re-embed (reuse current chunking)" onClick={() => reingest(s.id)}><Icon name="refresh" size={14} /></button>
                       <button className="iconbtn" title="Delete" onClick={async () => { await api.deleteSource(project.id, s.id); reload(); }}><Icon name="trash" size={15} /></button>

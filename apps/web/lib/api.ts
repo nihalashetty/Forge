@@ -51,7 +51,6 @@ export interface Tool {
   name: string;
   kind: string;
   enabled: boolean;
-  version: number;
   auth_provider_id?: string | null;
   last_tested?: string | null;
   config: Record<string, any>;
@@ -109,7 +108,6 @@ export interface Agent {
   id: string;
   project_id: string;
   name: string;
-  version: number;
   config: Record<string, any>;
   created_by?: string | null;
   created_by_email?: string | null;
@@ -423,7 +421,6 @@ export const api = {
   acceptInvite: (token: string, password: string) =>
     json<AuthResult>("/v1/auth/accept-invite", { method: "POST", body: JSON.stringify({ token, password }) }),
   listTeam: () => json<TeamMember[]>("/v1/team/members"),
-  listAudit: (projectId?: string) => json<AuditEntry[]>(`/v1/audit${projectId ? `?project_id=${projectId}` : ""}`),
   listPricing: () => json<Record<string, { input_per_1m: number; output_per_1m: number }>>("/v1/pricing"),
   setPricing: (model: string, body: { input_per_1m: number; output_per_1m: number }) =>
     json<any>(`/v1/pricing/${encodeURIComponent(model)}`, { method: "PUT", body: JSON.stringify(body) }),
@@ -434,6 +431,12 @@ export const api = {
     json<EntityVersion & { snapshot: Record<string, any> }>(`/v1/versions/${entityType}/${entityId}/${versionNo}`),
   restoreVersion: (entityType: EntityType, entityId: string, versionNo: number) =>
     json<{ ok?: boolean; version_no?: number }>(`/v1/versions/${entityType}/${entityId}/restore`, { method: "POST", body: JSON.stringify({ version_no: versionNo }) }),
+  // read-only project-wide knowledge activity (added | changed | removed) for the Knowledge History
+  knowledgeActivity: (projectId: string) =>
+    json<ActivityEntry[]>(`/v1/versions/project/${projectId}/activity`),
+  // full project config snapshots (newest first) so Settings > History can diff by section
+  projectConfigHistory: (projectId: string) =>
+    json<ProjectVersion[]>(`/v1/versions/project/${projectId}/config-history`),
   inviteMember: (body: { email: string; role?: string; password?: string }) =>
     json<InviteResult>("/v1/team/members", { method: "POST", body: JSON.stringify(body) }),
   updateMember: (uid: string, body: { role?: string; status?: string }) =>
@@ -484,12 +487,15 @@ export interface EmbedSettings { enabled: boolean; allowed_origins: string[]; wo
 
 export type EntityType = "workflow" | "agent" | "tool" | "component" | "auth_provider" | "kb_source" | "project";
 export interface EntityVersion { id: string; version_no: number; label?: string | null; author_email?: string | null; created_at?: string | null; }
+// One row of the read-only Knowledge activity feed (a file or Q&A pair added/changed/removed).
+export interface ActivityEntry { id: string; entity_type: "kb_source" | "qa_pair"; entity_id: string; action?: string | null; title: string; author_email?: string | null; created_at?: string | null; }
+// A full project config snapshot (Settings > History diffs consecutive ones per section).
+export interface ProjectVersion { id: string; version_no: number; author_email?: string | null; created_at?: string | null; snapshot: Record<string, any>; }
 
 export interface MeResult { id: string; email: string | null; role: string; tenant_id: string; is_fallback: boolean; }
 export interface AuthResult { access_token: string; refresh_token: string; user: { id: string; email: string; role: string }; }
 export interface TeamMember { id: string; email: string; role: string; status: string; tenant_id: string; }
 export interface McpClientT { id: string; name: string; transport: string; url?: string | null; command?: string | null; args?: any; headers_ref?: string | null; enabled: boolean; disabled_tools?: string[]; }
-export interface AuditEntry { id: string; action: string; actor_email?: string | null; resource_type?: string | null; ip?: string | null; status: string; at?: string | null; }
 
 export interface SSEFrame {
   event: string;

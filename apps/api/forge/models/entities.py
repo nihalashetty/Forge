@@ -83,7 +83,6 @@ class Tool(PkTimestamp, Base):
     config: Mapped[dict] = mapped_column(JSON, default=dict)
     auth_provider_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
-    version: Mapped[int] = mapped_column(Integer, default=1)
     last_tested: Mapped[str | None] = mapped_column(String(20), nullable=True)  # pass|fail|untested
 
 
@@ -120,7 +119,6 @@ class Agent(PkTimestamp, Base):
     project_id: Mapped[str] = mapped_column(String(36), index=True)
     name: Mapped[str] = mapped_column(String(120))
     config: Mapped[dict] = mapped_column(JSON, default=dict)  # validated vs forge/nodes/agent
-    version: Mapped[int] = mapped_column(Integer, default=1)
     # Creator attribution (denormalized email snapshot for display without a join).
     created_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
     created_by_email: Mapped[str | None] = mapped_column(String(320), nullable=True)

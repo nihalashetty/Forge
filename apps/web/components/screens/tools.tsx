@@ -81,7 +81,7 @@ export function ToolsScreen({ project, onOpen }: { project: any; onOpen: (t: Too
         ) : (
           <div className="card" style={{ overflow: "hidden" }}>
             <table className="tbl">
-              <thead><tr><th>Tool</th><th>Kind</th><th>Auth</th><th>Projection</th><th>Status</th><th style={{ textAlign: "right" }}>Ver</th><th></th></tr></thead>
+              <thead><tr><th>Tool</th><th>Kind</th><th>Auth</th><th>Projection</th><th>Status</th><th></th></tr></thead>
               <tbody>
                 {tools.map((t) => {
                   const lt = (t.config as any)?._last_test;
@@ -92,7 +92,6 @@ export function ToolsScreen({ project, onOpen }: { project: any; onOpen: (t: Too
                       <td>{t.auth_provider_id ? <span className="chip chip-mono"><Icon name="auth" size={12} />{t.auth_provider_id.slice(0, 8)}</span> : <span className="fg-2">-</span>}</td>
                       <td>{lt ? <TokenMeter compact raw={lt.raw_tokens} projected={lt.projected_tokens} animateKey={t.id} /> : <span className="fg-2">-</span>}</td>
                       <td><StatusPill status={t.last_tested || "untested"} /></td>
-                      <td style={{ textAlign: "right" }}><span className="mono-sm fg-2">v{t.version}</span></td>
                       <td style={{ textAlign: "right" }}>
                         <div className="row gap1" style={{ justifyContent: "flex-end" }}>
                           <Toggle on={t.enabled} onChange={() => toggleEnabled(t)} />
@@ -116,7 +115,6 @@ export function ToolsScreen({ project, onOpen }: { project: any; onOpen: (t: Too
 
 function ToolCard({ t, onOpen, onDelete, onDuplicate, onToggle }: { t: Tool; onOpen: () => void; onDelete: (e: React.MouseEvent) => void; onDuplicate: (e: React.MouseEvent) => void; onToggle: () => void }) {
   const proj = (t.config as any)?.response?.projection_jmespath || (t.config as any)?.response?.projection;
-  const lt = (t.config as any)?._last_test;
   return (
     <div className="card card-hover" style={{ padding: 15, opacity: t.enabled ? 1 : 0.6 }} onClick={onOpen}>
       <div className="row spread" style={{ marginBottom: 10 }}>
@@ -128,21 +126,13 @@ function ToolCard({ t, onOpen, onDelete, onDuplicate, onToggle }: { t: Tool; onO
           <button className="iconbtn" title="Delete tool" onClick={onDelete}><Icon name="trash" size={14} /></button>
         </div>
       </div>
-      <div className="mono" style={{ fontWeight: 600, fontSize: 13.5, color: "var(--fg-0)" }}>{t.name}</div>
+      <div className="mono" style={{ fontWeight: 600, fontSize: 13.5, color: "var(--fg-0)", overflowWrap: "anywhere", wordBreak: "break-word" }}>{t.name}</div>
       <div className="fg-2 t-caption" style={{ marginTop: 3, height: 32, overflow: "hidden" }}>{(t.config as any)?.description || "No description."}</div>
       <div className="divider" style={{ margin: "10px 0" }} />
-      {proj ? (
-        <div className="col gap1">
-          <div className="row spread" style={{ fontSize: 10.5, color: "var(--fg-2)" }}>
-            <span>response projection</span>
-            {t.auth_provider_id && <span className="row gap1"><Icon name="auth" size={11} />{t.auth_provider_id.slice(0, 10)}</span>}
-          </div>
-          {lt ? <TokenMeter raw={lt.raw_tokens} projected={lt.projected_tokens} animateKey={t.id} />
-              : <div className="mono-sm fg-1 truncate" style={{ fontSize: 11 }}>{String(proj)}</div>}
-        </div>
-      ) : (
-        <div className="fg-2 t-caption row gap2"><Icon name="minus" size={13} />No projection configured</div>
-      )}
+      <div className="row spread" style={{ fontSize: 10.5, color: "var(--fg-2)", minHeight: 20, alignItems: "center" }}>
+        <span className="row gap1"><Icon name={proj ? "check" : "minus"} size={12} />{proj ? "Response projection set" : "No projection"}</span>
+        {t.auth_provider_id && <span className="row gap1 truncate" style={{ maxWidth: 130 }}><Icon name="auth" size={11} />{t.auth_provider_id.slice(0, 10)}</span>}
+      </div>
     </div>
   );
 }
@@ -248,7 +238,7 @@ export function ToolBuilderScreen({ project, toolId, onBack }: { project: any; t
         </div>
         <div className="row gap2">
           <VersionHistory entityType="tool" entityId={tool.id} entityLabel={tool.name} onRestored={() => setReloadKey((k) => k + 1)} />
-          <button className="btn btn-primary" onClick={save} disabled={saving}><Icon name="save" size={15} />{saving ? "Saving…" : saved ? "Saved ✓" : `Save v${tool.version + 1}`}</button>
+          <button className="btn btn-primary" onClick={save} disabled={saving}><Icon name="save" size={15} />{saving ? "Saving…" : saved ? "Saved ✓" : "Save"}</button>
         </div>
       </div>
 

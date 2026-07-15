@@ -17,6 +17,7 @@ import re
 import smtplib
 from email.message import EmailMessage
 from email.utils import make_msgid, parseaddr
+from html.parser import HTMLParser
 from typing import Any
 
 from forge.channels.retry import retry_send
@@ -24,26 +25,62 @@ from forge.secrets.store import SecretStore
 
 log = logging.getLogger("forge.channels.email")
 
-_TAG_RE = re.compile(r"(?s)<(script|style).*?>.*?</\1>")
-_BR_RE = re.compile(r"(?i)<br\s*/?>|</p>|</div>|</li>|</tr>")
-_ANY_TAG_RE = re.compile(r"(?s)<[^>]+>")
+_BLOCK_ENDERS = {"br", "p", "div", "li", "tr"}
+_SKIP_TAGS = {"script", "style"}
+
+
+class _HTMLTextExtractor(HTMLParser):
+    """Pull visible text out of HTML with the stdlib parser instead of regexes, so a hostile
+    body can't trigger catastrophic backtracking (ReDoS): skip <script>/<style> content, turn
+    common block-enders into newlines, and let the parser unescape entities (convert_charrefs)."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._parts: list[str] = []
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: Any) -> None:
+        if tag in _SKIP_TAGS:
+            self._skip_depth += 1
+        elif tag == "br":
+            self._parts.append("\n")
+
+    def handle_startendtag(self, tag: str, attrs: Any) -> None:
+        if tag == "br":
+            self._parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in _SKIP_TAGS:
+            if self._skip_depth:
+                self._skip_depth -= 1
+        elif tag in _BLOCK_ENDERS:
+            self._parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if not self._skip_depth:
+            self._parts.append(data)
+
+    def get_text(self) -> str:
+        return "".join(self._parts)
 
 
 def _html_to_text(html: str) -> str:
-    """Best-effort HTML -> plain text WITHOUT a new dependency: drop script/style, turn common
-    block-enders into newlines, strip remaining tags, and unescape a few entities. Good enough to
-    feed an HTML-only email's body to the workflow instead of an empty string (audit F)."""
+    """Best-effort HTML -> plain text WITHOUT a new dependency, so an HTML-only email's body
+    reaches the workflow instead of an empty string (audit F). Parser-based (not regex) to stay
+    ReDoS-safe on attacker-controlled input."""
     if not html:
         return ""
-    import html as _html
-
-    text = _TAG_RE.sub(" ", html)
-    text = _BR_RE.sub("\n", text)
-    text = _ANY_TAG_RE.sub("", text)
-    text = _html.unescape(text)
-    # collapse runs of whitespace but keep line breaks
+    parser = _HTMLTextExtractor()
+    try:
+        parser.feed(html)
+        parser.close()
+    except Exception:  # noqa: BLE001 - malformed HTML must never crash the public inbound webhook
+        pass
+    text = parser.get_text()
+    # collapse horizontal whitespace and excess blank lines; every pattern here is linear.
     text = re.sub(r"[ \t\f\v]+", " ", text)
-    text = re.sub(r"\n\s*\n\s*\n+", "\n\n", text)
+    text = re.sub(r" *\n *", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
 

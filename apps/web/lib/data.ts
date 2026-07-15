@@ -355,8 +355,7 @@ export const PROJECT_NAV: NavEntry[] = [
   { section: "Deploy", items: [
     { id: "channels", label: "Channels", icon: "msg", help: "Deploy a workflow to an email surface." },
     { id: "triggers", label: "Triggers", icon: "bolt", help: "Event-driven entry points - webhook URLs, schedules, and pollers that start runs." },
-    { id: "connect", label: "Connect", icon: "connect", help: "Expose this project's tools as an MCP server, and register external MCP servers to consume." },
-    { id: "embed", label: "Embed", icon: "grid", help: "Embed this project's chatbot as a widget on any website (publishable key + allowed origins)." },
+    { id: "connect", label: "Connect", icon: "connect", help: "Connect this project to external systems: the Run API, integration reference, MCP server, and the embeddable chat widget." },
   ] },
   { section: "Observe", items: [
     { id: "traces", label: "Traces", icon: "traces", help: "Per-run span waterfall with model calls, tokens, latency, and cost." },

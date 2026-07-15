@@ -6,9 +6,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Icon } from "../icons";
 import { EmptyState, Field, Modal, Segmented, Toggle } from "../primitives";
-import { api, AuditEntry, clearTokens, InviteResult, MeResult, Secret, TeamMember } from "@/lib/api";
+import { api, clearTokens, InviteResult, MeResult, ProjectVersion, Secret, TeamMember } from "@/lib/api";
 import { MODELS } from "@/lib/data";
-import { VersionHistory } from "../version-history";
 
 const ROLES = ["owner", "admin", "editor", "viewer"];
 
@@ -24,7 +23,7 @@ const RERANKER_OPTIONS = [
 
 type SectionId =
   | "general" | "members" | "apikeys" | "pricing" | "budgets"
-  | "knowledge" | "versioning" | "observability" | "advanced";
+  | "knowledge" | "versioning" | "observability" | "advanced" | "history";
 
 const SECTIONS: { id: SectionId; label: string; icon: string; savesConfig?: boolean }[] = [
   { id: "general", label: "General", icon: "sliders", savesConfig: true },
@@ -36,7 +35,27 @@ const SECTIONS: { id: SectionId; label: string; icon: string; savesConfig?: bool
   { id: "versioning", label: "Versioning", icon: "clock", savesConfig: true },
   { id: "observability", label: "Observability & Retention", icon: "traces", savesConfig: true },
   { id: "advanced", label: "Advanced", icon: "settings", savesConfig: true },
+  { id: "history", label: "History", icon: "clock" },
 ];
+
+// Which settings section each project-config field belongs to, so History can group changes
+// under the same tab names as the nav. Top-level snapshot fields + config.* keys. Anything not
+// listed falls through to "advanced". Members/API-key values are intentionally NOT diffed here
+// (Members isn't config-backed; secrets are masked below).
+const FIELD_SECTION: Record<string, SectionId> = {
+  name: "general", description: "general", slug: "general", status: "general", default_model: "general",
+  budgets: "budgets",
+  rag_defaults: "knowledge",
+  version_history_limit: "versioning", versioning: "versioning",
+  observability: "observability",
+  scheduler: "advanced",
+  model_pricing: "pricing",
+  provider_credentials: "apikeys",
+};
+// The config-backed sections that get a History tab (Members isn't config-backed → skipped).
+const HISTORY_TABS: SectionId[] = ["general", "budgets", "knowledge", "versioning", "observability", "apikeys", "pricing", "advanced"];
+// Field paths whose values must never be shown in a diff (secrets / credentials).
+const MASK_RE = /credential|secret|token|api[_-]?key|password/i;
 
 export function SettingsScreen({ project }: { project: any }) {
   const [section, setSection] = useState<SectionId>("general");
@@ -133,16 +152,11 @@ export function SettingsScreen({ project }: { project: any }) {
           <div className="fade-up" style={{ maxWidth: 720, margin: "0 auto", padding: "24px 28px" }}>
             <div className="row spread" style={{ marginBottom: 18 }}>
               <div className="t-display">{activeMeta.label}</div>
-              <div className="row gap2">
-                {section === "general" && (
-                  <VersionHistory entityType="project" entityId={project?.id} entityLabel={meta.name || project?.name} onRestored={() => window.location.reload()} />
-                )}
-                {activeMeta.savesConfig && (
-                  <button className="btn btn-primary btn-sm" onClick={persist} disabled={save === "saving"}>
-                    <Icon name={save === "saved" ? "check" : "save"} size={14} />{save === "saving" ? "Saving…" : save === "saved" ? "Saved" : "Save"}
-                  </button>
-                )}
-              </div>
+              {activeMeta.savesConfig && (
+                <button className="btn btn-primary btn-sm" onClick={persist} disabled={save === "saving"}>
+                  <Icon name={save === "saved" ? "check" : "save"} size={14} />{save === "saving" ? "Saving…" : save === "saved" ? "Saved" : "Save"}
+                </button>
+              )}
             </div>
 
             {section === "general" && (
@@ -304,9 +318,10 @@ export function SettingsScreen({ project }: { project: any }) {
                     </label>
                   ))}
                 </Card>
-                <AuditCard project={project} />
               </>
             )}
+
+            {section === "history" && <SettingsHistory project={project} />}
           </div>
         </div>
       </div>
@@ -317,6 +332,104 @@ export function SettingsScreen({ project }: { project: any }) {
         <Field label="Value" help="Encrypted at rest; never shown again."><input className="input mono" type="password" value={secForm.value} onChange={(e) => setSecForm((f) => ({ ...f, value: e.target.value }))} /></Field>
         <Field label="Kind"><input className="input" value={secForm.kind} onChange={(e) => setSecForm((f) => ({ ...f, kind: e.target.value }))} /></Field>
       </Modal>
+    </div>
+  );
+}
+
+/* Settings > History: read-only per-section change log. Diffs consecutive project snapshots
+   (captured on every settings save) and buckets each changed field under the matching settings
+   tab. No restore - it's a log. Secret values are masked. */
+function fmtVal(v: any): string {
+  if (v === undefined || v === null || v === "") return "—";
+  if (typeof v === "object") { try { return JSON.stringify(v); } catch { return String(v); } }
+  return String(v);
+}
+function flattenConfig(snap: Record<string, any>): Record<string, any> {
+  // Merge the top-level snapshot fields with config.* so section bucketing keys off the
+  // outermost key (e.g. "budgets.max_usd" -> budgets), then flatten nested objects to dot-paths.
+  const src = { name: snap.name, slug: snap.slug, description: snap.description, status: snap.status, ...(snap.config || {}) };
+  const out: Record<string, any> = {};
+  const walk = (o: any, prefix: string) => {
+    for (const [k, v] of Object.entries(o || {})) {
+      const path = prefix ? `${prefix}.${k}` : k;
+      if (v && typeof v === "object" && !Array.isArray(v)) walk(v, path);
+      else out[path] = v;
+    }
+  };
+  walk(src, "");
+  return out;
+}
+type FieldChange = { path: string; from: any; to: any };
+type ChangeSet = { id: string; author?: string | null; at?: string | null; changes: FieldChange[] };
+
+function SettingsHistory({ project }: { project: any }) {
+  const [tab, setTab] = useState<SectionId>("general");
+  const [versions, setVersions] = useState<ProjectVersion[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    if (!project?.id) return;
+    setVersions(null); setErr(null);
+    api.projectConfigHistory(project.id).then(setVersions).catch((e) => setErr(String(e?.message || e)));
+  }, [project?.id]);
+
+  // The list is newest-first, so [i+1] is the older snapshot each version is diffed against.
+  const changeSets: ChangeSet[] = useMemo(() => {
+    if (!versions) return [];
+    const out: ChangeSet[] = [];
+    for (let i = 0; i < versions.length - 1; i++) {
+      const newer = flattenConfig(versions[i].snapshot || {});
+      const older = flattenConfig(versions[i + 1].snapshot || {});
+      const changes: FieldChange[] = [];
+      new Set([...Object.keys(newer), ...Object.keys(older)]).forEach((k) => {
+        if (JSON.stringify(newer[k]) !== JSON.stringify(older[k])) changes.push({ path: k, from: older[k], to: newer[k] });
+      });
+      if (changes.length) out.push({ id: versions[i].id, author: versions[i].author_email, at: versions[i].created_at, changes });
+    }
+    return out;
+  }, [versions]);
+
+  const sectionOf = (path: string): SectionId => FIELD_SECTION[path.split(".")[0]] || "advanced";
+  const forTab = changeSets
+    .map((cs) => ({ ...cs, changes: cs.changes.filter((c) => sectionOf(c.path) === tab) }))
+    .filter((cs) => cs.changes.length > 0);
+
+  return (
+    <div className="col" style={{ gap: 14 }}>
+      <div className="field-help" style={{ marginTop: 0 }}>A read-only log of what changed in each settings section, newest first — captured on every save. Pick a section:</div>
+      <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
+        {HISTORY_TABS.map((id) => {
+          const meta = SECTIONS.find((s) => s.id === id)!;
+          return (
+            <button key={id} onClick={() => setTab(id)} className={"btn btn-sm " + (tab === id ? "btn-primary" : "btn-secondary")}>{meta.label}</button>
+          );
+        })}
+      </div>
+      {err && <div className="card" style={{ padding: 12, color: "var(--err)" }}>{err}</div>}
+      {!err && versions === null && <div className="fg-2 t-caption">Loading history…</div>}
+      {!err && versions !== null && forTab.length === 0 && (
+        <div className="card col center" style={{ padding: 34, gap: 6, color: "var(--fg-2)" }}>
+          <Icon name="clock" size={20} />
+          <div className="t-body-sm">No changes recorded for this section.</div>
+        </div>
+      )}
+      {forTab.map((cs) => (
+        <div key={cs.id} className="card" style={{ padding: "12px 14px" }}>
+          <div className="t-caption fg-2" style={{ marginBottom: 8 }}>{cs.author || "unknown"}{cs.at ? ` · ${new Date(cs.at).toLocaleString()}` : ""}</div>
+          <div className="col" style={{ gap: 6 }}>
+            {cs.changes.map((c) => {
+              const mask = MASK_RE.test(c.path);
+              return (
+                <div key={c.path} className="row gap2" style={{ alignItems: "baseline", fontSize: 12 }}>
+                  <span className="mono-sm" style={{ minWidth: 150, flex: "none", color: "var(--fg-1)" }}>{c.path}</span>
+                  <span className="mono-sm fg-2 truncate" style={{ textDecoration: "line-through", minWidth: 0 }}>{mask ? "••••" : fmtVal(c.from)}</span>
+                  <Icon name="chevright" size={12} style={{ color: "var(--fg-2)", flex: "none" }} />
+                  <span className="mono-sm truncate" style={{ color: "var(--fg-0)", minWidth: 0 }}>{mask ? "••••" : fmtVal(c.to)}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
@@ -495,25 +608,6 @@ function PricingCard() {
           </tbody>
         </table>
       )}
-    </Card>
-  );
-}
-
-function AuditCard({ project }: { project: any }) {
-  const [rows, setRows] = useState<AuditEntry[]>([]);
-  const [denied, setDenied] = useState(false);
-  useEffect(() => { if (project?.id) api.listAudit(project.id).then(setRows).catch(() => setDenied(true)); }, [project?.id]);
-  if (denied) return null; // non-admins don't see the audit log
-  return (
-    <Card title="Audit log">
-      <div className="field-help" style={{ marginTop: 0, marginBottom: 8 }}>Recent create/update/delete and auth events in this workspace (admin only).</div>
-      {rows.slice(0, 40).map((a) => (
-        <div key={a.id} className="row spread" style={{ padding: "5px 0", borderTop: "1px solid var(--line)" }}>
-          <div className="row gap2"><span className="mono-sm">{a.action}</span>{a.status !== "ok" && <span className="pill pill-muted" style={{ height: 16 }}>{a.status}</span>}</div>
-          <div className="row gap2 fg-2 t-caption"><span>{a.actor_email || "-"}</span><span>{a.at ? new Date(a.at).toLocaleString() : ""}</span></div>
-        </div>
-      ))}
-      {rows.length === 0 && <div className="fg-2 t-caption">No audit events yet.</div>}
     </Card>
   );
 }

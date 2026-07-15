@@ -20,7 +20,12 @@ export async function middleware(req: NextRequest) {
     let origins: string[] = [];
     if (key) {
       try {
-        const r = await fetch(`${req.nextUrl.origin}/api/forge/v1/embed/${encodeURIComponent(key)}/config`, { cache: "no-store" });
+        // Resolve the config from the backend via a BUILD-time-trusted base, never the request's
+        // own origin: req.nextUrl.origin reflects the (spoofable) Host header, so using it to build
+        // the fetch target is an SSRF vector. FORGE_API_URL is the same internal API address the
+        // Next rewrite proxies to (container-internal in compose, 127.0.0.1:8000 on host dev).
+        const apiBase = (process.env.FORGE_API_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
+        const r = await fetch(`${apiBase}/v1/embed/${encodeURIComponent(key)}/config`, { cache: "no-store" });
         if (r.ok) origins = (await r.json())?.allowed_origins || [];
       } catch {
         /* fall back to the secure default below */

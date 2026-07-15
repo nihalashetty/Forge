@@ -148,7 +148,7 @@ async def list_sources(project_id: str, session: AsyncSession = Depends(get_sess
 @router.post("/sources", response_model=KbSourceOut, status_code=201)
 async def add_source(project_id: str, body: KbSourceCreate, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id), user: CurrentUser = Depends(require_role("editor"))):
     src = await KnowledgeService.create_source(session, tenant_id, project_id, kind=body.kind, name=body.name, uri=body.uri, text=body.text, folder=body.folder, chunking_strategy=body.chunking_strategy, meta=body.meta)
-    await safe_snapshot(session, "kb_source", src, author=user)
+    await safe_snapshot(session, "kb_source", src, author=user, label="added")
     # Ingest (fetch/chunk/embed) off the request: a real embedder takes seconds+ for a large
     # source, which would time out the HTTP call. The source returns as "queued"; the UI polls.
     await _queue_ingest(session, tenant_id, src)
@@ -195,7 +195,7 @@ async def upload_source(
         # Strip HTML, parse CSV/JSON into per-record text, and reject binaries with a clear 422.
         text = _decode_upload(name, raw)
     src = await KnowledgeService.create_source(session, tenant_id, project_id, kind="file", name=name, text=text, folder=folder, chunking_strategy=(chunking_strategy or None))
-    await safe_snapshot(session, "kb_source", src, author=user)
+    await safe_snapshot(session, "kb_source", src, author=user, label="added")
     # The file bytes are fully read above; only the chunk+embed runs in the background so a
     # large upload doesn't block (and time out) the request. Returns "queued"; the UI polls.
     await _queue_ingest(session, tenant_id, src)
@@ -218,7 +218,7 @@ async def embedding_health(project_id: str, session: AsyncSession = Depends(get_
 async def reingest_source(project_id: str, source_id: str, body: RechunkIn | None = None,
                           session: AsyncSession = Depends(get_session),
                           tenant_id: str = Depends(current_tenant_id),
-                          user: CurrentUser = Depends(require_role("editor"))):
+                          _: CurrentUser = Depends(require_role("editor"))):
     """Re-fetch + re-embed a source (re-crawl a site, or re-embed under the current model).
     An optional body overrides the chunking (strategy / size / overlap) before re-ingest."""
     from sqlalchemy import select
@@ -227,18 +227,15 @@ async def reingest_source(project_id: str, source_id: str, body: RechunkIn | Non
     src = (await session.execute(select(KbSource).where(KbSource.tenant_id == tenant_id, KbSource.id == source_id))).scalar_one_or_none()
     if src is None:
         raise HTTPException(status_code=404, detail="source not found")
-    overrode = bool(body and (body.chunking_strategy or body.chunk_size is not None or body.chunk_overlap is not None))
-    if overrode:
+    if body and (body.chunking_strategy or body.chunk_size is not None or body.chunk_overlap is not None):
         KnowledgeService._apply_chunk_overrides(
             src, chunking_strategy=body.chunking_strategy,
             chunk_size=body.chunk_size, chunk_overlap=body.chunk_overlap,
         )
-    # Mark pending + persist overrides, then re-embed off the request (see add_source).
+    # Mark pending + persist overrides, then re-embed off the request (see add_source). Re-embed /
+    # re-chunk is NOT snapshotted: it's frequent config churn, not an add/remove worth logging.
     src.status = "queued"
     await session.commit()
-    # Only the chunking config (in meta) is versionable, so snapshot when it actually changed.
-    if overrode:
-        await safe_snapshot(session, "kb_source", src, author=user)
     await _queue_ingest(session, tenant_id, src, reingest=True, label="reingest")
     return {"id": src.id, "status": src.status, "chunks": src.chunks}
 
@@ -246,7 +243,7 @@ async def reingest_source(project_id: str, source_id: str, body: RechunkIn | Non
 @router.post("/sources/rechunk")
 async def rechunk_sources(project_id: str, body: RechunkBulkIn, session: AsyncSession = Depends(get_session),
                           tenant_id: str = Depends(current_tenant_id),
-                          user: CurrentUser = Depends(require_role("editor"))):
+                          _: CurrentUser = Depends(require_role("editor"))):
     """Re-chunk a multi-selected set of sources with one shared set of overrides
     (strategy / size / overlap), then re-embed each (in the background). Tenant/project-scoped."""
     from sqlalchemy import select
@@ -268,14 +265,14 @@ async def rechunk_sources(project_id: str, body: RechunkBulkIn, session: AsyncSe
         src.status = "queued"
     await session.commit()  # persist overrides + queued status for the whole batch at once
     for src in rows:
-        await safe_snapshot(session, "kb_source", src, author=user)
         await _queue_ingest(session, tenant_id, src, reingest=True, label="rechunk")
     return [{"id": src.id, "status": src.status, "chunks": src.chunks} for src in rows]
 
 
 @router.patch("/sources/{source_id}", response_model=KbSourceOut)
-async def update_source(project_id: str, source_id: str, body: dict, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id), user: CurrentUser = Depends(require_role("editor"))):
-    """Move a source between folders (the only mutable field; content requires re-ingest)."""
+async def update_source(project_id: str, source_id: str, body: dict, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id), _: CurrentUser = Depends(require_role("editor"))):
+    """Move a source between folders (the only mutable field; content requires re-ingest).
+    Not snapshotted: a folder move is minor bookkeeping, not an add/remove worth logging."""
     from sqlalchemy import select
 
     from forge.models import KbSource
@@ -285,19 +282,20 @@ async def update_source(project_id: str, source_id: str, body: dict, session: As
     if "folder" in body:
         src.folder = str(body["folder"] or "")
     await session.commit()
-    await safe_snapshot(session, "kb_source", src, author=user)
     await session.refresh(src)
     return src
 
 
 @router.delete("/sources/{source_id}", status_code=204)
-async def delete_source(project_id: str, source_id: str, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id), _: CurrentUser = Depends(require_role("editor"))):
+async def delete_source(project_id: str, source_id: str, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id), user: CurrentUser = Depends(require_role("editor"))):
     from sqlalchemy import select
 
     from forge.models import KbSource
     src = (await session.execute(select(KbSource).where(KbSource.tenant_id == tenant_id, KbSource.id == source_id))).scalar_one_or_none()
     if src is None:
         raise HTTPException(404, "Source not found")
+    # Log the removal (name captured in the snapshot) before the row is gone.
+    await safe_snapshot(session, "kb_source", src, author=user, label="removed")
     await KnowledgeService.delete_source(session, src)
 
 
@@ -347,15 +345,17 @@ async def list_qa_kinds(project_id: str, session: AsyncSession = Depends(get_ses
 
 
 @qa_router.post("", response_model=QaPairOut, status_code=201)
-async def add_qa(project_id: str, body: QaPairCreate, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id), _: CurrentUser = Depends(require_role("editor"))):
-    return await KnowledgeService.create_qa(session, tenant_id, project_id, question=body.question, answer=body.answer, kind=body.kind, tags=body.tags)
+async def add_qa(project_id: str, body: QaPairCreate, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id), user: CurrentUser = Depends(require_role("editor"))):
+    qa = await KnowledgeService.create_qa(session, tenant_id, project_id, question=body.question, answer=body.answer, kind=body.kind, tags=body.tags)
+    await safe_snapshot(session, "qa_pair", qa, author=user, label="added")
+    return qa
 
 
 @qa_router.patch("/{qa_id}", response_model=QaPairOut)
 async def update_qa(project_id: str, qa_id: str, body: QaPairUpdate,
                     session: AsyncSession = Depends(get_session),
                     tenant_id: str = Depends(current_tenant_id),
-                    _: CurrentUser = Depends(require_role("editor"))):
+                    user: CurrentUser = Depends(require_role("editor"))):
     from sqlalchemy import select
 
     from forge.models import QaPair
@@ -368,11 +368,13 @@ async def update_qa(project_id: str, qa_id: str, body: QaPairUpdate,
     changes = body.model_dump(exclude_unset=True)
     if changes.get("question") is not None and not changes["question"].strip():
         raise HTTPException(422, "Question cannot be empty")
-    return await KnowledgeService.update_qa(session, qa, **changes)
+    qa = await KnowledgeService.update_qa(session, qa, **changes)
+    await safe_snapshot(session, "qa_pair", qa, author=user, label="changed")
+    return qa
 
 
 @qa_router.delete("/{qa_id}", status_code=204)
-async def delete_qa(project_id: str, qa_id: str, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id), _: CurrentUser = Depends(require_role("editor"))):
+async def delete_qa(project_id: str, qa_id: str, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id), user: CurrentUser = Depends(require_role("editor"))):
     from sqlalchemy import select
 
     from forge.models import QaPair
@@ -381,4 +383,5 @@ async def delete_qa(project_id: str, qa_id: str, session: AsyncSession = Depends
     ))).scalar_one_or_none()
     if qa is None:
         raise HTTPException(404, "Q&A pair not found")
+    await safe_snapshot(session, "qa_pair", qa, author=user, label="removed")
     await KnowledgeService.delete_qa(session, qa)

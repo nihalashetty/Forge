@@ -183,10 +183,11 @@ async def test_crawl_honors_robots_and_max_depth(monkeypatch):
     monkeypatch.setattr(ssrf, "guarded_get", fake_get)
     pages = await crawl_mod.crawl_site("https://acme.test/", max_pages=50, max_depth=1, delay=0.0)
 
-    assert "https://acme.test/" in pages
-    assert "https://acme.test/a" in pages and "https://acme.test/b" in pages
-    assert "https://acme.test/private" not in pages  # robots.txt Disallow honored
-    assert "https://acme.test/c" not in pages  # one hop beyond max_depth=1
+    crawled = set(pages)  # exact-URL membership (not substring) so this stays a set lookup
+    assert "https://acme.test/" in crawled
+    assert "https://acme.test/a" in crawled and "https://acme.test/b" in crawled
+    assert "https://acme.test/private" not in crawled  # robots.txt Disallow honored
+    assert "https://acme.test/c" not in crawled  # one hop beyond max_depth=1
 
 
 # --- model-backed end-to-end ---

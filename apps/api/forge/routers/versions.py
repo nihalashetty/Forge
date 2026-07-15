@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from forge.deps import CurrentUser, current_tenant_id, get_current_user, get_session, require_role
-from forge.services.versions import VersionService, versioned_types
+from forge.services.versions import ACTIVITY_TYPES, VersionService, activity_title, versioned_types
 
 router = APIRouter(prefix="/v1/versions", tags=["versions"])
 
@@ -33,6 +33,16 @@ class VersionDetailOut(VersionOut):
     snapshot: dict
 
 
+class ActivityOut(BaseModel):
+    id: str
+    entity_type: str
+    entity_id: str
+    action: str | None = None  # the snapshot label: added | changed | removed
+    title: str
+    author_email: str | None = None
+    created_at: datetime
+
+
 class RestoreIn(BaseModel):
     version_no: int
 
@@ -40,6 +50,38 @@ class RestoreIn(BaseModel):
 def _check_type(entity_type: str) -> None:
     if entity_type not in versioned_types():
         raise HTTPException(404, f"unknown entity type '{entity_type}'")
+
+
+# NOTE: these literal "/project/..." routes MUST be declared before the "/{entity_type}/..."
+# routes below, or FastAPI would match e.g. /project/{id}/activity against
+# /{entity_type}/{entity_id}/{version_no} first.
+@router.get("/project/{project_id}/activity", response_model=list[ActivityOut])
+async def project_activity(
+    project_id: str,
+    session: AsyncSession = Depends(get_session),
+    tenant_id: str = Depends(current_tenant_id),
+):
+    """Read-only project-wide activity feed for knowledge sources + Q&A pairs (added / changed /
+    removed), newest first. Powers the Knowledge screen's History button."""
+    rows = await VersionService.project_activity(session, tenant_id, project_id, ACTIVITY_TYPES)
+    return [
+        ActivityOut(
+            id=r.id, entity_type=r.entity_type, entity_id=r.entity_id,
+            action=r.label, title=activity_title(r), author_email=r.author_email, created_at=r.created_at,
+        )
+        for r in rows
+    ]
+
+
+@router.get("/project/{project_id}/config-history", response_model=list[VersionDetailOut])
+async def project_config_history(
+    project_id: str,
+    session: AsyncSession = Depends(get_session),
+    tenant_id: str = Depends(current_tenant_id),
+):
+    """Full project snapshots (newest first, incl. the snapshot body) so the Settings > History
+    screen can diff consecutive versions field-by-field per section. Read-only."""
+    return await VersionService.list(session, tenant_id, "project", project_id)
 
 
 @router.get("/{entity_type}/{entity_id}", response_model=list[VersionOut])

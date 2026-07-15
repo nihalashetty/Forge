@@ -6,7 +6,9 @@ import { Icon } from "../icons";
 import { Tile } from "../primitives";
 import { api, Workflow } from "@/lib/api";
 
-export function EmbedScreen({ project }: { project: any }) {
+/* Reusable settings body (no page chrome) so it can live standalone OR as a section inside
+   the Connect screen's secondary nav. The container is expected to supply the header. */
+export function EmbedPanel({ project }: { project: any }) {
   const [enabled, setEnabled] = useState(false);
   const [origins, setOrigins] = useState("");
   const [workflowId, setWorkflowId] = useState("");
@@ -54,16 +56,7 @@ export function EmbedScreen({ project }: { project: any }) {
   const iframeSnippet = src ? `<iframe src="${src}" style="border:0;width:400px;height:600px"></iframe>` : null;
 
   return (
-    <div className="scroll-y" style={{ flex: 1, padding: "24px 28px" }}>
-      <div style={{ maxWidth: 760, margin: "0 auto" }} className="col gap4">
-        <div className="row gap2">
-          <Tile icon="grid" color="var(--io-json)" size={30} />
-          <div>
-            <div className="t-display">Embed</div>
-            <div className="fg-1" style={{ marginTop: 3 }}>Drop this project's chatbot into any website as a widget.</div>
-          </div>
-        </div>
-
+    <div className="col gap4">
         <div className="card col gap3" style={{ padding: 18 }}>
           <label className="row gap2" style={{ alignItems: "center", cursor: "pointer" }}>
             <span className={"toggle" + (enabled ? " on" : "")} onClick={() => setEnabled((v) => !v)} role="switch" aria-checked={enabled} />
@@ -112,6 +105,23 @@ export function EmbedScreen({ project }: { project: any }) {
         ) : (
           <div className="fg-2 t-body-sm">Enable and save to get a publishable key + embed snippet.</div>
         )}
+    </div>
+  );
+}
+
+/* Standalone screen (kept for direct/deep-link navigation): page chrome + the panel. */
+export function EmbedScreen({ project }: { project: any }) {
+  return (
+    <div className="scroll-y" style={{ flex: 1, padding: "24px 28px" }}>
+      <div style={{ maxWidth: 760, margin: "0 auto" }} className="col gap4">
+        <div className="row gap2">
+          <Tile icon="grid" color="var(--io-json)" size={30} />
+          <div>
+            <div className="t-display">Embed</div>
+            <div className="fg-1" style={{ marginTop: 3 }}>Drop this project&apos;s chatbot into any website as a widget.</div>
+          </div>
+        </div>
+        <EmbedPanel project={project} />
       </div>
     </div>
   );

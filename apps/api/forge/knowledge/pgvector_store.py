@@ -196,7 +196,7 @@ class PgVectorStore:
         scope = self._scope(where, params)
         params.extend([qvec, top_k])  # ORDER BY term + LIMIT
         sql = (
-            f"SELECT id, document, metadata, 1 - (embedding <=> %s::vector) AS score "
+            f"SELECT id, document, 1 - (embedding <=> %s::vector) AS score, metadata "
             f"FROM {_TABLE} WHERE {scope} ORDER BY embedding <=> %s::vector LIMIT %s"
         )
         with self._connect() as conn, conn.cursor() as cur:

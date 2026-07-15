@@ -27,6 +27,7 @@ from forge.models import (
     EntityVersion,
     KbSource,
     Project,
+    QaPair,
     Tenant,
     Tool,
     Workflow,
@@ -48,8 +49,14 @@ _SPEC: dict[str, tuple[type, list[str]]] = {
     ),
     "auth_provider": (AuthProvider, ["name", "kind", "config", "credentials_ref"]),
     "kb_source": (KbSource, ["kind", "name", "folder", "uri", "meta"]),
+    "qa_pair": (QaPair, ["question", "answer", "kind", "tags"]),
     "project": (Project, ["name", "slug", "description", "config", "status"]),
 }
+
+# Entity types surfaced as a project-wide *activity* log (add/change/remove events) rather
+# than a per-entity restore history - see VersionService.project_activity and the Knowledge
+# screen's History button. The `label` on each snapshot carries the action word.
+ACTIVITY_TYPES = ("kb_source", "qa_pair")
 
 
 def versioned_types() -> list[str]:
@@ -243,6 +250,32 @@ class VersionService:
         await session.refresh(obj)
         return obj
 
+    @staticmethod
+    async def project_activity(session, tenant_id: str, project_id: str,
+                               entity_types, limit: int = 100) -> list[EntityVersion]:
+        """Project-wide activity feed (newest first) across the given entity types - powers the
+        Knowledge screen's read-only History. Each row's `label` carries the action word."""
+        return list(
+            (
+                await session.execute(
+                    select(EntityVersion)
+                    .where(
+                        EntityVersion.tenant_id == tenant_id,
+                        EntityVersion.project_id == project_id,
+                        EntityVersion.entity_type.in_(list(entity_types)),
+                    )
+                    .order_by(EntityVersion.created_at.desc())
+                    .limit(limit)
+                )
+            ).scalars()
+        )
+
+
+def activity_title(ev: EntityVersion) -> str:
+    """Display name for an activity row: a source's name or a Q&A's question."""
+    snap = ev.snapshot or {}
+    return snap.get("name") or snap.get("question") or (ev.entity_id or "")[:8]
+
 
 async def safe_snapshot(
     session,
@@ -250,10 +283,13 @@ async def safe_snapshot(
     obj,
     *,
     author: object | None = None,
+    label: str | None = None,
     tenant_settings: dict | None = None,
 ) -> None:
-    """Router-friendly helper: snapshot `obj` after a successful create/update. NEVER raises -
-    versioning must not break the underlying save. `author` is a CurrentUser (id/email)."""
+    """Router-friendly helper: snapshot `obj` after a successful create/update/delete. NEVER
+    raises - versioning must not break the underlying save. `author` is a CurrentUser (id/email);
+    `label` overrides the default (entity name) - e.g. an action word ("added"/"changed"/
+    "removed") for activity-logged types."""
     try:
         await VersionService.snapshot(
             session,
@@ -262,7 +298,7 @@ async def safe_snapshot(
             entity_id=obj.id,
             data=serialize(entity_type, obj),
             project_id=getattr(obj, "project_id", None),
-            label=getattr(obj, "name", None),
+            label=label or getattr(obj, "name", None),
             author_id=getattr(author, "id", None),
             author_email=getattr(author, "email", None),
             tenant_settings=tenant_settings,
