@@ -144,7 +144,6 @@ export function ComponentsScreen({ project, onOpen }: { project: any; onOpen: (c
                 </div>
                 {!c.enabled && (
                   <span className="pill pill-muted">
-                    <span className="dot" />
                     off
                   </span>
                 )}

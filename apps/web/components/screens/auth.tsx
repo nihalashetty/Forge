@@ -307,7 +307,7 @@ function OAuthConnect({ project, provider }: { project: any; provider: AuthProvi
         <div className="row gap2">
           <Icon name="link" size={15} />
           <span className="t-body-sm" style={{ fontWeight: 600 }}>User authorization</span>
-          {status?.connected ? <span className="pill pill-ok"><span className="dot" />connected</span> : <span className="pill pill-muted">not connected</span>}
+          {status?.connected ? <span className="pill pill-ok">connected</span> : <span className="pill pill-muted">not connected</span>}
         </div>
         <button className="btn btn-primary btn-sm" onClick={connect}><Icon name="external" size={13} />{status?.connected ? "Reconnect" : "Connect"}</button>
       </div>

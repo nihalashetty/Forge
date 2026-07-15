@@ -149,12 +149,11 @@ export function DashboardScreen({
               <div>
                 <div className="row spread" style={{ marginBottom: 12 }}>
                   <div className="t-h1">Recent runs</div>
-                  <span className="pill pill-info" style={{ height: 18 }}><span className="dot" />live</span>
+                  <span className="pill pill-muted" style={{ height: 18 }}>live</span>
                 </div>
                 <div className="card" style={{ overflow: "hidden" }}>
                   {(stats?.recent || []).map((r, i, arr) => (
                     <div key={r.id} className="row gap3" style={{ padding: "11px 14px", borderBottom: i < arr.length - 1 ? "1px solid var(--line)" : "none" }}>
-                      <div style={{ width: 7, height: 7, borderRadius: "50%", flex: "none", background: r.status === "done" ? "var(--ok)" : r.status === "error" ? "var(--err)" : "var(--warn)" }} />
                       <div className="grow" style={{ minWidth: 0 }}>
                         <div className="truncate" style={{ fontSize: 13, fontWeight: 600 }}>{r.workflow}</div>
                         <div className="fg-2 t-caption truncate">{r.project} · {r.status}</div>
@@ -175,11 +174,6 @@ export function DashboardScreen({
             {/* All-time usage by project (incl. Forge Assistant share) */}
             <div className="row spread" style={{ margin: "26px 0 12px" }}>
               <div className="t-h1">Reports</div>
-              {stats?.totals && (
-                <span className="fg-2 t-caption mono">
-                  all-time: {stats.totals.runs.toLocaleString()} runs · {stats.totals.tokens.toLocaleString()} tok · {fmtUSD(stats.totals.cost_usd)}
-                </span>
-              )}
             </div>
             <div className="card" style={{ overflow: "hidden" }}>
               <table className="tbl">

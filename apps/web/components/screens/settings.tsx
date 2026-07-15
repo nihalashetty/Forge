@@ -210,7 +210,7 @@ export function SettingsScreen({ project, onDeleteProject }: { project: any; onD
                         <input className="input mono" type="password" style={{ flex: 1 }}
                           placeholder={configured ? "•••• configured - re-enter to replace" : "sk-…"}
                           value={pkeys[prov] || ""} onChange={(e) => setPkeys((k) => ({ ...k, [prov]: e.target.value }))} />
-                        {configured && <span className="pill pill-ok" style={{ height: 18 }}><span className="dot" />set</span>}
+                        {configured && <span className="pill pill-ok" style={{ height: 18 }}>set</span>}
                       </div>
                     );
                   })}

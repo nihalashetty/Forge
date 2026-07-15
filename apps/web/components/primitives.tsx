@@ -109,14 +109,15 @@ export function TokenMeter({
 
 /* ---------------- StatusPill ---------------- */
 export function StatusPill({ status, label }: { status: string; label?: string }) {
+  // Minimal, professional statuses: neutral pills with no colour dots. Only problem
+  // states (error / fail / interrupted) keep a subtle tint so they still stand out.
   const map: Record<string, [string, string]> = {
-    done: ["pill-ok", "Done"], pass: ["pill-ok", "Passing"], active: ["pill-ok", "Active"], ready: ["pill-ok", "Ready"],
-    error: ["pill-err", "Error"], fail: ["pill-err", "Failing"],
-    interrupted: ["pill-warn", "Interrupted"], processing: ["pill-warn", "Processing"], draft: ["pill-muted", "Draft"],
-    untested: ["pill-muted", "Untested"], running: ["pill-info", "Running"],
+    done: ["pill-muted", "Done"], pass: ["pill-muted", "Passing"], active: ["pill-muted", "Active"], ready: ["pill-muted", "Ready"],
+    running: ["pill-muted", "Running"], processing: ["pill-muted", "Processing"], draft: ["pill-muted", "Draft"], untested: ["pill-muted", "Untested"],
+    error: ["pill-err", "Error"], fail: ["pill-err", "Failing"], interrupted: ["pill-warn", "Interrupted"],
   };
   const [cls, def] = map[status] || ["pill-muted", status];
-  return <span className={"pill " + cls}><span className="dot" />{label || def}</span>;
+  return <span className={"pill " + cls}>{label || def}</span>;
 }
 
 /* ---------------- Avatar ---------------- */
@@ -273,9 +274,10 @@ export function CodeBlock({ code, copyable = true, maxHeight }: { code: string; 
 }
 
 /* ---------------- Tile ---------------- */
-export function Tile({ icon, color = "var(--accent)", size = 36, glow }: { icon: string; color?: string; size?: number; glow?: boolean }) {
+export function Tile({ icon, color = "var(--accent)", size = 36 }: { icon: string; color?: string; size?: number; glow?: boolean }) {
+  // Flat tinted chip - no border, no glow (matches the minimal design).
   return (
-    <div style={{ width: size, height: size, flex: "none", borderRadius: size * 0.28, display: "flex", alignItems: "center", justifyContent: "center", background: `color-mix(in srgb, ${color} 14%, var(--bg-1))`, color, border: `1px solid color-mix(in srgb, ${color} 26%, transparent)`, boxShadow: glow ? `0 0 16px color-mix(in srgb, ${color} 22%, transparent)` : "none" }}>
+    <div style={{ width: size, height: size, flex: "none", borderRadius: size * 0.28, display: "flex", alignItems: "center", justifyContent: "center", background: `color-mix(in srgb, ${color} 12%, var(--bg-1))`, color }}>
       <Icon name={icon} size={size * 0.5} />
     </div>
   );
