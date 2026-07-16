@@ -982,7 +982,7 @@ const NODE_FIELDS: Record<string, FieldSpec[]> = {
     { key: "labels", label: "Intent labels", widget: "csv", placeholder: "return_item, cancel_subscription, get_information", help: "Wire a Router after this with one case per label." },
     { key: "output_key", label: "Write label to state key", widget: "text", placeholder: "intent", help: "The Router's expression should read this key." },
     { key: "multi_label", label: "Multi-label (all that apply)", widget: "toggle", help: "Write EVERY applicable label (a list) instead of exactly one. Pair with a Router set to 'Route to every match' so a question with several intents reaches several specialists in parallel." },
-    { key: "model", label: "Model", widget: "model" },
+    { key: "model", label: "Model", widget: "model", emptyLabel: "Auto (cheapest model)", help: "Left on Auto, the classifier uses your provider's cheapest model (e.g. gpt-4.1-nano) — not the project default — since classification is high-volume and low-stakes. Pick a model to override." },
     { key: "instructions", label: "Extra guidance (optional)", widget: "textarea", placeholder: "Domain hints, tie-breaking rules…" },
   ],
   human_input: [

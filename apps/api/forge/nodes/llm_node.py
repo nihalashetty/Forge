@@ -141,24 +141,35 @@ def classifier_factory(config: dict, ctx: CompileContext):
                 break
         if not query or not labels:
             return {}
-        from langchain_core.messages import SystemMessage
+        from langchain_core.messages import HumanMessage
 
         task = (
             f"Classify the latest user message into EVERY label that applies (one or more) from: {', '.join(labels)}.\n"
             if multi else
             f"Classify the latest user message into exactly one of these labels: {', '.join(labels)}.\n"
         )
+        # Fold a BOUNDED slice of recent turns into the prompt instead of resending the entire
+        # message history each call. Classification only needs the latest message plus a little
+        # context for follow-ups ("what about Delhi?"); an unbounded history makes this node
+        # progressively slower and pricier as the conversation grows, and duplicated the query
+        # (restated in the prompt AND resent as messages). One bounded message keeps it flat.
+        context = _recent_context(list(msgs))
         prompt = (
             task
-            + "Use the full conversation context to resolve follow-up or elliptical messages "
+            + "Use the recent conversation context to resolve follow-up or elliptical messages "
             "(for example, 'what about Delhi?' should inherit the prior topic). "
             "Return only the structured label(s).\n"
             + (f"{instructions}\n" if instructions else "")
-            + f"Latest user message: {query}"
+            + (f"\nRecent conversation:\n{context}\n" if context else "")
+            + f"\nLatest user message: {query}"
         )
         chosen: list[str] = []
         try:
-            res = await model.with_structured_output(schema).ainvoke([SystemMessage(content=prompt), *list(msgs)])
+            # Send the prompt as a HUMAN turn, not a system message: Gemini routes a lone system
+            # message to system_instruction and then rejects the call with "contents are required"
+            # (empty contents), and Anthropic requires a leading user turn. A single human message
+            # carries the whole self-contained classification prompt and works across providers.
+            res = await model.with_structured_output(schema).ainvoke([HumanMessage(content=prompt)])
             if multi:
                 raw = res.get("labels") if isinstance(res, dict) else getattr(res, "labels", None)
                 chosen = [str(x) for x in (raw or []) if str(x) in labels]
