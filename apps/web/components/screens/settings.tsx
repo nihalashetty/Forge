@@ -17,7 +17,7 @@ const DEFAULT_CHILD_CHUNK_SIZE = 300;
 
 type SectionId =
   | "general" | "members" | "apikeys" | "pricing" | "budgets"
-  | "knowledge" | "versioning" | "observability" | "advanced" | "history";
+  | "guardrails" | "knowledge" | "versioning" | "observability" | "advanced" | "history";
 
 const SECTIONS: { id: SectionId; label: string; icon: string; savesConfig?: boolean }[] = [
   { id: "general", label: "General", icon: "sliders", savesConfig: true },
@@ -25,6 +25,7 @@ const SECTIONS: { id: SectionId; label: string; icon: string; savesConfig?: bool
   { id: "apikeys", label: "API Keys", icon: "secret" },
   { id: "pricing", label: "Model Pricing", icon: "coins" },
   { id: "budgets", label: "Budgets & Quotas", icon: "bolt", savesConfig: true },
+  { id: "guardrails", label: "Guardrails & Egress", icon: "shield-check", savesConfig: true },
   { id: "knowledge", label: "Knowledge & Embeddings", icon: "knowledge", savesConfig: true },
   { id: "versioning", label: "Versioning", icon: "clock", savesConfig: true },
   { id: "observability", label: "Observability & Retention", icon: "traces", savesConfig: true },
@@ -39,6 +40,7 @@ const SECTIONS: { id: SectionId; label: string; icon: string; savesConfig?: bool
 const FIELD_SECTION: Record<string, SectionId> = {
   name: "general", description: "general", slug: "general", status: "general", default_model: "general",
   budgets: "budgets",
+  default_middleware: "guardrails", egress: "guardrails",
   rag_defaults: "knowledge",
   version_history_limit: "versioning", versioning: "versioning",
   observability: "observability",
@@ -47,7 +49,7 @@ const FIELD_SECTION: Record<string, SectionId> = {
   provider_credentials: "apikeys",
 };
 // The config-backed sections that get a History tab (Members isn't config-backed → skipped).
-const HISTORY_TABS: SectionId[] = ["general", "budgets", "knowledge", "versioning", "observability", "apikeys", "pricing", "advanced"];
+const HISTORY_TABS: SectionId[] = ["general", "budgets", "guardrails", "knowledge", "versioning", "observability", "apikeys", "pricing", "advanced"];
 // Field paths whose values must never be shown in a diff (secrets / credentials).
 const MASK_RE = /credential|secret|token|api[_-]?key|password/i;
 
@@ -239,6 +241,8 @@ export function SettingsScreen({ project, onDeleteProject }: { project: any; onD
                 <Field label="Max tokens / run" help="Optional cap on total tokens for a single run."><input className="input mono" type="number" min={0} step={1000} value={budgets.max_tokens_per_run ?? ""} onChange={(e) => setCfg({ budgets: { ...budgets, max_tokens_per_run: parseInt(e.target.value, 10) || undefined } })} /></Field>
               </Card>
             )}
+
+            {section === "guardrails" && <GuardrailsCard config={config} setCfg={setCfg} />}
 
             {section === "knowledge" && (
               <Card title="Knowledge & embeddings">
@@ -653,6 +657,180 @@ function PricingCard() {
         </table>
       )}
     </Card>
+  );
+}
+
+/* Guardrails & Egress: one project-level I/O policy enforced on EVERY agent, plus the
+   outbound-network egress scope. Content guardrails compile to `config.default_middleware`
+   (the engine prepends this to every agent's own middleware stack — see agent_node); the
+   network scope writes `config.egress` (the SSRF EgressPolicy, applied to every tool/webhook/
+   web_fetch call). Entries this screen owns are tagged `_managed`, so any middleware authored
+   elsewhere is preserved on save.
+
+   Textareas keep their raw text in `config._guardrails_ui` (a UI-only sidecar the backend
+   ignores) — deriving the value from the compiled arrays instead would strip a trailing newline
+   on every keystroke, making it impossible to type a second line. Built-in PII compiles to a
+   `pii` entry per type; custom patterns add a `detector` regex (label = its pii_type); blocked
+   terms compile to one case-insensitive `guardrail_regex` of escaped literals (no runaway-regex
+   risk). Only patterns that parse as a valid regex are compiled, so a half-typed one can't break
+   every agent's compile. */
+const PII_TYPES: [string, string][] = [
+  ["email", "Email"], ["credit_card", "Credit card"], ["ip", "IP address"], ["mac_address", "MAC address"], ["url", "URL"],
+];
+function escapeRegex(s: string): string { return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+function isValidRegex(p: string): boolean { try { new RegExp(p); return true; } catch { return false; } }
+const splitLines = (s: string): string[] => (s || "").split("\n").map((x) => x.trim()).filter(Boolean);
+// Parse "Label = regex" lines into {name, pattern}. Split on the first "=" so a pattern may
+// itself contain "="; lines without both parts are skipped (e.g. a blank in-progress row).
+function parseCustoms(text: string): { name: string; pattern: string }[] {
+  const out: { name: string; pattern: string }[] = [];
+  for (const line of (text || "").split("\n")) {
+    const t = line.trim();
+    const i = t.indexOf("=");
+    if (i <= 0) continue;
+    const name = t.slice(0, i).trim();
+    const pattern = t.slice(i + 1).trim();
+    if (name && pattern) out.push({ name, pattern });
+  }
+  return out;
+}
+
+function GuardrailsCard({ config, setCfg }: { config: Record<string, any>; setCfg: (patch: Record<string, any>) => void }) {
+  const mw: any[] = Array.isArray(config.default_middleware) ? config.default_middleware : [];
+  const isManagedPii = (m: any) => m?.type === "pii" && m?.config?._managed;
+  const isManagedTerms = (m: any) => m?.type === "guardrail_regex" && m?.config?._managed;
+  const unmanaged = mw.filter((m) => !isManagedPii(m) && !isManagedTerms(m));
+  const pii = mw.filter(isManagedPii);
+  const termsEntry = mw.find(isManagedTerms);
+  const egress = config.egress || {};
+  const ui = config._guardrails_ui || {};
+
+  // Discrete controls read straight from the compiled entries (no typing, so no newline issue).
+  const builtinTypes = new Set<string>(pii.filter((m) => !m.config?.detector).map((m) => m.config?.pii_type));
+  const strategy: string = pii[0]?.config?.strategy || "redact";
+  const scanIn: boolean = pii[0]?.config?.apply_to_input ?? true;
+  const scanOut: boolean = pii[0]?.config?.apply_to_output ?? true;
+  const onMatch: string = termsEntry?.config?.on_match || "block";
+  const blockPrivate = !!egress.block_private;
+  // Free-text controls read their raw text from the sidecar, falling back to reconstructing it
+  // from the compiled config (for policies created via the API or before this UI existed).
+  const termsText: string = ui.terms_text ?? (termsEntry?.config?._terms || []).join("\n");
+  const customsText: string = ui.customs_text ?? pii.filter((m) => m.config?.detector).map((m) => `${m.config.pii_type} = ${m.config.detector}`).join("\n");
+  const allowText: string = ui.allow_text ?? (egress.allow_hosts || []).join("\n");
+  const denyText: string = ui.deny_text ?? (egress.deny_hosts || []).join("\n");
+
+  const invalidCustoms = parseCustoms(customsText).filter((c) => !isValidRegex(c.pattern)).map((c) => c.name);
+  const hasPii = builtinTypes.size > 0 || parseCustoms(customsText).length > 0;
+
+  // Recompile the whole managed policy from a snapshot of UI state, preserving unmanaged entries.
+  function commit(next: Partial<{ types: Set<string>; strategy: string; scanIn: boolean; scanOut: boolean; termsText: string; customsText: string; onMatch: string; blockPrivate: boolean; allowText: string; denyText: string }>) {
+    const types = next.types ?? builtinTypes;
+    const strat = next.strategy ?? strategy;
+    const sIn = next.scanIn ?? scanIn;
+    const sOut = next.scanOut ?? scanOut;
+    const tText = next.termsText ?? termsText;
+    const cText = next.customsText ?? customsText;
+    const oMatch = next.onMatch ?? onMatch;
+    const bPriv = next.blockPrivate ?? blockPrivate;
+    const aText = next.allowText ?? allowText;
+    const dText = next.denyText ?? denyText;
+
+    const mkPii = (pii_type: string, detector?: string) => ({
+      type: "pii", config: { _managed: true, pii_type, ...(detector ? { detector } : {}), strategy: strat, apply_to_input: sIn, apply_to_output: sOut },
+    });
+    const builtin = [...types].map((t) => mkPii(t));
+    const customs = parseCustoms(cText).filter((c) => isValidRegex(c.pattern)).map((c) => mkPii(c.name, c.pattern));
+    const termList = splitLines(tText);
+    const termEntry = termList.length
+      ? [{ type: "guardrail_regex", config: { _managed: true, _terms: termList, patterns: termList.map((t) => "(?i)" + escapeRegex(t)), on_match: oMatch, apply_to: "both" } }]
+      : [];
+
+    const allow = splitLines(aText);
+    const deny = splitLines(dText);
+    const nextEgress: Record<string, any> = { ...egress };
+    if (bPriv) nextEgress.block_private = true; else delete nextEgress.block_private;
+    if (allow.length) nextEgress.allow_hosts = allow; else delete nextEgress.allow_hosts;
+    if (deny.length) nextEgress.deny_hosts = deny; else delete nextEgress.deny_hosts;
+
+    setCfg({
+      default_middleware: [...unmanaged, ...builtin, ...customs, ...termEntry],
+      egress: Object.keys(nextEgress).length ? nextEgress : undefined,
+      _guardrails_ui: { terms_text: tText, customs_text: cText, allow_text: aText, deny_text: dText },
+    });
+  }
+
+  return (
+    <>
+      <Card title="Content guardrails">
+        <div className="field-help" style={{ marginTop: 0, marginBottom: 12 }}>
+          Enforced on <b>every agent</b> in this project, ahead of any per-agent middleware. These run locally (regex) on each turn — no added network latency. Use an agent&apos;s own middleware for exceptions.
+        </div>
+        <Field label="Redact / block PII" help="Detect these entities in messages and apply the strategy below. Each type is matched with a built-in detector.">
+          <div className="row gap2 wrap">
+            {PII_TYPES.map(([id, label]) => {
+              const on = builtinTypes.has(id);
+              return (
+                <button key={id} type="button"
+                  onClick={() => { const t = new Set(builtinTypes); if (on) t.delete(id); else t.add(id); commit({ types: t }); }}
+                  style={{ padding: "5px 11px", borderRadius: 8, border: "1px solid var(--line)", cursor: "pointer", fontSize: 13, fontWeight: 600, background: on ? "var(--accent)" : "transparent", color: on ? "#fff" : "var(--fg-1)" }}>
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+        </Field>
+        <Field label="Custom patterns" help="One per line as `Label = regex` — e.g. a phone or national-ID format. Matched with your regex and handled by the strategy below. Unlike blocked terms, a regex you write here is your responsibility (keep it simple to avoid slow matching).">
+          <textarea className="textarea mono" rows={2} placeholder={"Phone = \\d{3}[- ]?\\d{3}[- ]?\\d{4}\nUS SSN = \\d{3}-\\d{2}-\\d{4}"}
+            value={customsText} onChange={(e) => commit({ customsText: e.target.value })} />
+        </Field>
+        {invalidCustoms.length > 0 && (
+          <div className="field-help" style={{ marginTop: -6, color: "var(--err)" }}>⚠ Not a valid regex (ignored until fixed): {invalidCustoms.join(", ")}</div>
+        )}
+        {hasPii && (
+          <>
+            <Field label="Strategy" help="Applies to every PII match above (built-in and custom). Redact removes the value, Mask shows only the last few chars, Hash substitutes a stable hash, Block refuses the whole message.">
+              <Segmented
+                options={[{ value: "redact", label: "Redact" }, { value: "mask", label: "Mask" }, { value: "hash", label: "Hash" }, { value: "block", label: "Block" }]}
+                value={strategy} onChange={(v) => commit({ strategy: v })} />
+            </Field>
+            <div className="row gap3 wrap">
+              <label className="row gap2" style={{ alignItems: "center" }}><Toggle on={scanIn} onChange={(v) => commit({ scanIn: v })} /><span className="t-body-sm">Scan input (what comes in)</span></label>
+              <label className="row gap2" style={{ alignItems: "center" }}><Toggle on={scanOut} onChange={(v) => commit({ scanOut: v })} /><span className="t-body-sm">Scan output (what leaves to the model / user)</span></label>
+            </div>
+          </>
+        )}
+        <div style={{ height: 14 }} />
+        <Field label="Blocked terms" help="One term per line. Matched case-insensitively in both input and output. Kept as literal keywords — safe from regex pitfalls.">
+          <textarea className="textarea mono" rows={3} placeholder={"internal-codename\nproject-atlas"}
+            value={termsText} onChange={(e) => commit({ termsText: e.target.value })} />
+        </Field>
+        {splitLines(termsText).length > 0 && (
+          <Field label="On a blocked term" help="Block replaces the message with a notice; Redact masks just the term; Flag keeps it but tags the trace for review.">
+            <Segmented
+              options={[{ value: "block", label: "Block" }, { value: "redact", label: "Redact" }, { value: "flag", label: "Flag" }]}
+              value={onMatch} onChange={(v) => commit({ onMatch: v })} />
+          </Field>
+        )}
+      </Card>
+
+      <Card title="Network egress">
+        <div className="field-help" style={{ marginTop: 0, marginBottom: 12 }}>
+          Scopes where this project&apos;s tools, webhooks, and web-fetch can connect. It can only <b>tighten</b> the server&apos;s egress guard for this project — never loosen it.
+        </div>
+        <label className="row spread" style={{ padding: "8px 0" }}>
+          <div><div className="t-body-sm" style={{ fontWeight: 600 }}>Block private / internal addresses</div><div className="field-help" style={{ marginTop: 0 }}>Refuse outbound calls that resolve to private, loopback, or cloud-metadata addresses (SSRF guard).</div></div>
+          <Toggle on={blockPrivate} onChange={(v) => commit({ blockPrivate: v })} />
+        </label>
+        <Field label="Allowed domains" help="One host per line. If any are listed, ONLY these hosts (and their subdomains) are reachable — everything else is blocked.">
+          <textarea className="textarea mono" rows={2} placeholder={"api.example.com\nhooks.slack.com"}
+            value={allowText} onChange={(e) => commit({ allowText: e.target.value })} />
+        </Field>
+        <Field label="Blocked domains" help="One host per line. These hosts (and their subdomains) are always refused.">
+          <textarea className="textarea mono" rows={2} placeholder={"pastebin.com"}
+            value={denyText} onChange={(e) => commit({ denyText: e.target.value })} />
+        </Field>
+      </Card>
+    </>
   );
 }
 
