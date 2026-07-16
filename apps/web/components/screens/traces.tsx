@@ -176,25 +176,69 @@ export function TracesScreen({ project }: { project: any }) {
   );
 }
 
+/* One user message can produce several Trace rows under the SAME run_id: a HITL pause writes an
+   `interrupted` trace, then the resume writes a `done` trace (both carry the same user_message,
+   since run.input is unchanged). Grouping by run_id folds those segments back into one turn, so a
+   single message reads as one turn that paused - not two. Separate submissions get fresh run_ids
+   and stay distinct. Traces arrive oldest-first (started_at asc), so the last segment is final. */
+type GroupedTurn = {
+  runId: string;
+  segments: Turn[];
+  userMessage: string | null;
+  aiResponse: string | null;
+  status: string;
+  error: string | null;
+  latencyMs: number;
+  tokens: number;
+  costUsd: number;
+  paused: boolean;
+};
+
+function groupTurns(turns: Turn[]): GroupedTurn[] {
+  const byRun = new Map<string, GroupedTurn>();
+  const order: string[] = [];
+  for (const t of turns) {
+    let g = byRun.get(t.run_id);
+    if (!g) {
+      g = { runId: t.run_id, segments: [], userMessage: null, aiResponse: null, status: t.status, error: null, latencyMs: 0, tokens: 0, costUsd: 0, paused: false };
+      byRun.set(t.run_id, g);
+      order.push(t.run_id);
+    }
+    g.segments.push(t);
+    g.latencyMs += t.latency_ms || 0;
+    g.tokens += t.total_tokens || 0;
+    g.costUsd += t.total_cost_usd || 0;
+    g.userMessage = g.userMessage ?? (t.user_message || null);
+    if (t.ai_response) g.aiResponse = t.ai_response; // last non-empty wins (the final segment)
+    g.status = t.status;                             // last segment = the run's final status
+    g.error = t.error ?? null;
+    if (t.status === "interrupted") g.paused = true;
+  }
+  return order.map((r) => byRun.get(r)!);
+}
+
 function ConversationView({ project, detail }: { project: any; detail: ConversationDetail }) {
   const c = detail.conversation;
   const [openTurn, setOpenTurn] = useState<string | null>(null);
   const [traces, setTraces] = useState<Record<string, { spans: Span[] }>>({});
   const [rerunning, setRerunning] = useState<string | null>(null);
 
-  const toggle = async (trid: string) => {
-    if (openTurn === trid) { setOpenTurn(null); return; }
-    setOpenTurn(trid);
-    if (!traces[trid]) {
-      try { const d = await api.getTrace(project.id, trid); setTraces((t) => ({ ...t, [trid]: { spans: d.spans } })); } catch { /* ignore */ }
+  // Keyed by run_id (a group), not trace_id: a paused run has an interrupt + a resume trace, and
+  // expanding the turn lazy-loads the spans for every segment so the waterfall shows the whole run.
+  const toggle = async (group: GroupedTurn) => {
+    if (openTurn === group.runId) { setOpenTurn(null); return; }
+    setOpenTurn(group.runId);
+    for (const seg of group.segments) {
+      if (traces[seg.trace_id]) continue;
+      try { const d = await api.getTrace(project.id, seg.trace_id); setTraces((t) => ({ ...t, [seg.trace_id]: { spans: d.spans } })); } catch { /* ignore */ }
     }
   };
 
-  const rerun = async (turn: Turn) => {
+  const rerun = async (runId: string) => {
     if (!c.workflow_id || rerunning) return;
-    setRerunning(turn.run_id);
+    setRerunning(runId);
     try {
-      const run = await api.rerunRun(project.id, c.workflow_id, turn.run_id);
+      const run = await api.rerunRun(project.id, c.workflow_id, runId);
       let outcome = "completed";
       await openSSE(api.runStreamUrl(project.id, c.workflow_id, run.id), (frame) => {
         if (frame.event === "error") outcome = "failed";
@@ -226,24 +270,24 @@ function ConversationView({ project, detail }: { project: any; detail: Conversat
       </div>
 
       {/* transcript */}
-      {detail.turns.map((turn) => (
-        <div key={turn.trace_id} style={{ marginBottom: 18 }}>
-          {turn.user_message && (
+      {groupTurns(detail.turns).map((group) => (
+        <div key={group.runId} style={{ marginBottom: 18 }}>
+          {group.userMessage && (
             <div className="row" style={{ flexDirection: "row-reverse", gap: 10, marginBottom: 12, alignItems: "flex-start" }}>
               <Avatar name={c.actor} size={28} />
-              <div style={{ maxWidth: "74%", background: "var(--accent)", color: "var(--fg-on-accent)", padding: "9px 13px", borderRadius: "14px 14px 4px 14px", whiteSpace: "pre-wrap", wordBreak: "break-word", fontSize: 13.5, lineHeight: "20px" }}>{turn.user_message}</div>
+              <div style={{ maxWidth: "74%", background: "var(--accent)", color: "var(--fg-on-accent)", padding: "9px 13px", borderRadius: "14px 14px 4px 14px", whiteSpace: "pre-wrap", wordBreak: "break-word", fontSize: 13.5, lineHeight: "20px" }}>{group.userMessage}</div>
             </div>
           )}
           <div className="row" style={{ gap: 10, alignItems: "flex-start" }}>
             <div style={{ width: 28, height: 28, flex: "none", borderRadius: 8, background: "var(--accent)", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff" }}><Icon name="sparkles" size={15} /></div>
             <div style={{ flex: 1, minWidth: 0 }}>
               <AITurn
-                turn={turn}
-                open={openTurn === turn.trace_id}
-                spans={traces[turn.trace_id]?.spans}
-                onToggle={() => toggle(turn.trace_id)}
-                onRerun={() => rerun(turn)}
-                rerunning={rerunning === turn.run_id}
+                group={group}
+                open={openTurn === group.runId}
+                segmentSpans={group.segments.map((s) => traces[s.trace_id]?.spans)}
+                onToggle={() => toggle(group)}
+                onRerun={() => rerun(group.runId)}
+                rerunning={rerunning === group.runId}
                 canRerun={!!c.workflow_id}
               />
             </div>
@@ -254,26 +298,32 @@ function ConversationView({ project, detail }: { project: any; detail: Conversat
   );
 }
 
-function AITurn({ turn, open, spans, onToggle, onRerun, rerunning, canRerun }: {
-  turn: Turn;
+function AITurn({ group, open, segmentSpans, onToggle, onRerun, rerunning, canRerun }: {
+  group: GroupedTurn;
   open: boolean;
-  spans?: Span[];
+  segmentSpans: (Span[] | undefined)[];
   onToggle: () => void;
   onRerun: () => void;
   rerunning: boolean;
   canRerun: boolean;
 }) {
-  const errored = turn.status === "error" || !!turn.error;
+  const errored = group.status === "error" || !!group.error;
+  const awaiting = group.status === "interrupted"; // still paused, not yet resumed
+  const multi = group.segments.length > 1;
+  const placeholder = errored ? "(no response — this turn errored)"
+    : awaiting ? "(paused — awaiting approval)"
+    : "(no text response)";
   return (
     <div className="row" style={{ justifyContent: "flex-start" }}>
       <div style={{ maxWidth: "88%", width: "100%" }}>
         <button onClick={onToggle} className="col" style={{ width: "100%", textAlign: "left", cursor: "pointer", background: "var(--bg-2)", border: "1px solid var(--line)", borderRadius: "12px 12px 12px 3px", padding: "11px 14px" }}>
           <div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-            {turn.ai_response || <span className="fg-2">{errored ? "(no response — this turn errored)" : "(no text response)"}</span>}
+            {group.aiResponse || <span className="fg-2">{placeholder}</span>}
           </div>
           <div className="row gap2" style={{ marginTop: 8, alignItems: "center" }}>
             {errored && <span className="pill pill-err" style={{ height: 16 }}>error</span>}
-            <span className="t-caption fg-2 mono">{turn.latency_ms}ms · {turn.total_tokens} tok · {fmtUSD(turn.total_cost_usd)}</span>
+            {!errored && group.paused && <span className="pill pill-warn" style={{ height: 16 }}>{awaiting ? "awaiting approval" : "paused · resumed"}</span>}
+            <span className="t-caption fg-2 mono">{group.latencyMs}ms · {group.tokens} tok · {fmtUSD(group.costUsd)}</span>
             <span className="grow" />
             <span className="row gap1 t-caption" style={{ color: "var(--accent)" }}>
               <Icon name="chevright" size={12} style={{ transform: open ? "rotate(90deg)" : "none", transition: "transform .12s" }} />
@@ -292,8 +342,25 @@ function AITurn({ turn, open, spans, onToggle, onRerun, rerunning, canRerun }: {
             {rerunning ? "Running again…" : "Run again"}
           </button>
         </div>
-        {turn.error && <div className="mono-sm" style={{ color: "var(--err)", padding: "6px 4px", wordBreak: "break-word" }}>{turn.error}</div>}
-        {open && (spans ? <div style={{ marginTop: 8 }}><SpanWaterfall spans={spans} /></div> : <div className="fg-2 t-caption" style={{ padding: "10px 4px" }}>Loading trace…</div>)}
+        {group.error && <div className="mono-sm" style={{ color: "var(--err)", padding: "6px 4px", wordBreak: "break-word" }}>{group.error}</div>}
+        {open && (
+          <div className="col gap2" style={{ marginTop: 8 }}>
+            {group.segments.map((seg, i) => {
+              const spans = segmentSpans[i];
+              return (
+                <div key={seg.trace_id}>
+                  {/* Label each segment only when a pause split the run into more than one. */}
+                  {multi && (
+                    <div className="t-caption fg-2" style={{ margin: "2px 2px 6px", fontWeight: 600 }}>
+                      {seg.status === "interrupted" ? "Paused for approval" : i > 0 ? "Resumed" : "Started"} · {seg.latency_ms}ms
+                    </div>
+                  )}
+                  {spans ? <SpanWaterfall spans={spans} /> : <div className="fg-2 t-caption" style={{ padding: "10px 4px" }}>Loading trace…</div>}
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );

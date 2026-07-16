@@ -48,8 +48,12 @@ def summarize(key: str, traces: list[Trace]) -> Conversation:
         thread_id=key, actor=first.actor or "System", source=first.source or "",
         end_user_id=first.end_user_id, workflow_id=first.workflow_id, started_at=first.started_at,
     )
+    # Count turns by distinct run_id, not by Trace row: a HITL pause + its resume are two Trace
+    # rows of ONE run (and one user message), so they count as a single turn - matching the
+    # run-grouped transcript in the Traces UI.
+    run_ids: set[str] = set()
     for t in ordered:
-        c.turns += 1
+        run_ids.add(t.run_id or t.id)
         c.total_tokens += t.total_tokens or 0
         c.total_cost_usd += t.total_cost_usd or 0.0
         # Latest actor/source/identity wins (a thread's identity can only sharpen over turns).
@@ -63,6 +67,7 @@ def summarize(key: str, traces: list[Trace]) -> Conversation:
             c.preview = t.user_message
         if t.status == "error" or t.error:
             c._errored = True
+    c.turns = len(run_ids)
     c.total_cost_usd = round(c.total_cost_usd, 6)
     c.status = "error" if c._errored else "done"
     return c

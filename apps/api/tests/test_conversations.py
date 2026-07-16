@@ -24,11 +24,11 @@ def _pid() -> str:
 
 
 async def _add_trace(*, project, thread_id, actor, source, status="done", user="hi", ai="hello",
-                     tokens=10, cost=0.001, started=None, error=None):
+                     tokens=10, cost=0.001, started=None, error=None, run_id=None):
     async with SessionLocal() as s:
         t = Trace(
             tenant_id=TENANT, project_id=project, workflow_id="wf1",
-            run_id=str(uuid.uuid4()), thread_id=thread_id, name="run", status=status,
+            run_id=run_id or str(uuid.uuid4()), thread_id=thread_id, name="run", status=status,
             started_at=started or datetime.utcnow(), ended_at=started or datetime.utcnow(),
             latency_ms=5, total_tokens=tokens, total_cost_usd=cost,
             source=source, actor=actor, end_user_id=None,
@@ -57,6 +57,27 @@ async def test_turns_group_into_one_conversation_per_thread():
     assert by_thread["th1"].total_tokens == 20
     assert by_thread["th1"].preview == "q1"          # earliest turn's user message
     assert by_thread["th2"].actor == "System" and by_thread["th2"].source == "playground"
+
+
+async def test_pause_and_resume_of_one_run_count_as_one_turn():
+    # A HITL pause writes an `interrupted` Trace and the resume writes a `done` Trace, both under
+    # the SAME run_id (and same user_message, since run.input is unchanged). They must fold into
+    # ONE turn, not two - matching the run-grouped transcript in the Traces UI.
+    pid = _pid()
+    rid = str(uuid.uuid4())
+    await _add_trace(project=pid, thread_id="thHITL", actor="System", source="playground",
+                     status="interrupted", user="approve this", ai=None, run_id=rid,
+                     started=datetime.utcnow() - timedelta(minutes=2))
+    await _add_trace(project=pid, thread_id="thHITL", actor="System", source="playground",
+                     status="done", user="approve this", ai="done!", run_id=rid,
+                     started=datetime.utcnow() - timedelta(minutes=1))
+    async with SessionLocal() as s:
+        convos = await ConversationService.list(s, TENANT, pid)
+        turns = await ConversationService.turns(s, TENANT, pid, "thHITL")
+    conv = next(c for c in convos if c.thread_id == "thHITL")
+    assert conv.turns == 1, "pause + resume of one run is a single turn"
+    assert conv.status != "error"  # an interrupt is not a failure
+    assert len(turns) == 2  # both raw Trace segments are still returned; the UI groups by run_id
 
 
 async def test_conversation_status_is_error_if_any_turn_errored():
