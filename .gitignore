@@ -39,3 +39,6 @@ Thumbs.db
 
 # --- WebFetch / temp artifacts ---
 *.bin
+
+# --- Local architecture notes (not part of the product) ---
+/PENDING_FEATURES.md
