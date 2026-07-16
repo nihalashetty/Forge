@@ -107,4 +107,18 @@ def resolve_model(
         param = "google_api_key" if provider in ("google_genai", "google") else "api_key"
         clean.setdefault(param, key)
 
+    # Keep-alive: hand OpenAI models one process-wide connection pool so back-to-back turns and
+    # runs reuse a warm TLS connection instead of re-handshaking on each per-run graph compile.
+    # Scoped to OpenAI: langchain-openai accepts `http_async_client`, whereas the Anthropic and
+    # Google integrations manage (and pool) their own transport. Skipped if the caller already
+    # supplied a client (e.g. a test mock).
+    if (
+        settings.llm_http_keepalive
+        and provider == "openai"
+        and "http_async_client" not in clean
+    ):
+        from forge.util.http import shared_llm_async_client
+
+        clean["http_async_client"] = shared_llm_async_client()
+
     return init_chat_model(model_ref, **clean)

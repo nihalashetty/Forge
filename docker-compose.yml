@@ -87,6 +87,15 @@ services:
       # (default-deny, explicit-allow). JSON array. From inside the container "localhost" is the
       # container itself - use ["host.docker.internal"] to reach a service on the Docker host.
       FORGE_EGRESS_ALLOW_PRIVATE_HOSTS: ${FORGE_EGRESS_ALLOW_PRIVATE_HOSTS:-}
+      # Suppress IPv6 (AAAA) DNS lookups at the glibc resolver. Docker's embedded resolver
+      # (127.0.0.11) STALLS ~4-5s on the AAAA query for hosts with no IPv6 address (api.openai.com,
+      # ...), and glibc waits for it before falling back to the A record - so the FIRST (cold)
+      # outbound call of every idle connection paid a multi-second penalty (measured: cold OpenAI
+      # call 5.0s -> 0.9s with this set). Must be a real process env var (not set in-code): the
+      # server runs on uvloop, whose C-level resolver bypasses a Python socket.getaddrinfo patch,
+      # and glibc reads RES_OPTIONS once at process start. Needs glibc >= 2.36 (image has 2.41).
+      # Set RES_OPTIONS= (empty) in .env to re-enable IPv6 for an IPv6-only egress network.
+      RES_OPTIONS: ${RES_OPTIONS:-no-aaaa}
       # Provider keys (set the ones you use):
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
@@ -145,6 +154,9 @@ services:
       # Same egress allowances as the api, so worker-executed tool runs (webhook/schedule
       # triggers) can reach the same internal targets (default-deny, explicit-allow).
       FORGE_EGRESS_ALLOW_PRIVATE_HOSTS: ${FORGE_EGRESS_ALLOW_PRIVATE_HOSTS:-}
+      # Suppress the slow IPv6/AAAA DNS lookup on cold outbound connections - same fix and rationale
+      # as the api service (see the comment there); the worker makes the same LLM/tool calls.
+      RES_OPTIONS: ${RES_OPTIONS:-no-aaaa}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     volumes:

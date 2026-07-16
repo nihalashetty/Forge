@@ -20,6 +20,31 @@ log = logging.getLogger("forge.util.http")
 
 _client: httpx.AsyncClient | None = None
 _insecure_client: httpx.AsyncClient | None = None
+_llm_client: httpx.AsyncClient | None = None
+
+
+def shared_llm_async_client() -> httpx.AsyncClient:
+    """Process-wide AsyncClient for LLM-provider calls (OpenAI), with keep-alive tuned so warm
+    connections survive BETWEEN runs and turns.
+
+    Forge recompiles the workflow graph per run, so without a shared client every run builds a
+    fresh model client and re-opens a TLS connection to the provider (a full handshake, plus the
+    DNS lookup) on its first call. Handing every OpenAI model this ONE client instead lets the
+    connection pool stay warm across runs. Kept separate from the REST-tool client because LLM
+    calls stream and need a long read window, which must not bleed into short tool-call timeouts.
+    Closed by the FastAPI lifespan (and worker shutdown) via aclose_shared_client()."""
+    global _llm_client
+    if _llm_client is None or _llm_client.is_closed:
+        _llm_client = httpx.AsyncClient(
+            # Generous read window for long / streamed completions; bounded connect/pool so a
+            # dead endpoint fails fast rather than hanging a request slot.
+            timeout=httpx.Timeout(connect=10.0, read=300.0, write=30.0, pool=10.0),
+            # keepalive_expiry well above the gap between turns so the connection isn't dropped
+            # and re-handshaked between a run's model calls (which straddle tool calls) or between
+            # back-to-back runs.
+            limits=httpx.Limits(max_connections=100, max_keepalive_connections=20, keepalive_expiry=90.0),
+        )
+    return _llm_client
 
 
 def shared_async_client() -> httpx.AsyncClient:
@@ -72,10 +97,13 @@ def select_client(url: str, *, skip_verify: bool, policy, override: httpx.AsyncC
 
 
 async def aclose_shared_client() -> None:
-    global _client, _insecure_client
+    global _client, _insecure_client, _llm_client
     if _client is not None and not _client.is_closed:
         await _client.aclose()
     _client = None
     if _insecure_client is not None and not _insecure_client.is_closed:
         await _insecure_client.aclose()
     _insecure_client = None
+    if _llm_client is not None and not _llm_client.is_closed:
+        await _llm_client.aclose()
+    _llm_client = None

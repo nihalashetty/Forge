@@ -71,6 +71,12 @@ async def _startup(ctx) -> None:
     from forge.main import _make_checkpointer
     from forge.services.runs import RunService
 
+    # arq never runs the FastAPI lifespan, so apply the same IPv4-first DNS fix here - offloaded
+    # runs make the same multi-hop outbound LLM/tool calls and would otherwise pay the AAAA stall.
+    if settings.prefer_ipv4_egress:
+        from forge.util.netfix import install_prefer_ipv4_dns
+
+        install_prefer_ipv4_dns()
     # Fail-closed under the SAME hardening guard the API enforces in its lifespan. arq never
     # runs the FastAPI lifespan, so without this the worker would happily start under an unsafe
     # config (default secret / sqlite / non-durable checkpointer) the API refuses to serve.

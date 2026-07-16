@@ -200,6 +200,18 @@ class Settings(BaseSettings):
     # Max redirect hops a REST tool follows when follow_redirects is on. Each hop is
     # re-validated against the SSRF egress guard, so this bounds a redirect loop / chain.
     tool_max_redirects: int = 5
+    # Best-effort IPv6/AAAA-lookup suppression fallback (see forge.util.netfix). The AUTHORITATIVE
+    # fix for the slow-cold-DNS penalty is `RES_OPTIONS=no-aaaa` in the process env, set by
+    # docker-compose - it works under uvloop (which the server uses) where a Python resolver patch
+    # cannot. This toggle only enables the code-level fallback for launch paths without that env
+    # var (e.g. a local .venv run). Disable (FORGE_PREFER_IPV4_EGRESS=false) for an IPv6-only egress
+    # network (and clear RES_OPTIONS in that case too).
+    prefer_ipv4_egress: bool = True
+    # Reuse ONE warm keep-alive HTTP connection pool for OpenAI model calls across runs, instead
+    # of the fresh client each per-run graph compile would otherwise build (a new TLS handshake on
+    # the first call of every run). No cost/token impact - purely a transport optimization that
+    # also lowers server load (fewer handshakes/sockets). Off => each model builds its own client.
+    llm_http_keepalive: bool = True
     # Auto-attach AnthropicPromptCachingMiddleware to Anthropic-model agents (caches the
     # static system-prompt/tools prefix; large multi-turn cost saving). Off => opt-in only.
     default_anthropic_prompt_caching: bool = True

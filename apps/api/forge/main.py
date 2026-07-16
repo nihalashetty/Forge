@@ -168,6 +168,12 @@ def _preload_heavy_modules() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Install the IPv4-first DNS resolver before anything opens a connection, so outbound calls
+    # (LLM providers, REST tools, DB, redis) never pay the multi-second AAAA-lookup stall.
+    if settings.prefer_ipv4_egress:
+        from forge.util.netfix import install_prefer_ipv4_dns
+
+        install_prefer_ipv4_dns()
     settings.ensure_dirs()
     problems = settings.validate_production()
     if problems:
