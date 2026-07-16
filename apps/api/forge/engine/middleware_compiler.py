@@ -200,7 +200,23 @@ def _openai_moderation(c: dict, ctx: CompileContext) -> AgentMiddleware:
         raise ImportError(
             "openai_moderation needs `langchain-openai` (pip install -e '.[providers]')."
         ) from e
-    return OpenAIModerationMiddleware(**_pick(c, ["apply_to_input", "apply_to_output"]))
+    # langchain-openai (>=1.3) renamed the toggles apply_to_* -> check_* (and added
+    # check_tool_results / exit_behavior / model / violation_message). Map from our schema's
+    # apply_to_* names (shared with `pii`, and already present in saved configs) to the
+    # library's current kwargs so enabling this middleware doesn't fail to compile.
+    kw: dict[str, Any] = {}
+    for schema_key, lib_key in (
+        ("apply_to_input", "check_input"),
+        ("apply_to_output", "check_output"),
+        ("apply_to_tool_results", "check_tool_results"),
+    ):
+        if c.get(schema_key) is not None:
+            kw[lib_key] = c[schema_key]
+    # Pass-through kwargs the library accepts as-is (available via Advanced JSON).
+    for k in ("exit_behavior", "model", "violation_message"):
+        if c.get(k) is not None:
+            kw[k] = c[k]
+    return OpenAIModerationMiddleware(**kw)
 
 
 # --- custom / advanced builders (declarative rules -> hooks) ---------------

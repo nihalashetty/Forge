@@ -438,3 +438,22 @@ def test_unwired_agent_fields_warn():
     assert res.valid  # warnings only, never block save
     assert any("permissions" in w["message"] for w in res.warnings)
     assert any("memory" in w["message"].lower() for w in res.warnings)
+
+
+# --------------------------------------------------------------------------------------------
+# Library drift: langchain-openai (>=1.3) renamed OpenAIModerationMiddleware's apply_to_* flags
+# to check_*. Enabling `openai_moderation` used to crash at compile with
+# "__init__() got an unexpected keyword argument 'apply_to_input'"; the compiler now translates.
+# --------------------------------------------------------------------------------------------
+
+def test_openai_moderation_translates_apply_to_flags():
+    pytest.importorskip("langchain_openai")
+    from forge.engine.middleware_compiler import _openai_moderation
+
+    mw = _openai_moderation({"apply_to_input": True, "apply_to_output": False}, None)
+    assert mw.check_input is True and mw.check_output is False
+    # Empty config compiles to the library defaults (both checks on) without raising.
+    default = _openai_moderation({}, None)
+    assert default.check_input is True and default.check_output is True
+    # Advanced-JSON pass-through kwargs reach the library unchanged.
+    assert _openai_moderation({"exit_behavior": "replace"}, None).exit_behavior == "replace"
