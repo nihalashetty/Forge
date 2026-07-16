@@ -21,6 +21,22 @@ from forge.config import settings
 from forge.tracing import tool_io
 from forge.tracing.pricing import price
 
+# A HITL interrupt (interrupt()) or a Command routing signal is RAISED as a GraphBubbleUp to
+# suspend/redirect the graph - control flow, not a failure. It reaches the callback error hooks
+# as a raised exception, so recognize it and DON'T record it as a span error; otherwise a run
+# paused for human approval renders as a crash (the run's own status is already `interrupted`).
+# langgraph ships with the engine; the fallback just keeps the tracer importable without it.
+try:
+    from langgraph.errors import GraphBubbleUp as _GraphBubbleUp
+except Exception:  # pragma: no cover - langgraph always present with the engine
+    _GraphBubbleUp = ()  # type: ignore[assignment]  # isinstance(x, ()) is always False
+
+
+def _is_control_flow(error: Any) -> bool:
+    """True for a LangGraph bubble-up (HITL interrupt, Command) - a pause/redirect, not an error."""
+    return isinstance(error, _GraphBubbleUp)
+
+
 # The run's active tracer, bound per asyncio context when a ForgeTracer is constructed.
 # An embedding call deep in RAG/memory is far from the tracer that owns the run's spans
 # (same rationale as tool_io); it reaches back through this to attribute embedding latency
@@ -164,6 +180,18 @@ class ForgeTracer(BaseCallbackHandler):
         for k, v in fields.items():
             setattr(sp, k, v)
 
+    def _end_error(self, run_id, error) -> None:
+        """Close a span that ended by raising. A LangGraph bubble-up (HITL interrupt / Command) is
+        control flow, not a failure: tag the span `interrupted` and close it cleanly so a run paused
+        for approval doesn't render as an error (the run status itself is already `interrupted`)."""
+        if _is_control_flow(error):
+            sp = self.spans.get(str(run_id))
+            if sp is not None:
+                sp.attributes["interrupted"] = True
+            self._close(run_id)
+        else:
+            self._close(run_id, error=str(error))
+
     # --- LLM / chat model ---
     def on_chat_model_start(self, serialized, messages, *, run_id, parent_run_id=None, **kw):  # noqa: D401
         model = self._model_name(serialized, kw)
@@ -183,7 +211,7 @@ class ForgeTracer(BaseCallbackHandler):
         )
 
     def on_llm_error(self, error, *, run_id, **kw):
-        self._close(run_id, error=str(error))
+        self._end_error(run_id, error)
 
     # --- tools ---
     def on_tool_start(self, serialized, input_str, *, run_id, parent_run_id=None, **kw):
@@ -200,7 +228,7 @@ class ForgeTracer(BaseCallbackHandler):
 
     def on_tool_error(self, error, *, run_id, **kw):
         self._tool_io(run_id)
-        self._close(run_id, error=str(error))
+        self._end_error(run_id, error)
 
     def _tool_io(self, run_id, *, fallback_output=None) -> None:
         """Merge the tool's captured framed I/O (set by the tool via forge.tracing.tool_io)
@@ -238,7 +266,7 @@ class ForgeTracer(BaseCallbackHandler):
         self._close(run_id)
 
     def on_chain_error(self, error, *, run_id, **kw):
-        self._close(run_id, error=str(error))
+        self._end_error(run_id, error)
 
     # --- retrievers (RAG / vector search) ---
     def on_retriever_start(self, serialized, query, *, run_id, parent_run_id=None, **kw):
@@ -264,7 +292,7 @@ class ForgeTracer(BaseCallbackHandler):
         self._close(run_id)
 
     def on_retriever_error(self, error, *, run_id, **kw):
-        self._close(run_id, error=str(error))
+        self._end_error(run_id, error)
 
     # --- embeddings (RAG / memory) ---
     @contextmanager
