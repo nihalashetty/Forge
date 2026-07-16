@@ -8,12 +8,34 @@ at runtime (avoids nested-checkpointer conflicts and makes HITL interrupts bubbl
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from forge.engine.context import CompileContext
 from forge.engine.middleware_compiler import build_middleware
 from forge.engine.models import resolve_model
 from forge.engine.registry import NodeSpec, Port, register
+
+log = logging.getLogger("forge.agent")
+
+
+def _dedup_tools_by_name(tools: list) -> list:
+    """Bind each tool NAME to the model at most once. `resolve_tool_ids` already de-dups by id (a
+    tool shared across several sets is ONE record → one id, sent once), but tool names are NOT
+    unique per project and the final list mixes sources (tools + knowledge + MCP + components), so
+    two entries can still collide by name - which providers reject (OpenAI errors on a duplicate
+    function name). Keep the first occurrence; drop later name-collisions with a warning."""
+    seen: set[str] = set()
+    out: list = []
+    for t in tools:
+        name = getattr(t, "name", None)
+        if name is not None and name in seen:
+            log.warning("agent tool name %r appears more than once; keeping the first, dropping the rest", name)
+            continue
+        if name is not None:
+            seen.add(name)
+        out.append(t)
+    return out
 
 # Forge's default output style: every agent reply renders as GitHub-Flavored Markdown
 # (Feature 1 - structured responses). It lives in the system prompt, so it costs ~nothing
@@ -100,7 +122,7 @@ def build_subagents(subagents_cfg: list[dict], ctx: CompileContext) -> list[dict
         if sa.get("system_prompt"):
             spec["system_prompt"] = sa["system_prompt"]
         if sa.get("tools") or sa.get("toolsets"):
-            spec["tools"] = ctx.tools_for(ctx.resolve_tool_ids(sa.get("tools"), sa.get("toolsets")))
+            spec["tools"] = _dedup_tools_by_name(ctx.tools_for(ctx.resolve_tool_ids(sa.get("tools"), sa.get("toolsets"))))
         if sa.get("model"):
             spec["model"] = resolve_model(sa["model"], ctx)
         if sa.get("middleware"):
@@ -231,6 +253,8 @@ def _common_kwargs(config: dict, ctx: CompileContext) -> dict:
     # User-defined UI components exposed as widget-tools (Feature 2): the agent "renders"
     # one by calling it; the client draws the saved template from the props it passes.
     tools += list(ctx.components_for(config.get("components", [])))
+    # Final guard: exactly one function name per model call, whatever the source mix.
+    tools = _dedup_tools_by_name(tools)
     stack = (ctx.project_default_mw or []) + (config.get("middleware") or [])
     stack = _maybe_add_prompt_caching(stack, config, ctx)
     middleware = build_middleware(stack, ctx)
