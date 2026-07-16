@@ -567,9 +567,10 @@ export function ToolBuilderScreen({ project, toolId, onBack }: { project: any; t
                     <Field label="Method & URL">
                       <div className="row gap2">
                         {isRest && (
-                          <div style={{ width: 96, position: "relative" }}>
+                          <div style={{ width: 96 }}>
+                            {/* `.select` already draws its own chevron (background-image); no overlay Icon,
+                                otherwise the arrow renders twice. */}
                             <select className="select" value={draft.method} onChange={(e) => set({ method: e.target.value })}>{["GET", "POST", "PUT", "DELETE", "PATCH"].map((m) => <option key={m}>{m}</option>)}</select>
-                            <Icon name="chevdown" size={13} style={{ position: "absolute", right: 8, top: 9, pointerEvents: "none", color: "var(--fg-2)" }} />
                           </div>
                         )}
                         <input className="input mono" value={draft.url} onChange={(e) => set({ url: e.target.value })} style={{ flex: 1 }} />
@@ -582,7 +583,6 @@ export function ToolBuilderScreen({ project, toolId, onBack }: { project: any; t
                           <select className="select" value={draft.body_encoding} onChange={(e) => set({ body_encoding: e.target.value })}>
                             {[["", "Auto"], ["json", "JSON"], ["form", "Form (urlencoded)"], ["raw", "Raw"]].map((o) => <option key={o[0]} value={o[0]}>{o[1]}</option>)}
                           </select>
-                          <Icon name="chevdown" size={13} style={{ position: "absolute", right: 9, top: 9, pointerEvents: "none", color: "var(--fg-2)" }} />
                         </div>
                       </Field>
                     )}
@@ -687,7 +687,6 @@ export function ToolBuilderScreen({ project, toolId, onBack }: { project: any; t
                     <select className="select" value={draft.on_error} onChange={(e) => set({ on_error: e.target.value })}>
                       {[["return_message", "Return error message to model"], ["raise", "Raise & stop run"], ["retry", "Retry (handled by middleware)"]].map((o) => <option key={o[0]} value={o[0]}>{o[1]}</option>)}
                     </select>
-                    <Icon name="chevdown" size={13} style={{ position: "absolute", right: 9, top: 9, pointerEvents: "none", color: "var(--fg-2)" }} />
                   </div>
                 </Field>
               </div>
@@ -700,7 +699,6 @@ export function ToolBuilderScreen({ project, toolId, onBack }: { project: any; t
                       <option value="">None</option>
                       {providers.map((p) => <option key={p.id} value={p.id}>{p.name} · {p.kind}</option>)}
                     </select>
-                    <Icon name="chevdown" size={13} style={{ position: "absolute", right: 9, top: 9, pointerEvents: "none", color: "var(--fg-2)" }} />
                   </div>
                 </Field>
                 {draft.auth_provider_id && (() => {

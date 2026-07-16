@@ -216,7 +216,6 @@ function ProviderDetail({ project, provider, onSaved }: { project: any; provider
             <select className="select" value={kind} onChange={(e) => { const k = e.target.value; setCfg({ ...(TEMPLATES[k] || { kind: k }) }); setSaved(false); }}>
               {Object.entries(KIND_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
             </select>
-            <Icon name="chevdown" size={13} style={{ position: "absolute", right: 9, top: 9, pointerEvents: "none", color: "var(--fg-2)" }} />
           </div>
         </Field>
 
