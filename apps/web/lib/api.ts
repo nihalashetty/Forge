@@ -45,6 +45,36 @@ export interface ValidateResult {
   errors: { pointer: string; message: string; node_id?: string }[];
 }
 
+/** Model catalog served from the backend (GET /v1/models) - the single source of truth for
+ *  every model picker, so the frontend hardcodes no model lists. See forge/model_catalog.py. */
+export interface ModelInfo {
+  id: string;
+  name: string;
+  provider: string;
+  ctx: string;
+  tools: boolean;
+  vision: boolean;
+}
+export interface EmbeddingModelInfo {
+  id: string;
+  name: string;
+  provider: string;
+  dim: number;
+  billed: boolean;
+  default: boolean;
+}
+export interface RerankerModelInfo {
+  id: string;
+  name: string;
+  note: string;
+  default: boolean;
+}
+export interface ModelCatalog {
+  chat: ModelInfo[];
+  embedding: EmbeddingModelInfo[];
+  reranker: RerankerModelInfo[];
+}
+
 export interface Tool {
   id: string;
   project_id: string;
@@ -463,6 +493,7 @@ export const api = {
   acceptInvite: (token: string, password: string) =>
     json<AuthResult>("/v1/auth/accept-invite", { method: "POST", body: JSON.stringify({ token, password }) }),
   listTeam: () => json<TeamMember[]>("/v1/team/members"),
+  listModels: () => json<ModelCatalog>("/v1/models"),
   listPricing: () => json<Record<string, { input_per_1m: number; output_per_1m: number }>>("/v1/pricing"),
   setPricing: (model: string, body: { input_per_1m: number; output_per_1m: number }) =>
     json<any>(`/v1/pricing/${encodeURIComponent(model)}`, { method: "PUT", body: JSON.stringify(body) }),

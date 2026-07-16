@@ -7,19 +7,13 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Icon } from "../icons";
 import { EmptyState, Field, Modal, Segmented, Tabs, Toggle } from "../primitives";
 import { api, clearTokens, InviteResult, MeResult, ProjectVersion, Secret, TeamMember } from "@/lib/api";
-import { MODELS } from "@/lib/data";
+import { useEmbeddingModels, useModels, useRerankerModels } from "@/lib/models";
 
 const ROLES = ["owner", "admin", "editor", "viewer", "connector"];
 
-// Project default embedder when rag_defaults.embedding_model is unset. Matches the backend
-// default (embeddings._DEFAULT_FASTEMBED) and the project.json schema default.
-const DEFAULT_EMBEDDING_MODEL = "fastembed:BAAI/bge-small-en-v1.5";
+// Embedder + reranker models (and which one is default) come from the backend catalog now
+// (useEmbeddingModels / useRerankerModels) - the frontend hardcodes no model lists.
 const DEFAULT_CHILD_CHUNK_SIZE = 300;
-const DEFAULT_RERANKER_MODEL = "Xenova/ms-marco-MiniLM-L-6-v2";
-const RERANKER_OPTIONS = [
-  { value: "Xenova/ms-marco-MiniLM-L-6-v2", label: "MiniLM-L6 · small, CPU-fast (default)" },
-  { value: "BAAI/bge-reranker-base", label: "bge-reranker-base · heavier, more accurate" },
-];
 
 type SectionId =
   | "general" | "members" | "apikeys" | "pricing" | "budgets"
@@ -59,6 +53,9 @@ const MASK_RE = /credential|secret|token|api[_-]?key|password/i;
 
 export function SettingsScreen({ project, onDeleteProject }: { project: any; onDeleteProject?: (project: { id: string; name: string }) => Promise<void> | void }) {
   const [section, setSection] = useState<SectionId>("general");
+  const MODELS = useModels();
+  const embeddingModels = useEmbeddingModels();
+  const rerankerModels = useRerankerModels();
   const [config, setConfig] = useState<Record<string, any>>({});
   const [meta, setMeta] = useState<{ name: string; description: string }>({ name: "", description: "" });
   const [secrets, setSecrets] = useState<Secret[]>([]);
@@ -92,7 +89,9 @@ export function SettingsScreen({ project, onDeleteProject }: { project: any; onD
   const versioning = config.versioning || {};
   const observability = config.observability || {};
   const scheduler = config.scheduler || {};
-  const embeddingModel = rag.embedding_model || DEFAULT_EMBEDDING_MODEL;
+  const defaultEmbedding = embeddingModels.find((m) => m.default)?.id ?? "";
+  const defaultReranker = rerankerModels.find((m) => m.default)?.id ?? "";
+  const embeddingModel = rag.embedding_model || defaultEmbedding;
   const setRag = (patch: Record<string, any>) => setCfg({ rag_defaults: { ...rag, ...patch } });
 
   async function persist() {
@@ -175,7 +174,7 @@ export function SettingsScreen({ project, onDeleteProject }: { project: any; onD
                 <Card title="Default model">
                   <Field label="Default model" help="Used by new agents and single model-call nodes unless they override it.">
                     <select className="select" value={config.default_model || ""} onChange={(e) => setCfg({ default_model: e.target.value })}>
-                      <option value="fake:echo">fake:echo (offline)</option>
+                      <option value="">Select a model…</option>
                       {MODELS.map((m) => <option key={m.id} value={m.id}>{m.name} · {m.provider}</option>)}
                     </select>
                   </Field>
@@ -245,14 +244,20 @@ export function SettingsScreen({ project, onDeleteProject }: { project: any; onD
               <Card title="Knowledge & embeddings">
                 <Field label="Embedding model" help="Used to embed knowledge sources and search queries. Applies to the whole project - you can't mix embedders across files. Changing it changes the vector dimension, so re-embed existing sources afterward (the Knowledge tab flags mismatches).">
                   <select className="select" value={embeddingModel} onChange={(e) => setRag({ embedding_model: e.target.value })}>
-                    <optgroup label="Local · open-source · free (offline)">
-                      <option value={DEFAULT_EMBEDDING_MODEL}>bge-small · local, free (384-dim)</option>
-                      <option value="fastembed:BAAI/bge-base-en-v1.5">bge-base · local, free (768-dim)</option>
-                    </optgroup>
-                    <optgroup label="OpenAI · billed per token (ingest + every query)">
-                      <option value="openai:text-embedding-3-small">OpenAI 3-small · billed (1536-dim)</option>
-                      <option value="openai:text-embedding-3-large">OpenAI 3-large · billed (3072-dim)</option>
-                    </optgroup>
+                    {Array.from(new Set(embeddingModels.map((m) => m.provider))).map((prov) => {
+                      const items = embeddingModels.filter((m) => m.provider === prov);
+                      const label = items.some((m) => m.billed)
+                        ? `${prov} · billed per token (ingest + every query)`
+                        : `${prov} · open-source · free (offline)`;
+                      return (
+                        <optgroup key={prov} label={label}>
+                          {items.map((m) => (
+                            <option key={m.id} value={m.id}>{m.name} · {m.billed ? "billed" : "local, free"} ({m.dim}-dim)</option>
+                          ))}
+                        </optgroup>
+                      );
+                    })}
+                    {embeddingModel && !embeddingModels.some((m) => m.id === embeddingModel) && <option value={embeddingModel}>{embeddingModel}</option>}
                   </select>
                 </Field>
                 {embeddingModel.startsWith("openai:") && (
@@ -277,8 +282,9 @@ export function SettingsScreen({ project, onDeleteProject }: { project: any; onD
                   </Field>
                 )}
                 <Field label="Reranker model" help="Local cross-encoder used when a retrieval node (or the search debugger) has rerank on. Runs offline on CPU, no API cost. Ignored unless rerank is enabled.">
-                  <select className="select" value={rag.reranker_model || DEFAULT_RERANKER_MODEL} onChange={(e) => setRag({ reranker_model: e.target.value })}>
-                    {RERANKER_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  <select className="select" value={rag.reranker_model || defaultReranker} onChange={(e) => setRag({ reranker_model: e.target.value })}>
+                    {rerankerModels.map((m) => <option key={m.id} value={m.id}>{m.name} · {m.note}{m.default ? " (default)" : ""}</option>)}
+                    {rag.reranker_model && !rerankerModels.some((m) => m.id === rag.reranker_model) && <option value={rag.reranker_model}>{rag.reranker_model}</option>}
                   </select>
                 </Field>
               </Card>
@@ -575,6 +581,7 @@ function TeamCard() {
    models already priced on the server. */
 function PricingCard() {
   const [pricing, setPricing] = useState<Record<string, { input_per_1m: number; output_per_1m: number }>>({});
+  const MODELS = useModels();
   const [draft, setDraft] = useState<Record<string, { input_per_1m: string; output_per_1m: string }>>({});
   const [loaded, setLoaded] = useState(false);
   const [err, setErr] = useState<string | null>(null);

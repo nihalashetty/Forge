@@ -18,16 +18,8 @@ export const fmtUSD = (v: number | null | undefined): string => {
   return "<$0.0001";
 };
 
-// Real, currently-available models (the design docs used fictional 2026 names).
-export const MODELS = [
-  { id: "openai:gpt-4o-mini", name: "gpt-4o-mini", provider: "OpenAI", ctx: "128k", tools: true, vision: true },
-  { id: "openai:gpt-4o", name: "gpt-4o", provider: "OpenAI", ctx: "128k", tools: true, vision: true },
-  { id: "openai:gpt-4.1-mini", name: "gpt-4.1-mini", provider: "OpenAI", ctx: "1M", tools: true, vision: true },
-  { id: "anthropic:claude-3-5-sonnet-latest", name: "claude-3-5-sonnet", provider: "Anthropic", ctx: "200k", tools: true, vision: true },
-  { id: "anthropic:claude-3-5-haiku-latest", name: "claude-3-5-haiku", provider: "Anthropic", ctx: "200k", tools: true, vision: false },
-  { id: "google_genai:gemini-1.5-flash", name: "gemini-1.5-flash", provider: "Google", ctx: "1M", tools: true, vision: true },
-  { id: "fake:echo", name: "fake (offline test)", provider: "Local", ctx: "-", tools: true, vision: false },
-];
+// The model catalog now lives on the backend (single source of truth so the picker and cost
+// engine can't disagree). Fetch it with `useModels()` from lib/models.ts.
 
 export const NODE_CATALOG = [
   { group: "Flow", color: "var(--io-control)", items: [

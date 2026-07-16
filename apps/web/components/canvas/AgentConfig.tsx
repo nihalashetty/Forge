@@ -4,7 +4,8 @@ import { useState } from "react";
 import { Icon } from "../icons";
 import { Field, Modal, Segmented, Tile, Toggle } from "../primitives";
 import { FieldsForm, MW_FIELDS, MultiSelectChips } from "./ConfigForm";
-import { MODELS, MIDDLEWARE_CATALOG, MW_META } from "@/lib/data";
+import { MIDDLEWARE_CATALOG, MW_META } from "@/lib/data";
+import { useModels } from "@/lib/models";
 import type { Agent, ComponentT, McpClientT, Tool, ToolSet } from "@/lib/api";
 
 type Cfg = Record<string, any>;
@@ -12,6 +13,7 @@ type MW = { type: string; enabled?: boolean; config?: Record<string, any> };
 
 export function AgentConfig({ config, onChange, tools = [], toolSets = [], agents = [], folders = [], kinds = [], mcpServers = [], components = [] }: { config: Cfg; onChange: (c: Cfg) => void; tools?: Tool[]; toolSets?: ToolSet[]; agents?: Agent[]; folders?: string[]; kinds?: string[]; mcpServers?: McpClientT[]; components?: ComponentT[] }) {
   const set = (patch: Cfg) => onChange({ ...config, ...patch });
+  const MODELS = useModels();
   const flavor = config.flavor || "agent";
   const selectedTools: string[] = config.tools || [];
   const selectedComponents: string[] = config.components || [];
@@ -29,11 +31,15 @@ export function AgentConfig({ config, onChange, tools = [], toolSets = [], agent
   const toolById = new Map(tools.map((t) => [t.id, t]));
   const groupedIds = new Set(toolSets.flatMap((s) => s.tool_ids));
   const ungrouped = tools.filter((t) => !groupedIds.has(t.id));
-  // Effective count: individually-picked tools ∪ every tool of a whole-set grant.
-  const grantedCount = new Set([
+  // Effective count = DISTINCT TOOL NAMES bound to the model: individually-picked tools ∪ every
+  // tool of a whole-set grant, then collapsed BY NAME. The backend binds one function per name
+  // (a tool shared across sets — or two records that share a name — reaches the model once), so
+  // the badge matches what the model actually receives rather than counting the same name twice.
+  const grantedIds = new Set([
     ...selectedTools,
     ...toolSets.filter((s) => selectedToolSets.includes(s.id)).flatMap((s) => s.tool_ids),
-  ]).size;
+  ]);
+  const grantedCount = new Set([...grantedIds].map((id) => toolById.get(id)?.name ?? id)).size;
   const toggleComponent = (id: string) =>
     set({ components: selectedComponents.includes(id) ? selectedComponents.filter((c) => c !== id) : [...selectedComponents, id] });
 
@@ -379,17 +385,25 @@ function MiddlewareStack({ stack, onChange }: { stack: MW[]; onChange: (s: MW[])
         const open = openIdx === i;
         return (
           <div key={i} className="card" style={{ padding: 0, overflow: "hidden", borderLeft: `3px solid ${meta.color}`, opacity: on ? 1 : 0.6 }}>
-            <div className="row gap2" style={{ padding: "9px 11px" }}>
-              <div className="col" style={{ gap: 1 }}>
-                <button className="iconbtn" style={{ width: 18, height: 14 }} onClick={() => move(i, -1)} disabled={i === 0}><Icon name="chevup" size={13} /></button>
-                <button className="iconbtn" style={{ width: 18, height: 14 }} onClick={() => move(i, 1)} disabled={i === stack.length - 1}><Icon name="chevdown" size={13} /></button>
+            {/* Compact single-line header: name + type + (truncated) description, reorder, toggle, delete.
+                Icon sizes are set via inline style because `.iconbtn svg` in globals.css pins svgs to
+                17px and would otherwise override the Icon `size` prop. Full description shows on hover. */}
+            <div className="row gap2" style={{ padding: "5px 9px" }}>
+              <div className="col" style={{ gap: 0, flex: "none" }}>
+                <button className="iconbtn" style={{ width: 16, height: 13, padding: 0 }} onClick={() => move(i, -1)} disabled={i === 0}><Icon name="chevup" style={{ width: 12, height: 12 }} /></button>
+                <button className="iconbtn" style={{ width: 16, height: 13, padding: 0 }} onClick={() => move(i, 1)} disabled={i === stack.length - 1}><Icon name="chevdown" style={{ width: 12, height: 12 }} /></button>
               </div>
-              <div className="grow" style={{ minWidth: 0, cursor: "pointer" }} onClick={() => setOpenIdx(open ? null : i)}>
-                <div className="row gap2"><span className="t-h3">{meta.name}</span><span className="t-caption fg-2">{m.type}</span></div>
-                <div className="t-caption fg-2 truncate">{meta.desc}</div>
+              {/* One truncating line (name + type + desc) clipped inside the grow box, so a long
+                  type key like `openai_moderation` can never spill under the toggle/trash. */}
+              <div className="grow" style={{ minWidth: 0, overflow: "hidden", cursor: "pointer" }} onClick={() => setOpenIdx(open ? null : i)} title={`${meta.name} · ${m.type}${meta.desc ? ` · ${meta.desc}` : ""}`}>
+                <div className="truncate">
+                  <span className="t-h3">{meta.name}</span>
+                  <span className="t-caption fg-2" style={{ marginLeft: 8 }}>{m.type}</span>
+                  {meta.desc && <span className="t-caption fg-2" style={{ marginLeft: 8 }}>{meta.desc}</span>}
+                </div>
               </div>
               <Toggle on={on} onChange={(v) => update(i, { enabled: v })} />
-              <button className="iconbtn" onClick={() => remove(i)}><Icon name="trash" size={15} /></button>
+              <button className="iconbtn" style={{ width: 24, height: 24, flex: "none" }} onClick={() => remove(i)}><Icon name="trash" style={{ width: 15, height: 15 }} /></button>
             </div>
             {open && (
               <div style={{ padding: "0 11px 11px" }}>

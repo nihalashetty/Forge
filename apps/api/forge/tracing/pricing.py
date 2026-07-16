@@ -11,6 +11,8 @@ from __future__ import annotations
 import logging
 import re
 
+from forge.model_catalog import catalog_prices
+
 log = logging.getLogger("forge.pricing")
 
 # Cache-tier multipliers on the INPUT rate (provider-typical, Anthropic-style): a cache READ
@@ -20,28 +22,24 @@ _CACHE_READ_MULT = 0.1
 _CACHE_WRITE_MULT = 1.25
 
 # (input_usd_per_1m, output_usd_per_1m)
-PRICING: dict[str, tuple[float, float]] = {
+# Priced but NOT offered in the picker: embeddings, plus frontier / less-common chat models
+# kept here for accurate cost tracking if a workflow references one directly. The models that
+# ARE offered come from forge.model_catalog (single source of truth) and are merged below - so
+# every selectable model is always priced and the two can't drift.
+_EXTRA_PRICING: dict[str, tuple[float, float]] = {
     # OpenAI
-    "gpt-4o-mini": (0.15, 0.6),
-    "gpt-4o": (2.5, 10.0),
     "gpt-4.1": (2.0, 8.0),
-    "gpt-4.1-mini": (0.4, 1.6),
-    "gpt-4.1-nano": (0.1, 0.4),
     "gpt-5.4": (1.25, 10.0),
     "gpt-5.4-mini": (0.3, 1.2),
     "text-embedding-3-small": (0.02, 0.0),
     "text-embedding-3-large": (0.13, 0.0),
     # Anthropic
-    "claude-sonnet-4-6": (3.0, 15.0),
     "claude-opus-4-8": (5.0, 25.0),
-    "claude-haiku-4-5": (1.0, 5.0),
-    "claude-3-5-sonnet-latest": (3.0, 15.0),
-    "claude-3-5-haiku-latest": (0.8, 4.0),
     # Google
-    "gemini-2.5-flash": (0.3, 2.5),
     "gemini-2.5-pro": (1.25, 10.0),
-    "gemini-1.5-flash": (0.075, 0.3),
 }
+
+PRICING: dict[str, tuple[float, float]] = {**catalog_prices(), **_EXTRA_PRICING}
 
 _warned: set[str] = set()
 

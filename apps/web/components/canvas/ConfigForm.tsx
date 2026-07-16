@@ -4,7 +4,7 @@
    (workflows.tsx) and the middleware stack (AgentConfig.tsx). A form merges only its own
    keys into the config, so unknown/advanced keys are preserved. */
 import { Field, Toggle } from "../primitives";
-import { MODELS } from "@/lib/data";
+import { useModels } from "@/lib/models";
 import { useEffect, useState } from "react";
 
 export type FieldSpec = {
@@ -13,6 +13,10 @@ export type FieldSpec = {
   widget: "toggle" | "number" | "text" | "textarea" | "select" | "model" | "csv" | "multiselect";
   help?: string;
   placeholder?: string;
+  /** Override the "model" widget's empty-value label (default "Project default"). Use when an
+   *  empty model doesn't resolve to the project default - e.g. the classifier falls back to the
+   *  cheapest model, so showing "Project default" there would misrepresent what actually runs. */
+  emptyLabel?: string;
   options?: { value: string; label: string }[];
   /** Pull options at render time from a live source (e.g. the project's KB folders or
    *  Q&A kinds) passed via FieldsForm's `dynamic` prop. Keyed by source name. */
@@ -71,10 +75,11 @@ export function MultiSelectChips({ value, options, placeholder, onChange }: { va
   );
 }
 
-export function ModelSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+export function ModelSelect({ value, onChange, emptyLabel = "Project default" }: { value: string; onChange: (v: string) => void; emptyLabel?: string }) {
+  const MODELS = useModels();
   return (
     <select className="select" value={value || ""} onChange={(e) => onChange(e.target.value)}>
-      <option value="">Project default</option>
+      <option value="">{emptyLabel}</option>
       {MODELS.map((m) => <option key={m.id} value={m.id}>{m.name} · {m.provider}</option>)}
       {value && !MODELS.some((m) => m.id === value) && <option value={value}>{value}</option>}
     </select>
@@ -156,7 +161,7 @@ export function FieldsForm({ specs, config, onPatch, dynamic }: { specs: FieldSp
             ) : f.widget === "multiselect" ? (
               <MultiSelectChips value={v} options={dynOptions(f)} placeholder={f.placeholder} onChange={(items) => write(f, items)} />
             ) : f.widget === "model" ? (
-              <ModelSelect value={v || ""} onChange={(val) => write(f, val || undefined)} />
+              <ModelSelect value={v || ""} emptyLabel={f.emptyLabel} onChange={(val) => write(f, val || undefined)} />
             ) : f.widget === "csv" ? (
               <CsvInput value={v} placeholder={f.placeholder} onChange={(items) => write(f, items)} />
             ) : f.widget === "textarea" ? (
