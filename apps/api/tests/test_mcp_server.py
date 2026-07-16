@@ -49,6 +49,48 @@ async def test_mcp_initialize_and_list_and_call():
         assert body["isError"] is False and "42" in body["content"][0]["text"]
 
 
+async def test_mcp_exposes_project_tools():
+    """Project-level tools (workflow / knowledge / Q&A) are published on the base endpoint when
+    their project.config flags are set, and never on a per-set (toolset) endpoint."""
+    async with SessionLocal() as s:
+        proj = Project(tenant_id="t_mcps3", name="P3", slug="p3", config={
+            "mcp_expose_workflow": True, "mcp_workflow_tool_name": "run_it",
+            "mcp_expose_knowledge": True, "mcp_expose_faq": True,
+        })
+        s.add(proj)
+        await s.commit()
+        await s.refresh(proj)
+        pid = proj.id
+    app = create_app()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as c:
+        # base endpoint: all three project tools are listed (custom workflow tool name honored)
+        r = await c.post(f"/v1/mcp/{pid}", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+        names = [t["name"] for t in r.json()["result"]["tools"]]
+        assert "run_it" in names
+        assert "search_knowledge_base" in names
+        assert "lookup_faq" in names
+
+        # per-toolset endpoint: project tools are a whole-project surface, so none of them appear
+        r = await c.post(f"/v1/mcp/{pid}/toolset/general", json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+        names = [t["name"] for t in r.json()["result"]["tools"]]
+        assert not ({"run_it", "search_knowledge_base", "lookup_faq"} & set(names))
+
+
+async def test_mcp_project_tools_off_by_default():
+    """No flags => no project tools (unchanged surface for existing projects)."""
+    async with SessionLocal() as s:
+        proj = Project(tenant_id="t_mcps4", name="P4", slug="p4", config={})
+        s.add(proj)
+        await s.commit()
+        await s.refresh(proj)
+        pid = proj.id
+    app = create_app()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as c:
+        r = await c.post(f"/v1/mcp/{pid}", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+        names = [t["name"] for t in r.json()["result"]["tools"]]
+        assert not ({"run_workflow", "search_knowledge_base", "lookup_faq"} & set(names))
+
+
 async def test_mcp_requires_key_when_configured():
     async with SessionLocal() as s:
         proj = Project(tenant_id="t_mcps2", name="P2", slug="p2", config={"mcp_api_key": "secret-key"})

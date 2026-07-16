@@ -3,7 +3,7 @@
    (Consuming external MCP servers lives in the BUILD → External MCP tab.) */
 import { ReactNode, useEffect, useState } from "react";
 import { Icon } from "../icons";
-import { CodeBlock, Field, Segmented } from "../primitives";
+import { CodeBlock, Field, Segmented, Toggle } from "../primitives";
 import { api, type McpToken, type ToolSet } from "@/lib/api";
 import { EmbedPanel } from "./embed";
 
@@ -64,6 +64,13 @@ export function ConnectScreen({ project }: { project: any }) {
   const [apiKey, setApiKey] = useState("");
   const [save, setSave] = useState<"idle" | "saving" | "saved">("idle");
   const [credTab, setCredTab] = useState<"key" | "pat">("key"); // which credential to paste - it's either/or
+  // Project-level MCP tools (mirror the server's project.config flags in mcp_server.py): the whole
+  // workflow as one tool, plus knowledge-base + curated-Q&A search. Independent of toolsets.
+  const [exposeWf, setExposeWf] = useState(false);
+  const [wfToolName, setWfToolName] = useState("run_workflow");
+  const [exposeKnowledge, setExposeKnowledge] = useState(false);
+  const [exposeFaq, setExposeFaq] = useState(false);
+  const [cfgSave, setCfgSave] = useState<"idle" | "saving" | "saved">("idle");
   // Run-API panel: pick the workflow this project's API runs (a saved setting) + the
   // backend-facing base URL, then show the one ready-to-copy endpoint.
   const [workflows, setWorkflows] = useState<any[]>([]);
@@ -83,6 +90,11 @@ export function ConnectScreen({ project }: { project: any }) {
     Promise.all([api.getProject(project.id), api.listWorkflows(project.id)]).then(([p, ws]) => {
       setApiKey((p.config as any)?.mcp_api_key || "");
       setExcluded(((p.config as any)?.mcp_excluded_tools as string[]) || []);
+      const cfg = (p.config as any) || {};
+      setExposeWf(!!cfg.mcp_expose_workflow);
+      setWfToolName(cfg.mcp_workflow_tool_name || "run_workflow");
+      setExposeKnowledge(!!cfg.mcp_expose_knowledge);
+      setExposeFaq(!!cfg.mcp_expose_faq);
       setWorkflows(ws);
       // Default the picker to the saved API workflow; else the active one, else the first.
       const saved = (p.config as any)?.api_workflow_id;
@@ -99,6 +111,13 @@ export function ConnectScreen({ project }: { project: any }) {
   const toolById = new Map(tools.map((t) => [t.id, t]));
   const exposedToolIds = new Set(toolSets.filter((s) => s.exposed).flatMap((s) => s.tool_ids).filter((id) => !excluded.includes(id)));
   const exposedTools = tools.filter((t) => t.enabled && exposedToolIds.has(t.id));
+  // Project-level tools published alongside the toolset tools (see mcp_server.py._capability_tools
+  // + _workflow_tool_name). Shown in the "Currently exposed" summary so the whole surface is visible.
+  const projectTools = [
+    ...(exposeWf ? [{ name: wfToolName || "run_workflow", kind: "workflow" }] : []),
+    ...(exposeKnowledge ? [{ name: "search_knowledge_base", kind: "knowledge" }] : []),
+    ...(exposeFaq ? [{ name: "lookup_faq", kind: "qa" }] : []),
+  ];
 
   // Run API (server-to-server): a backend hits the Forge API DIRECTLY, not the web proxy.
   // ONE endpoint per project - it runs the workflow chosen above; `stream` is the only
@@ -165,6 +184,14 @@ export function ConnectScreen({ project }: { project: any }) {
     const p = await api.getProject(project.id);
     await api.updateProject(project.id, { config: { ...(p.config || {}), mcp_api_key: next || undefined } });
     setSave("saved"); setTimeout(() => setSave("idle"), 1200);
+  }
+  // Merge a patch into project.config (undefined values drop the key). Used by the project-tool
+  // toggles; re-reads config first so concurrent edits to other keys aren't clobbered.
+  async function saveCfg(patch: Record<string, unknown>) {
+    setCfgSave("saving");
+    const p = await api.getProject(project.id);
+    await api.updateProject(project.id, { config: { ...(p.config || {}), ...patch } });
+    setCfgSave("saved"); setTimeout(() => setCfgSave("idle"), 1200);
   }
   const genKey = () => {
     // A shared MCP API key is a credential, so use the CSPRNG (crypto.getRandomValues),
@@ -385,6 +412,49 @@ export function ConnectScreen({ project }: { project: any }) {
           <div className="t-h3" style={{ marginBottom: 8 }}>Claude Desktop / Cursor config</div>
           <CodeBlock code={claudeConfig} />
         </div>
+        {/* Project-level tools: the whole workflow, knowledge-base search, and curated Q&A lookup,
+            each a project.config flag on the server (mcp_server.py). Independent of toolsets. */}
+        <div className="card" style={{ padding: 16, marginBottom: 14 }}>
+          <div className="row spread" style={{ marginBottom: 8 }}>
+            <div className="t-h3">Project tools</div>
+            <span className="t-caption fg-2">{cfgSave === "saving" ? "Saving…" : cfgSave === "saved" ? "Saved ✓" : ""}</span>
+          </div>
+          <div className="field-help" style={{ marginBottom: 12 }}>
+            Publish this project&apos;s built-in capabilities as MCP tools, independent of toolsets. Knowledge and Q&amp;A search this project&apos;s knowledge base; the workflow tool runs the workflow chosen under <b>Run API</b>.
+          </div>
+          <div className="col gap1">
+            <div className="row spread" style={{ padding: "10px 12px", border: "1px solid var(--line)", borderRadius: 9, gap: 12, alignItems: "flex-start" }}>
+              <div className="col" style={{ gap: 2, minWidth: 0 }}>
+                <span className="mono-sm" style={{ fontWeight: 700, color: exposeWf ? "var(--fg-0)" : "var(--fg-2)" }}>{wfToolName || "run_workflow"}</span>
+                <span className="t-caption fg-2">Run the whole configured workflow as a single tool.</span>
+                {exposeWf && (
+                  <div className="row gap2" style={{ marginTop: 6, alignItems: "center" }}>
+                    <span className="t-caption fg-2">Tool name</span>
+                    <input className="input mono" style={{ maxWidth: 240, height: 30 }} value={wfToolName}
+                      onChange={(e) => setWfToolName(e.target.value)}
+                      onBlur={(e) => { const v = e.target.value.trim().replace(/[^a-zA-Z0-9_-]/g, "_"); setWfToolName(v || "run_workflow"); saveCfg({ mcp_workflow_tool_name: v && v !== "run_workflow" ? v : undefined }); }}
+                      placeholder="run_workflow" />
+                  </div>
+                )}
+              </div>
+              <Toggle on={exposeWf} onChange={(v) => { setExposeWf(v); saveCfg({ mcp_expose_workflow: v || undefined }); }} />
+            </div>
+            <div className="row spread" style={{ padding: "10px 12px", border: "1px solid var(--line)", borderRadius: 9, gap: 12, alignItems: "flex-start" }}>
+              <div className="col" style={{ gap: 2, minWidth: 0 }}>
+                <span className="mono-sm" style={{ fontWeight: 700, color: exposeKnowledge ? "var(--fg-0)" : "var(--fg-2)" }}>search_knowledge_base</span>
+                <span className="t-caption fg-2">Vector search over this project&apos;s knowledge-base documents.</span>
+              </div>
+              <Toggle on={exposeKnowledge} onChange={(v) => { setExposeKnowledge(v); saveCfg({ mcp_expose_knowledge: v || undefined }); }} />
+            </div>
+            <div className="row spread" style={{ padding: "10px 12px", border: "1px solid var(--line)", borderRadius: 9, gap: 12, alignItems: "flex-start" }}>
+              <div className="col" style={{ gap: 2, minWidth: 0 }}>
+                <span className="mono-sm" style={{ fontWeight: 700, color: exposeFaq ? "var(--fg-0)" : "var(--fg-2)" }}>lookup_faq</span>
+                <span className="t-caption fg-2">Semantic match over this project&apos;s curated Q&amp;A / FAQ pairs.</span>
+              </div>
+              <Toggle on={exposeFaq} onChange={(v) => { setExposeFaq(v); saveCfg({ mcp_expose_faq: v || undefined }); }} />
+            </div>
+          </div>
+        </div>
         <div className="card" style={{ padding: 16, marginBottom: 14 }}>
           <div className="row spread" style={{ marginBottom: 8 }}>
             <div className="t-h3">Toolsets</div>
@@ -430,12 +500,15 @@ export function ConnectScreen({ project }: { project: any }) {
           </div>
         </div>
         <div className="card" style={{ padding: 16 }}>
-          <div className="t-h3" style={{ marginBottom: 10 }}>Currently exposed tools ({exposedTools.length})</div>
+          <div className="t-h3" style={{ marginBottom: 10 }}>Currently exposed tools ({exposedTools.length + projectTools.length})</div>
           <div className="col gap2">
+            {projectTools.map((t) => (
+              <div key={t.name} className="row gap2"><Icon name="connect" size={14} style={{ color: "var(--accent)" }} /><span className="mono-sm">{t.name}</span><span className="typechip">{t.kind}</span></div>
+            ))}
             {exposedTools.map((t) => (
               <div key={t.id} className="row gap2"><Icon name="tools" size={14} style={{ color: "var(--fg-2)" }} /><span className="mono-sm">{t.name}</span><span className="typechip">{t.kind}</span></div>
             ))}
-            {exposedTools.length === 0 && <div className="fg-2 t-caption">Nothing exposed yet — put tools in a set and toggle it on above.</div>}
+            {exposedTools.length === 0 && projectTools.length === 0 && <div className="fg-2 t-caption">Nothing exposed yet — enable a project tool above, or put tools in a set and toggle it on.</div>}
           </div>
         </div>
               </>

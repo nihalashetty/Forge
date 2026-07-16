@@ -13,6 +13,12 @@ Tool sets ("toolsets", GitHub-MCP style): a project's tools can be published as 
   - Per-set endpoint POST /v1/mcp/{project_id}/toolset/{slug} exposes ONLY that set's tools, so
     a client can add one MCP server per toolset. The optional name allow-list
     (project.config.mcp_exposed_tools) still applies as a further filter.
+
+Project tools (base endpoint only, each gated by a project.config flag, published ALONGSIDE the
+toolset tools and independent of the toolset allow-list): the whole configured workflow as one
+tool (mcp_expose_workflow -> run_workflow), knowledge-base document search (mcp_expose_knowledge
+-> search_knowledge_base) and curated Q&A lookup (mcp_expose_faq -> lookup_faq). The two knowledge
+tools reuse the SAME builder the agent nodes use, so their behavior and tracing match exactly.
 """
 
 from __future__ import annotations
@@ -45,6 +51,38 @@ def _workflow_tool_name(cfg: dict) -> str | None:
     if not cfg.get("mcp_expose_workflow"):
         return None
     return str(cfg.get("mcp_workflow_tool_name") or "run_workflow")
+
+
+def _capability_tools(cfg: dict, ctx, toolset_slug: str | None) -> list:
+    """Project-level knowledge tools exposed over MCP, gated by project.config flags (mirrors
+    `_workflow_tool_name`): `mcp_expose_knowledge` -> `search_knowledge_base` (RAG over the
+    project's documents) and `mcp_expose_faq` -> `lookup_faq` (curated Q&A). Reuses the SAME
+    builder the agent nodes use (`build_knowledge_capability_tools`), so behavior + tracing match.
+
+    Base endpoint only: like the workflow tool these are a whole-project surface, not part of any
+    one toolset, so a per-set (toolset) endpoint never carries them.
+    """
+    if toolset_slug:
+        return []
+    kn: dict = {}
+    if cfg.get("mcp_expose_knowledge"):
+        kn["rag"] = {"enabled": True}
+    if cfg.get("mcp_expose_faq"):
+        kn["qa"] = {"enabled": True}
+    if not kn:
+        return []
+    from forge.tools.builtin import build_knowledge_capability_tools
+
+    return build_knowledge_capability_tools(kn, ctx)
+
+
+def _tool_input_schema(tool) -> dict:
+    """The JSON Schema for a StructuredTool's arguments, degrading to an open object on error
+    (matches the `tools/list` handling for toolset tools)."""
+    try:
+        return tool.args_schema.model_json_schema() if tool.args_schema else {"type": "object"}
+    except Exception:  # noqa: BLE001
+        return {"type": "object"}
 
 
 def _exposed_names(ctx, sets: list, toolset_slug: str | None, excluded_ids: set[str]) -> set[str]:
@@ -228,6 +266,8 @@ async def _handle(project_id: str, request: Request, *, toolset_slug: str | None
         # Exposed = enabled tools of exposed sets, minus any individually excluded (unticked) tools.
         excluded_ids = {str(x) for x in (cfg.get("mcp_excluded_tools") or [])}
         allow = _exposed_names(ctx, sets, toolset_slug, excluded_ids)
+        # Project-level knowledge tools (base endpoint only), keyed by name for tools/call dispatch.
+        cap_tools = {t.name: t for t in _capability_tools(cfg, ctx, toolset_slug)}
 
         if method == "tools/list":
             tools = []
@@ -253,6 +293,10 @@ async def _handle(project_id: str, request: Request, *, toolset_slug: str | None
                         "required": ["message"],
                     },
                 })
+            # Project-level knowledge tools (search_knowledge_base / lookup_faq), same base-endpoint
+            # rationale as the workflow tool. `cap_tools` is already empty on a per-set endpoint.
+            for t in cap_tools.values():
+                tools.append({"name": t.name, "description": t.description or "", "inputSchema": _tool_input_schema(t)})
             return _rpc(rid, {"tools": tools})
 
         # tools/call
@@ -285,6 +329,16 @@ async def _handle(project_id: str, request: Request, *, toolset_slug: str | None
                 # Don't leak internal error/stack detail to the external MCP client; log it server-side.
                 log.exception("mcp workflow run failed (project=%s)", project_id)
                 return _rpc(rid, {"content": [{"type": "text", "text": "error: workflow run failed"}], "isError": True})
+        # Project-level knowledge tools bypass the toolset allow-list (they're a project surface,
+        # not a toolset member), so dispatch them before the allow check.
+        cap = cap_tools.get(name)
+        if cap is not None:
+            try:
+                result = await cap.ainvoke(args)
+                return _rpc(rid, {"content": [{"type": "text", "text": str(result)}], "isError": False})
+            except Exception:  # noqa: BLE001
+                log.exception("mcp knowledge tool failed (project=%s, tool=%s)", project_id, name)
+                return _rpc(rid, {"content": [{"type": "text", "text": "error: tool invocation failed"}], "isError": True})
         if name not in allow:
             return _rpc(rid, error={"code": -32602, "message": f"tool {name!r} is not exposed"})
         tool = next((sp["tool"] for sp in ctx.tool_specs.values() if sp["tool"].name == name), None)
