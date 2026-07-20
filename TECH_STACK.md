@@ -57,13 +57,15 @@ Every technology used in Forge, its purpose, and where it lives. Sourced from `a
 | **Secrets / Auth** | bcrypt 4 | Password hashing for local accounts | auth layer |
 | **Background / Workers** | Redis 7 | Shared rate-limit / idempotency store + worker queue backend | `docker-compose.yml` (prod); `[workers]` extra |
 | **Background / Workers** | arq 0.26 | Async task queue + worker for offloaded run execution | `forge/worker.py`, `forge/queue.py`; `[workers]` |
-| **Background / Workers** | croniter 2–5 | Evaluate cron `schedule` triggers | scheduler; `[workers]` |
+| **Background / Workers** | croniter 2–6 | Evaluate cron `schedule` triggers | scheduler; `[workers]` |
 | **Observability** | opentelemetry-sdk 1.20 | Emit run traces/spans (GenAI semantic conventions) | `forge/tracing/otel.py`; `[observability]` |
 | **Observability** | opentelemetry-exporter-otlp-proto-http 1.20 | Export spans to an OTLP collector / Langfuse | `forge/tracing/otel.py`; `[observability]` (opt-in via `otel_enabled`) |
 | **Infra / Deploy** | Docker + Docker Compose | Production-shaped container stack (postgres + redis + api + worker + web) | repo root (`docker-compose.yml`, `apps/*/Dockerfile`) |
-| **Dev Tooling** | pytest 8.3 + pytest-asyncio 0.24 | Test suite (async mode auto) | `apps/api/tests`; `[dev]` extra |
+| **Dev Tooling** | pytest 8.3 + pytest-asyncio 0.24 | Backend test suite (async mode auto) | `apps/api/tests`; `[dev]` extra |
 | **Dev Tooling** | anyio 4.6 | Async test/runtime utilities | `[dev]` extra |
-| **Dev Tooling** | ruff 0.8 | Linting + import sorting/formatting | `pyproject.toml [tool.ruff]`; `[dev]` extra |
+| **Dev Tooling** | ruff 0.15 (pinned `>=0.15,<0.16`) | Linting + import sorting/formatting; range-pinned so CI lint is reproducible | `pyproject.toml [tool.ruff]`; `[dev]` extra |
+| **Dev Tooling** | mypy 1.13+ | Static type-checking (advisory in CI; gradual adoption) | `pyproject.toml [tool.mypy]`; `[dev]` extra |
+| **Dev Tooling** | Vitest 2 + Testing Library | Frontend unit/component tests (`pnpm --filter web test`) | `apps/web` (`devDependencies`) |
 
 **Notes**
 - **Local dev needs no external infra**: SQLite + embedded Chroma + in-process (fake) cache/queue. The prod swaps — Postgres, Redis, OTLP, Vault/KMS — are configuration-only (no code changes).

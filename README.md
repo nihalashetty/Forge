@@ -52,7 +52,7 @@ Compose an **Agent** or a **Deep Agent** (planning + subagents for long multi-st
 
 ### Tool Builder with Response Projection
 
-Register **REST, GraphQL, Code, SQL, MCP, or built-in** tools and test them live against real inputs. A **JMESPath response projection** trims bulky payloads *before* they reach the model - watch the raw → projected **token meter** shrink in real time to control cost. Every outbound call is screened by an **SSRF guard**, with optional retries, rate limits, and caching.
+Register **REST, GraphQL, Code, SQL, MCP, or built-in** tools and test them live against real inputs. A **JMESPath response projection** trims bulky payloads *before* they reach the model - watch the raw → projected **token meter** shrink in real time to control cost. Every outbound call is screened by an **SSRF guard**, with optional retries, rate limits, and caching. Organize tools into **tool sets** - reusable, many-to-many groups that double as folders on the screen, get granted to an agent in one click, and publish as MCP toolsets.
 
 <p align="center"><img src="docs/media/Tools.png" alt="Forge tool builder with request config, live response, and a raw-to-projected token cost meter" width="90%"></p>
 
@@ -87,10 +87,12 @@ Every run is captured as a **span waterfall** - model calls, tools, chains, late
 - **Triggers** - webhooks, schedules (interval/cron), inbound email, and polling "app events".
 - **Human-in-the-loop** - approve/reject pauses and live **handoff** to an Agent inbox, with the reply delivered back over the same channel.
 - **Auth Providers** - Bearer, API key, Basic, OAuth2 (client-credentials **and** 3-legged user login with auto-refresh), and CSRF/session - backed by encrypted, reference-only secrets (`secret://…`).
-- **MCP, both ways** - expose your project's tools as an **MCP server**, and consume tools from external MCP servers.
+- **MCP, both ways** - expose your tools as an **MCP server** over native Streamable-HTTP/SSE (Claude Desktop, Cursor, and VS Code connect directly - no bridge), authenticated by a project key, per-user **personal access tokens**, or optional **OAuth 2.1**, publishing tool sets, knowledge, Q&A, or a whole workflow; and consume tools from external MCP servers.
+- **Guardrails & egress policy** - one project-level I/O policy (PII redaction, blocked terms, and a network allow/deny list) enforced on every agent by default; a project can only *tighten* it, never loosen it.
+- **Import & export** - move tools, workflows, agents, and components between projects as portable JSON bundles (secret *values* never leave).
 - **Evaluations** - datasets scored by `contains` / `exact` / `regex` / LLM-`judge` for a pass rate per workflow.
 - **Long-term memory**, response caching, retries with backoff, and per-tenant **budgets**.
-- **Multi-tenant projects & roles** (owner/admin/editor/viewer) with an **audit log**.
+- **Multi-tenant projects & roles** (owner/admin/editor/viewer/connector) with **per-project RBAC**, scoped revocable API keys, entity **version history**, and an **audit log**.
 - **Provider-agnostic models** - OpenAI, Anthropic, Google, or any LangChain provider, plus an offline `fake:` model so you can build the plumbing without spending a cent.
 
 > See the full **[User Manual](docs/MANUAL.md)** for an end-to-end tour and worked examples.
@@ -164,7 +166,7 @@ The included [`docker-compose.yml`](docker-compose.yml) brings up a production-s
 docker compose up --build
 ```
 
-With `FORGE_ENVIRONMENT=production`, Forge enables a hardening guard and **refuses to boot** with default secrets, SQLite, or a non-durable checkpointer. See [`apps/api/README.md`](apps/api/README.md) and **[Manual §12 - Going to production](docs/MANUAL.md)** for the full, annotated configuration.
+With `FORGE_ENVIRONMENT=production`, Forge enables a hardening guard and **refuses to boot** with default secrets, SQLite, or a non-durable checkpointer. See [`apps/api/README.md`](apps/api/README.md) and **[Manual §13 - Going to production](docs/MANUAL.md)** for the full, annotated configuration.
 
 ## Documentation
 
@@ -172,7 +174,10 @@ With `FORGE_ENVIRONMENT=production`, Forge enables a hardening guard and **refus
 |---|---|
 | **[User Manual](docs/MANUAL.md)** | Full feature tour, the node catalog, and end-to-end use cases (no developer knowledge needed). |
 | **[Backend README](apps/api/README.md)** | API layout, local-vs-production swaps, and dependency notes. |
+| **[Tech stack & architecture](TECH_STACK.md)** | Every dependency and why it's there, plus request/run sequence diagrams. |
 | **[Roadmap & status](docs/ROADMAP.md)** | What's shipped, what's in progress, and what's planned next (connectors, more channels, and more). |
+| **[Changelog](CHANGELOG.md)** | Notable changes, following Keep a Changelog + SemVer. |
+| **[Contributing](CONTRIBUTING.md)** | Local setup, the checks CI runs, and commit/PR conventions. |
 
 ## Tech stack
 

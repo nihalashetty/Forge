@@ -10,9 +10,9 @@ The default local stack needs **no Docker, Postgres, or Redis**:
 
 | Concern | Local default | Production swap (config-only) |
 |---|---|---|
-| Relational DB | SQLite (`aiosqlite`) | Postgres 16 + `pgvector` |
+| Relational DB | SQLite (`aiosqlite`) | Postgres 16 (`asyncpg` / `psycopg`) |
 | Run durability | `langgraph-checkpoint-sqlite` | `langgraph-checkpoint-postgres` |
-| Vectors | Chroma (embedded, persistent) | Chroma server / Qdrant |
+| Vectors | Chroma (embedded, persistent) | `pgvector` in the same Postgres - set `vector_backend=pgvector` |
 | Cache / queue | in-process | Redis 7 + arq |
 | Secrets | Fernet (local key file) | Vault / cloud KMS |
 
@@ -42,8 +42,10 @@ apps/api/
     db/                  async engine, session, tenant scoping, dev seed/bootstrap
     models/              SQLAlchemy ORM (tenants, projects, workflows, runs, traces, ...)
     schemas/             Pydantic request/response DTOs + shared JSON-Schema loader/validator
-    services/            business logic (ProjectSvc, WorkflowSvc, RunSvc, assistant, ...)
-    routers/             HTTP + SSE endpoints (incl. assistant, mcp_server, oauth, embed)
+    services/            business logic (ProjectSvc, WorkflowSvc, RunSvc, assistant,
+                         portability import/export, tool_sets, ...)
+    routers/             HTTP + SSE endpoints (incl. assistant, runs, mcp_server, mcp_oauth,
+                         mcp_tokens, tool_sets, connections, models, versions, embed)
     engine/              the heart: registry, compiler, state, middleware_compiler, context
     nodes/               node-type factories (start, end, agent, llm, tool_call, flow, rag, triggers)
     tools/               tool materialization (rest, graphql, code, sql, mcp, builtin) + projection

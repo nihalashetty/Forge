@@ -3,9 +3,9 @@
 Forge is a self‑hosted platform for **building, testing, and shipping AI agents and
 workflows** - visually, without writing framework code. You wire together nodes (agents,
 tools, knowledge, logic) on a canvas, ground them in your own data, connect them to your
-systems, and deploy them to email, an API, or as an MCP
-server. It runs on the open‑source LangChain/LangGraph engine; nothing is sent to a
-third‑party orchestration service.
+systems, and deploy them to email, an API, an MCP server, or an embeddable web widget. It
+runs on the open‑source LangChain/LangGraph engine; nothing is sent to a third‑party
+orchestration service.
 
 This manual is written for **everyone** - you don't need to be a developer to follow it.
 
@@ -17,35 +17,40 @@ This manual is written for **everyone** - you don't need to be a developer to fo
 When you open Forge you'll see a **login screen**.
 - **Dev / first run:** sign in with **`you@forge.local`** / **`forge-admin`**, or click
   *Create a workspace* to register a fresh account.
-- Forgot to set up? Open **Settings → Team & account** to invite teammates (owner/admin/editor/viewer roles).
+- Need teammates? Open **Settings → Members & Roles** to invite them (owner / admin / editor / viewer / connector roles).
 
 ### Creating your first project
 A **project** is a workspace for one assistant or automation - its workflows, tools,
 knowledge, and settings live together and are isolated from other projects.
 
 1. Click **New project**, give it a name.
-2. (Recommended) Open **Settings → Model providers** and paste an OpenAI / Anthropic /
-   Google key. Until you do, Forge uses an offline “fake” model so you can build and test
-   the *plumbing* without spending anything - but answers won't be real.
-3. Pick a **Default model** in Settings (e.g. `openai:gpt-4.1-mini`).
+2. (Recommended) Open **Settings → API Keys** and paste an OpenAI / Anthropic / Google key
+   under **Model providers**. Until you do, Forge uses an offline “fake” model so you can
+   build and test the *plumbing* without spending anything - but answers won't be real.
+3. Pick a **Default model** under **Settings → General** (e.g. `openai:gpt-4.1-mini`).
 
 ### The left sidebar (hover any tab for a tooltip)
-| Tab | What it's for |
-|---|---|
-| **Overview** | Dashboard: usage, cost, recent activity. |
-| **Playground** | Chat with a workflow live to test it (with token + cost metering). |
-| **Workflows** | The visual canvas - wire nodes into a graph. |
-| **Agents** | Reusable agent presets (model + prompt + tools) to drop into workflows. |
-| **Tools** | Capabilities an agent can call: REST, GraphQL, Code, SQL, MCP, built‑ins. |
-| **Auth Providers** | Reusable credential strategies (Bearer, API key, OAuth…) tools attach to. |
-| **Knowledge** | Documents + Q&A that ground answers (RAG). Add text, URLs, files, or crawl a site. |
-| **Channels** | Deploy a workflow to an email surface. |
-| **Triggers** | Event entry points - webhook URLs, schedules, pollers. |
-| **Evaluations** | Test datasets (input + expected) scored against a workflow. |
-| **Agent inbox** | Live conversations escalated to a human - reply to resume the run. |
-| **Traces** | Per‑run waterfall: model calls, tokens, latency, cost. |
-| **Connect (MCP)** | Expose this project's tools as an MCP server; register external MCP servers to consume. |
-| **Settings** | Model keys, secrets, team & roles, audit log. |
+The nav is grouped into **Build**, **Deploy**, and **Observe**, with **Overview** at the top
+and **Settings** pinned at the bottom.
+
+| Group | Tab | What it's for |
+|---|---|---|
+| — | **Overview** | Dashboard: usage, cost, recent activity. |
+| **Build** | **Playground** | Chat with a workflow live to test it (with token + cost metering). |
+| | **Workflows** | The visual canvas - wire nodes into a graph. |
+| | **Agents** | Reusable agent presets (model + prompt + tools + knowledge) to drop into workflows. |
+| | **Tools** | Capabilities an agent can call: REST, GraphQL, Code, SQL, MCP, built‑ins - organized into **tool sets**. |
+| | **Components** | Generative‑UI components an agent can render (tables, cards, forms). |
+| | **Knowledge** | Documents + Q&A that ground answers (RAG). Add text, URLs, files, or crawl a site. |
+| | **Auth Providers** | Reusable credential strategies (Bearer, API key, OAuth…) tools attach to. |
+| | **External MCP** | Register outside MCP servers so their tools can be consumed here. |
+| **Deploy** | **Channels** | Deploy a workflow to an email surface. |
+| | **Triggers** | Event entry points - webhook URLs, schedules, pollers. |
+| | **Connect** | Expose this project - as an MCP server, the run API, or an embeddable web widget. |
+| **Observe** | **Traces** | Per‑run waterfall: model calls, tokens, latency, cost. |
+| | **Evaluations** | Test datasets (input + expected) scored against a workflow. |
+| | **Agent inbox** | Live conversations escalated to a human - reply to resume the run. |
+| — | **Settings** | Model keys & secrets, members & roles, guardrails & egress, budgets, versioning, and more. |
 
 ---
 
@@ -133,7 +138,13 @@ response with JMESPath before it reaches the model - watch the Raw→Projected t
 `cache.ttl_seconds` (caches idempotent GETs).
 
 **Safety:** every outbound call (tools, webhooks, fetch, crawl) is checked by the **SSRF guard**
-- private/loopback/cloud‑metadata addresses are blocked.
+- private/loopback/cloud‑metadata addresses are blocked. A project‑level **egress policy**
+(Settings → Guardrails & Egress) can further allow/deny hosts across every tool at once (§9).
+
+**Tool sets:** group related tools into a **tool set** - a reusable, many‑to‑many folder. Sets
+organize the Tools screen (filter chips + a "Manage toolsets" drawer), can be granted to an agent
+in one click (instead of picking tools one by one), and can be published over the project's MCP
+server as a *toolset* (§10).
 
 ---
 
@@ -151,6 +162,11 @@ referenced (never pasted into config) as `secret://proj/<name>` - set the values
 | **OAuth2 client‑creds** | Machine‑to‑machine token from a token URL. |
 | **OAuth2 (user login)** | 3‑legged OAuth: click **Connect**, grant access in the popup; Forge stores + **auto‑refreshes** tokens. Use for Google/HubSpot/Notion‑style user auth. |
 | **CSRF + session** | Log in, extract a CSRF/session token, inject it on each call. |
+
+**Per‑user connected credentials:** an OAuth2 (user‑login) provider can key its token bundle
+**per end user** instead of sharing one account. Each end user then links their own downstream
+account on the **Connect** screen (§10, *"Connect your accounts"*), and Forge injects *their*
+credential when acting on their behalf over MCP or the run API - no token is ever passed through.
 
 ---
 
@@ -195,24 +211,99 @@ to catch regressions before publishing a change.
 ## 9. Observability & Settings
 
 - **Traces** - every run's span waterfall with model, tokens, latency, and **cost**.
-- **Settings → Audit log** (admin) - who created/changed/deleted what, and auth events.
-- **Settings → Team & account** - invite members, set roles, sign out.
-- **Settings → Secrets** - write‑only encrypted values referenced as `secret://proj/<name>`.
-- **OpenTelemetry** - point `FORGE_OTEL_EXPORTER_OTLP_ENDPOINT` at a collector or Langfuse to
-  export run traces.
+- **OpenTelemetry** - point `FORGE_OTEL_EXPORTER_OTLP_ENDPOINT` at a collector or Langfuse to export
+  run traces (also configurable under Settings → Observability & Retention).
+
+**Settings** is a section sidebar:
+
+| Section | What's inside |
+|---|---|
+| **General** | Project name/description, **default model**, workspace ID. |
+| **Members & Roles** | Invite members; set roles (owner/admin/editor/viewer/connector). |
+| **API Keys** | **Model providers** (LLM keys) and **Secrets** (write‑only, encrypted, referenced as `secret://proj/<name>`), plus scoped, revocable platform API keys. |
+| **Model Pricing** | Per‑model $/token rates that drive the cost meter. |
+| **Budgets & Quotas** | USD / token caps and allowed‑model enforcement per project. |
+| **Guardrails & Egress** | One I/O policy enforced on every agent (see below). |
+| **Knowledge & Embeddings** | Embedding model, chunking defaults, and re‑embed health. |
+| **Versioning** | Retention limit for entity **version history** (view/restore on each entity). |
+| **Observability & Retention** | OpenTelemetry export + scheduled data‑retention purge. |
+| **Advanced** | Feature flags and a **Danger zone** (delete project). |
+| **History** | A read‑only log of settings changes. |
+
+> Every successful mutation is also recorded to an **audit log** (who changed what, plus auth
+> events), retained per your settings and exportable via the API.
+
+### Guardrails & Egress
+A single, admin‑gated policy that applies to **every agent in the project by default** - no
+per‑agent wiring:
+- **Content guardrails** - redact PII (email / card / IP / MAC / URL), add custom `Label = regex`
+  patterns (phone, national ID…), and block terms, each with a *redact / mask / hash / block / flag*
+  strategy, scanning input and/or output.
+- **Network egress** - block private/loopback hosts and set allow/deny domain lists across every
+  REST/GraphQL tool, webhook, `web_fetch`, and SQL host at once. A project can only **tighten** the
+  server's egress policy, never loosen it.
 
 ---
 
-## 10. Connect (MCP)
+## 10. Connect - MCP server, run API & embed
 
-- **Expose** this project's tools as an **MCP server**: set an API key on the Connect screen,
-  then add the shown endpoint + `Authorization: Bearer <key>` to Claude Desktop / Cursor.
-- **Consume** external MCP servers: register them under *Consume MCP servers*, then create an
-  **MCP tool** that calls one of their tools.
+The **Connect** screen (Deploy → Connect) is where you expose this project to the outside world.
+It covers the **run API**, an **integration reference**, the **MCP server**, and the **Embed**
+widget.
+
+### Expose an MCP server
+Publish your project's tools to any MCP client (Claude Desktop, Cursor, VS Code). The endpoint is a
+single URL - `…/v1/mcp/<project_id>` - and the surface is exactly the **enabled tools of the tool
+sets you toggle "Expose"** (plus, optionally, `run_workflow`, `search_knowledge_base`, and
+`lookup_faq`). Native clients connect **directly over Streamable‑HTTP/SSE** - no `mcp-remote`
+bridge needed.
+
+Choose how clients authenticate:
+- **Project API key** - one shared key sent as `Authorization: Bearer <key>`. Server‑to‑server, no
+  per‑user identity. Generate it on the screen.
+- **Personal access token (PAT)** - a per‑user token (`forge_pat_…`) each teammate generates (and
+  revokes) for themselves; the server then acts as *that* user (entitlements, `{{ctx.*}}`).
+- **OAuth 2.1** *(optional, off by default)* - when enabled, a standard MCP client discovers Forge
+  and the user logs in, with no pre‑shared key. Turn on with `FORGE_MCP_OAUTH_ENABLED` (review the
+  security notes first).
+
+**Connect your accounts:** if the project has per‑user auth providers (§5), each signed‑in user
+links their own downstream account here so Forge can act on their behalf.
+
+> **Connector role:** invite integration users as **connector** (Settings → Members & Roles) - the
+> least‑privileged role. They can authenticate, self‑serve an MCP token, and call tools, but see no
+> projects or settings.
+
+### Consume external MCP servers
+Under **Build → External MCP**, register an outside server (e.g. a GitHub or Slack MCP server),
+then create an **MCP tool** (§4) that calls one of its tools.
+
+### Run API & embed
+The same screen also shows the **run API** (call a workflow server‑to‑server), a copy‑paste
+**integration reference**, and the **Embed** snippet - a floating chat bubble you drop onto any
+website, locked to the origins you allow. End users see only the conversation; steps, tokens, cost,
+and node names stay private in the dashboard.
 
 ---
 
-## 11. Sample use cases (end‑to‑end)
+## 11. Import & export (portability)
+
+Move your build between projects - or share it - as portable JSON **bundles**. On the **Tools**,
+**Workflows**, **Agents**, and **Components** screens, use **Export** (pick items → download a
+`forge.bundle/1` file) and **Import** (upload a bundle into the current project).
+
+- **What travels:** the entity's full configuration. **Secret *values* never leave** - only
+  `secret://…` *references* do, so after importing you recreate those secrets (and any missing auth
+  provider) in the target project; the importer tells you which.
+- **Never overwrites:** every import creates fresh items with new IDs, and a name clash is
+  auto‑renamed (`…_imported`). References *within* a bundle (a workflow's subworkflows, an agent's
+  tools/components) are rewritten to the new IDs.
+- **Lands as a draft:** imported workflows arrive unpublished - review, then publish.
+- **Permissions:** importing requires the **editor** role.
+
+---
+
+## 12. Sample use cases (end‑to‑end)
 
 ### A. Grounded support chatbot on your website
 1. **Knowledge** → add your help docs (URL/crawl/upload) + a few **Q&A** pairs.
@@ -248,7 +339,7 @@ to catch regressions before publishing a change.
 
 ---
 
-## 12. Going to production
+## 13. Going to production
 
 Forge runs locally with **zero external infra** (SQLite + embedded Chroma + in‑process
 scheduler). For production, set these and restart (the app **refuses to boot** if they're wrong):
@@ -259,13 +350,14 @@ scheduler). For production, set these and restart (the app **refuses to boot** i
 - `FORGE_DATABASE_URL=postgresql+psycopg://…` (Postgres), then `alembic upgrade head`
   (and optionally apply `infra/postgres_rls.sql` for row‑level tenant isolation)
 - `FORGE_PUBLIC_BASE_URL=https://forge.yourco.com` (OAuth redirects + webhook/channel URLs)
-- Optional: `FORGE_REDIS_URL` (multi‑worker), `FORGE_OTEL_*` (tracing), `FORGE_EGRESS_ALLOW_HOSTS`.
+- Optional: `FORGE_REDIS_URL` (multi‑worker), `FORGE_OTEL_*` (tracing), `FORGE_EGRESS_ALLOW_HOSTS`,
+  `FORGE_MCP_OAUTH_ENABLED=true` (delegated OAuth 2.1 for MCP clients).
 
 See `.env.example` for the full, annotated list.
 
 ---
 
-## 13. Glossary
+## 14. Glossary
 
 - **RAG** - Retrieval‑Augmented Generation: search your docs, feed the best chunks to the model.
 - **ReAct** - the agent loop: reason → call a tool → observe → repeat → answer.

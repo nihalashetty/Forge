@@ -7,6 +7,55 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Tool sets, MCP server, governance & portability
+- **Tool sets** (new): a describable, many-to-many group of tools that does two jobs at once —
+  it organizes the Tools screen (folders/filter chips) *and* is the unit of assignment and
+  exposure. Grant an agent a whole set (`agent.config.toolsets`, resolved to member tools at
+  compile time) and publish a set as a GitHub-style **MCP toolset**.
+- **Per-project MCP server — full transport + auth.** The exposed server now speaks native
+  **Streamable-HTTP / SSE** (Claude Desktop, Cursor, VS Code connect **directly — no `mcp-remote`
+  bridge**), with the legacy request/response JSON-RPC POST preserved for simple clients; both
+  share one auth + tool-resolution core. Three ways to authenticate: a shared **project API key**
+  (server-to-server, no identity), a per-user **personal access token** (PAT, `forge_pat_…`), and
+  optional **OAuth 2.1** (Dynamic Client Registration + PKCE S256, audience-bound tokens;
+  default-off behind `FORGE_MCP_OAUTH_ENABLED`). The exposed surface is exactly the enabled tools
+  of **exposed tool sets**; knowledge, Q&A, and a whole workflow can also be published as MCP
+  tools. A least-privileged **connector** role can self-serve MCP tokens and call tools but sees
+  no projects/settings.
+- **Per-user identity over MCP + connected credentials.** A project-scoped session token or PAT
+  resolves to an `end_user`, threaded into the run so entitlement gating and `{{ctx.*}}` injection
+  act per user. An OAuth auth-provider can key its token bundle **per end user**
+  (`per_user_context_keys`); the app owner stores each user's bundle via the new **connections API**
+  (`PUT/GET/DELETE /v1/projects/{id}/auth-providers/{apId}/connections/{endUserId}`). No MCP token
+  is ever passed downstream — Forge holds a separate per-user credential.
+- **Guardrails & Egress** (new): a single project-level I/O policy in **Settings → Guardrails &
+  Egress** (admin-gated), enforced **by default on every agent** — no per-agent wiring. Content
+  guardrails (PII redaction, custom `Label = regex` patterns, blocked terms with
+  redact/mask/hash/block/flag) run locally in-process; the network egress policy (block-private +
+  allow/deny domain lists) is applied to every REST/GraphQL tool, webhook, `web_fetch`, and SQL
+  host. A project may only **tighten** inherited egress, never loosen it.
+- **Import / Export (portability)** (new): export **tools, workflows, components, and agents** to a
+  portable `forge.bundle/1` JSON file and import them into another project. Secret **values never
+  leave** (only `secret://…` references travel; import warns you to recreate them); imports **never
+  overwrite** (new ids, auto-rename on name collision) and remap in-bundle references. Available
+  from each list screen's toolbar; import requires the `editor` role.
+- **Model catalog from the backend**: the provider/model list is served by the API as one source
+  of truth (was duplicated in the web app).
+
+### Changed (console & runtime)
+- **Console reskin**: a shadcn-style **neutral + indigo** design system and a minimal sidebar nav;
+  Traces now read like a chat history; unified screen headings and bare icons app-wide.
+- **Performance:** cut interactive chat latency by eliminating a ~4s cold-connection DNS (AAAA)
+  stall on outbound LLM/REST calls and reusing pooled LLM connections
+  (`FORGE_PREFER_IPV4_EGRESS`, default on).
+
+### Fixed (this cycle)
+- Map `openai_moderation` middleware flags to `langchain-openai >=1.3`.
+- Group a HITL pause+resume into a single trace turn, and stop recording a HITL interrupt as a
+  span error.
+- Classifier sends one bounded human turn for cross-provider compatibility; the agent binds at
+  most one tool per function name.
+
 ### Feature-bounty fixes (correctness, governance, and DX)
 - **Entity version history** (new): every save of a workflow/agent/tool/component/auth-provider/
   knowledge-source/project snapshots to `entity_versions`; view + restore in the console; retention
