@@ -1,10 +1,10 @@
 "use client";
 /* Connect (MCP) screen - expose this project's tools as an MCP server for external clients.
    (Consuming external MCP servers lives in the BUILD → External MCP tab.) */
-import { ReactNode, useEffect, useState } from "react";
+import { ReactNode, useCallback, useEffect, useState } from "react";
 import { Icon } from "../icons";
 import { CodeBlock, Field, Segmented, Toggle } from "../primitives";
-import { api, type McpToken, type ToolSet } from "@/lib/api";
+import { api, type McpToken, type MyConnection, type ToolSet } from "@/lib/api";
 import { EmbedPanel } from "./embed";
 
 /* Collapsible detail section - keeps the deep integration reference tucked away so the
@@ -51,6 +51,46 @@ const CONN_SECTIONS: { id: ConnSection; label: string; icon: string; sub: string
   { id: "embed", label: "Embed", icon: "grid", sub: "Drop this project's chatbot into any website as a widget." },
 ];
 
+/* A per-user credential connect row: the CURRENT user pastes their own downstream token for a
+   per-user auth provider. Stored server-side keyed by their user id (the identity their MCP PAT
+   resolves to), so tool calls act as them without a shared secret. */
+function MyConnectionCard({ project, ap }: { project: any; ap: MyConnection }) {
+  const [status, setStatus] = useState<{ connected: boolean } | null>(null);
+  const [token, setToken] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const refresh = useCallback(() => { api.getMyConnection(project.id, ap.id).then(setStatus).catch(() => setStatus(null)); }, [project.id, ap.id]);
+  useEffect(() => { refresh(); }, [refresh]);
+
+  async function save() {
+    setErr(null); setBusy(true);
+    try {
+      const res = await api.setMyConnection(project.id, ap.id, token.trim());
+      if (!res.ok) throw new Error("Could not save token.");
+      setToken(""); refresh();
+    } catch (e: any) { setErr(e?.message || String(e)); } finally { setBusy(false); }
+  }
+  async function clear() { try { await api.clearMyConnection(project.id, ap.id); } catch { /* best-effort */ } refresh(); }
+
+  return (
+    <div className="card" style={{ padding: 12, background: "var(--bg-2)" }}>
+      <div className="row spread" style={{ marginBottom: 8 }}>
+        <div className="row gap2" style={{ alignItems: "center", minWidth: 0 }}>
+          <Icon name="auth" size={13} style={{ color: "var(--fg-2)" }} />
+          <span className="mono-sm truncate">{ap.name}</span>
+          {status?.connected ? <span className="pill pill-ok" style={{ height: 16 }}>connected</span> : <span className="pill pill-muted" style={{ height: 16 }}>not connected</span>}
+        </div>
+        {status?.connected && <button className="btn btn-ghost btn-sm" onClick={clear}>Clear</button>}
+      </div>
+      <div className="row gap2">
+        <input className="input mono" type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder="paste your token…" style={{ flex: 1 }} />
+        <button className="btn btn-primary btn-sm" onClick={save} disabled={busy || !token.trim()}>{busy ? "Saving…" : "Save"}</button>
+      </div>
+      {err && <div className="t-caption" style={{ color: "var(--err)", marginTop: 6 }}>{err}</div>}
+    </div>
+  );
+}
+
 /* ============ CONNECT (MCP) ============ */
 export function ConnectScreen({ project }: { project: any }) {
   const [section, setSection] = useState<ConnSection>("run");
@@ -60,6 +100,9 @@ export function ConnectScreen({ project }: { project: any }) {
   const [excluded, setExcluded] = useState<string[]>([]);
   const [openSets, setOpenSets] = useState<Set<string>>(new Set());
   const [mcpTokens, setMcpTokens] = useState<McpToken[]>([]);
+  // Per-user ("external") auth providers for this project - each lets the current user connect their
+  // own downstream token so MCP tool calls act as them (see the "Connect your accounts" card).
+  const [perUserAps, setPerUserAps] = useState<MyConnection[]>([]);
   const [newToken, setNewToken] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [save, setSave] = useState<"idle" | "saving" | "saved">("idle");
@@ -84,6 +127,7 @@ export function ConnectScreen({ project }: { project: any }) {
     api.listTools(project.id).then(setTools).catch(() => {});
     api.listToolSets(project.id).then(setToolSets).catch(() => {});
     api.listMcpTokens(project.id).then(setMcpTokens).catch(() => {});
+    api.listMyConnections(project.id).then(setPerUserAps).catch(() => {});
   }, [project?.id]);
   useEffect(() => {
     if (!project?.id) return;
@@ -408,6 +452,17 @@ export function ConnectScreen({ project }: { project: any }) {
             </div>
           )}
         </div>
+        {perUserAps.length > 0 && (
+          <div className="card" style={{ padding: 16, marginBottom: 14 }}>
+            <div className="t-h3" style={{ marginBottom: 6 }}>Connect your accounts</div>
+            <div className="field-help" style={{ marginBottom: 12 }}>
+              These tools call downstream systems <b>as you</b>. Paste your own token for each — stored per-user and encrypted, used only for your calls. This is what lets your MCP tool calls act as you, with no shared secret and no admin setup.
+            </div>
+            <div className="col gap2">
+              {perUserAps.map((ap) => <MyConnectionCard key={ap.id} project={project} ap={ap} />)}
+            </div>
+          </div>
+        )}
         <div className="card" style={{ padding: 16, marginBottom: 14 }}>
           <div className="t-h3" style={{ marginBottom: 8 }}>Claude Desktop / Cursor config</div>
           <CodeBlock code={claudeConfig} />

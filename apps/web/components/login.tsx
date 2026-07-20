@@ -7,7 +7,7 @@ works as before. When FORGE_AUTH_REQUIRED=true, an unauthenticated /me returns 4
 the gate shows this screen. */
 import { ReactNode, useCallback, useEffect, useState } from "react";
 import { api, clearTokens, setTokens, UNAUTHORIZED_EVENT } from "@/lib/api";
-import type { MeResult, Project } from "@/lib/api";
+import type { MeResult, MyConnection, Project } from "@/lib/api";
 
 function AcceptInviteScreen({ token, onAuthed, onCancel }: { token: string; onAuthed: () => void; onCancel: () => void }) {
   const [info, setInfo] = useState<{ email: string; role: string } | null>(null);
@@ -173,18 +173,11 @@ export function AuthGate({ children }: { children: ReactNode }) {
 
 
 /* Minimal console for an MCP-only (connector) user: pick a project, generate a personal access
-   token, and copy the endpoint - no projects/tools/settings management. */
+   token, copy the endpoint, and connect any per-user credentials the project needs - no
+   projects/tools/settings management. */
 function ConnectorHome({ me }: { me: MeResult }) {
   const [projects, setProjects] = useState<Project[]>([]);
-  const [tokens, setTokens] = useState<Record<string, string>>({});
   useEffect(() => { api.listProjects().then(setProjects).catch(() => {}); }, []);
-  const origin = typeof window !== "undefined" ? window.location.origin : "";
-  const box: React.CSSProperties = { background: "var(--bg-2)", padding: 8, borderRadius: 6, overflowX: "auto", margin: "4px 0" };
-
-  async function gen(pid: string) {
-    const t = await api.createMcpToken(pid, {});
-    setTokens((prev) => ({ ...prev, [pid]: t.token || "" }));
-  }
 
   return (
     <div style={{ maxWidth: 640, margin: "48px auto", padding: "0 20px", fontFamily: "var(--font-ui)" }}>
@@ -195,25 +188,91 @@ function ConnectorHome({ me }: { me: MeResult }) {
       <div className="fg-1" style={{ marginBottom: 20 }}>
         Signed in as <b>{me.email}</b>. Generate a personal token for a project and paste it into your MCP
         client (Claude, Cursor, …) as <span className="mono-sm">Authorization: Bearer &lt;token&gt;</span>.
+        If a project needs you to connect your own accounts, set those below too.
       </div>
       {projects.length === 0 && <div className="fg-2 t-caption">No projects available yet.</div>}
       <div className="col gap3">
-        {projects.map((p) => (
-          <div key={p.id} className="card" style={{ padding: 16 }}>
-            <div className="t-h3" style={{ marginBottom: 6 }}>{p.name}</div>
-            <div className="t-caption fg-2">MCP endpoint</div>
-            <pre className="mono-sm" style={box}>{`${origin}/api/forge/v1/mcp/${p.id}`}</pre>
-            {tokens[p.id] ? (
-              <>
-                <div className="t-caption fg-2" style={{ marginTop: 6 }}>Access token — copy now, shown once:</div>
-                <pre className="mono-sm" style={box}>{tokens[p.id]}</pre>
-              </>
-            ) : (
-              <button className="btn btn-primary btn-sm" style={{ marginTop: 8 }} onClick={() => gen(p.id)}>Generate access token</button>
-            )}
-          </div>
-        ))}
+        {projects.map((p) => <ProjectConnector key={p.id} project={p} />)}
       </div>
+    </div>
+  );
+}
+
+/* One project card on the connector home: MCP endpoint + PAT generation + any per-user
+   ("external") credentials this project requires the user to connect for on-behalf-of tool calls. */
+function ProjectConnector({ project }: { project: Project }) {
+  const [token, setToken] = useState("");
+  const [aps, setAps] = useState<MyConnection[]>([]);
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  const box: React.CSSProperties = { background: "var(--bg-2)", padding: 8, borderRadius: 6, overflowX: "auto", margin: "4px 0" };
+  useEffect(() => {
+    api.listMyConnections(project.id).then(setAps).catch(() => {});
+  }, [project.id]);
+
+  async function gen() { const t = await api.createMcpToken(project.id, {}); setToken(t.token || ""); }
+
+  return (
+    <div className="card" style={{ padding: 16 }}>
+      <div className="t-h3" style={{ marginBottom: 6 }}>{project.name}</div>
+      <div className="t-caption fg-2">MCP endpoint</div>
+      <pre className="mono-sm" style={box}>{`${origin}/api/forge/v1/mcp/${project.id}`}</pre>
+      {token ? (
+        <>
+          <div className="t-caption fg-2" style={{ marginTop: 6 }}>Access token — copy now, shown once:</div>
+          <pre className="mono-sm" style={box}>{token}</pre>
+        </>
+      ) : (
+        <button className="btn btn-primary btn-sm" style={{ marginTop: 8 }} onClick={gen}>Generate access token</button>
+      )}
+      {aps.length > 0 && (
+        <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid var(--line)" }}>
+          <div className="t-body-sm" style={{ fontWeight: 600, marginBottom: 2 }}>Connect your accounts</div>
+          <div className="fg-2 t-caption" style={{ marginBottom: 8 }}>
+            These tools call downstream systems <b>as you</b>. Paste your own token for each — stored per-user and encrypted, used only for your calls.
+          </div>
+          <div className="col gap2">
+            {aps.map((ap) => <MyConnectionRow key={ap.id} project={project} ap={ap} />)}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* The current user's own downstream token for one per-user provider (see auth.tsx PerUserConnect /
+   deploy.tsx MyConnectionCard - same 3 endpoints). Keyed server-side by the caller's user id. */
+function MyConnectionRow({ project, ap }: { project: Project; ap: MyConnection }) {
+  const [status, setStatus] = useState<{ connected: boolean } | null>(null);
+  const [token, setToken] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const refresh = useCallback(() => { api.getMyConnection(project.id, ap.id).then(setStatus).catch(() => setStatus(null)); }, [project.id, ap.id]);
+  useEffect(() => { refresh(); }, [refresh]);
+
+  async function save() {
+    setErr(null); setBusy(true);
+    try {
+      const res = await api.setMyConnection(project.id, ap.id, token.trim());
+      if (!res.ok) throw new Error("Could not save token.");
+      setToken(""); refresh();
+    } catch (e: any) { setErr(e?.message || String(e)); } finally { setBusy(false); }
+  }
+  async function clear() { try { await api.clearMyConnection(project.id, ap.id); } catch { /* best-effort */ } refresh(); }
+
+  return (
+    <div className="card" style={{ padding: 10, background: "var(--bg-2)" }}>
+      <div className="row spread" style={{ marginBottom: 6, alignItems: "center" }}>
+        <div className="row gap2" style={{ alignItems: "center", minWidth: 0 }}>
+          <span className="mono-sm truncate">{ap.name}</span>
+          <span className={"pill " + (status?.connected ? "pill-ok" : "pill-muted")} style={{ height: 16 }}>{status?.connected ? "connected" : "not connected"}</span>
+        </div>
+        {status?.connected && <button className="btn btn-ghost btn-sm" onClick={clear}>Clear</button>}
+      </div>
+      <div className="row gap2">
+        <input className="input mono" type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder="paste your token…" style={{ flex: 1 }} />
+        <button className="btn btn-primary btn-sm" onClick={save} disabled={busy || !token.trim()}>{busy ? "Saving…" : "Save"}</button>
+      </div>
+      {err && <div className="t-caption" style={{ color: "var(--err)", marginTop: 6 }}>{err}</div>}
     </div>
   );
 }

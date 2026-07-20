@@ -76,11 +76,14 @@ async def delete_ap(project_id: str, ap_id: str, session: AsyncSession = Depends
 
 @router.post("/{ap_id}/test")
 async def test_ap(project_id: str, ap_id: str, body: AuthTestIn, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id),
-                  _: CurrentUser = Depends(require_role("editor"))):
+                  user: CurrentUser = Depends(require_role("editor"))):
     ap = await AuthProviderService.get(session, tenant_id, ap_id)
     if ap is None:
         raise HTTPException(404, "Auth provider not found")
-    return await AuthProviderService.test(tenant_id, project_id, ap, body.context)
+    # Test AS the current user so a per-user provider resolves the tester's own connected token
+    # (end_user_id keys the per-user bundle). Explicit context values still win.
+    ctx = {"end_user_id": user.id, **(body.context or {})}
+    return await AuthProviderService.test(tenant_id, project_id, ap, ctx)
 
 
 # --- Per-user connected credentials: the app owner's connect flow stores each end user's downstream

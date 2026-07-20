@@ -158,6 +158,15 @@ export interface AuthProviderT {
   config: Record<string, any>;
 }
 
+/** A per-user ("external") credential the current user connects themselves. Minimal, connector-safe
+ *  shape from GET /v1/projects/{id}/connections (no provider config / secret refs). */
+export interface MyConnection {
+  id: string;
+  name: string;
+  kind: string;
+  connected: boolean;
+}
+
 export interface Agent {
   id: string;
   project_id: string;
@@ -208,6 +217,33 @@ export interface DashboardStats {
   projects: Record<string, { workflows: number; tools: number; runs_7d: number }>;
   reports: (StatRollup & { project_id: string; project: string; assistant_cost_usd: number; assistant_turns: number })[];
   totals: StatRollup;
+}
+
+/* ---- import / export (portable single-type bundles) ---- */
+export type PortableType = "tool" | "workflow" | "component" | "agent";
+const PORTABLE_PLURAL: Record<PortableType, string> = {
+  tool: "tools", workflow: "workflows", component: "components", agent: "agents",
+};
+export interface ExportBundle {
+  format?: string;
+  type: string;
+  exported_at?: string;
+  source?: { project_id?: string; project_name?: string | null };
+  items: Record<string, any>[];
+}
+export interface ImportReportItem {
+  id?: string;
+  name?: string;
+  original_name?: string;
+  renamed?: boolean;
+  skipped?: boolean;
+}
+export interface ImportReport {
+  type: string;
+  imported: number;
+  skipped: number;
+  items: ImportReportItem[];
+  warnings: string[];
 }
 
 export interface NodeType {
@@ -373,6 +409,24 @@ export const api = {
     json<ComponentT>(`/v1/projects/${pid}/components/${cid}`, { method: "PATCH", body: JSON.stringify(body) }),
   deleteComponent: (pid: string, cid: string) =>
     notifyCounts(fetch(`${BASE}/v1/projects/${pid}/components/${cid}`, { method: "DELETE", headers: authHeader() })),
+  // import / export - serialize the selected rows of one type into a downloadable bundle,
+  // and re-create a bundle's items in a target project (new ids, auto-renamed on collision).
+  exportBundle: (pid: string, type: PortableType, ids: string[]) =>
+    json<ExportBundle>(`/v1/projects/${pid}/${PORTABLE_PLURAL[type]}/export`, { method: "POST", body: JSON.stringify({ ids }) }),
+  importBundle: async (pid: string, type: PortableType, bundle: unknown): Promise<ImportReport> => {
+    // Direct fetch (not the shared `json` helper) so the backend's error `detail` - e.g. a
+    // wrong-type file or validation message - surfaces to the user instead of a bare status.
+    const res = await fetch(`${BASE}/v1/projects/${pid}/${PORTABLE_PLURAL[type]}/import`, {
+      method: "POST", headers: { "Content-Type": "application/json", ...authHeader() }, body: JSON.stringify(bundle),
+    });
+    if (res.status === 401) on401();
+    if (!res.ok) {
+      const detail = await res.json().then((d) => d?.detail).catch(() => null);
+      throw new Error(typeof detail === "string" ? detail : `${res.status} ${res.statusText}`);
+    }
+    if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent(COUNTS_CHANGED_EVENT));
+    return res.json() as Promise<ImportReport>;
+  },
   listAuthProviders: (pid: string) => json<AuthProviderT[]>(`/v1/projects/${pid}/auth-providers`),
   createAuthProvider: (pid: string, body: { name: string; kind: string; config: Record<string, unknown>; credentials_ref?: string }) =>
     notifyCounts(json<AuthProviderT>(`/v1/projects/${pid}/auth-providers`, { method: "POST", body: JSON.stringify(body) })),
@@ -395,6 +449,19 @@ export const api = {
     json<{ connected: boolean; expires_at?: number | null; scope?: string | null; has_refresh?: boolean }>(`/v1/projects/${pid}/auth-providers/${aid}/oauth/status`),
   deleteAuthProvider: (pid: string, aid: string) =>
     notifyCounts(fetch(`${BASE}/v1/projects/${pid}/auth-providers/${aid}`, { method: "DELETE", headers: authHeader() })),
+  // Per-user ("external") auth via the connector-safe /connections router (NOT the auth-providers
+  // admin surface). The current user's own downstream credential for a per-user provider, keyed
+  // server-side by their user id (the same id the MCP PAT resolves to), so a tool acts as them
+  // without a shared secret. Used by owners (Auth screen) and connectors (their token page) alike.
+  listMyConnections: (pid: string) => json<MyConnection[]>(`/v1/projects/${pid}/connections`),
+  getMyConnection: (pid: string, aid: string) =>
+    json<{ connected: boolean; expires_at?: number | null }>(`/v1/projects/${pid}/connections/${aid}`),
+  setMyConnection: (pid: string, aid: string, access_token: string) =>
+    fetch(`${BASE}/v1/projects/${pid}/connections/${aid}`, {
+      method: "PUT", headers: { "Content-Type": "application/json", ...authHeader() }, body: JSON.stringify({ access_token }),
+    }),
+  clearMyConnection: (pid: string, aid: string) =>
+    fetch(`${BASE}/v1/projects/${pid}/connections/${aid}`, { method: "DELETE", headers: authHeader() }),
   // knowledge
   listSources: (pid: string) => json<KbSource[]>(`/v1/projects/${pid}/knowledge/sources`),
   listFolders: (pid: string) => json<string[]>(`/v1/projects/${pid}/knowledge/folders`),

@@ -85,7 +85,12 @@ class AuthResolver:
             raise KeyError(f"Auth provider {provider_id!r} not found")
         cfg = provider.config or {}
         per_user = cfg.get("per_user_context_keys", [])
-        key = self._key(provider_id, context, per_user)
+        # A per-user provider may also accept an INLINE token from the run context (token_ctx_key,
+        # for server-to-server /run forwarding). That value must vary the cache key too, or a cached
+        # ResolvedAuth for one caller's inline token could be served to another sharing the same
+        # end_user dims. The stored-connection path is unaffected (the key is absent from context).
+        cache_dims = [*per_user, cfg["token_ctx_key"]] if cfg.get("token_ctx_key") else per_user
+        key = self._key(provider_id, context, cache_dims)
         if not force and (cached := self._cache.get(key)) and not cached.expired:
             return cached
 
@@ -107,13 +112,13 @@ class AuthResolver:
         default_ttl = cfg.get("cache_ttl_seconds", 1800)
 
         if kind == "bearer":
-            token = await read(cfg.get("token_ref")) or creds
+            token = await self._value_for(provider, cfg, read, context, shared_ref=cfg.get("token_ref"), fallback=creds)
             resolved.headers[cfg.get("header_name", "Authorization")] = (
                 cfg.get("prefix", "Bearer ") + str(token)
             )
             resolved.expires_at = None if default_ttl == 0 else time.monotonic() + default_ttl
         elif kind == "api_key":
-            value = await read(cfg.get("value_ref")) or creds
+            value = await self._value_for(provider, cfg, read, context, shared_ref=cfg.get("value_ref"), fallback=creds)
             where, name = cfg.get("in", "header"), cfg["name"]
             (resolved.headers if where == "header" else resolved.params)[name] = str(value)
             resolved.expires_at = None
@@ -134,8 +139,50 @@ class AuthResolver:
         else:
             raise ValueError(f"Unknown auth kind {kind!r}")
 
+        # Extra fixed headers stamped on every call (in addition to the primary auth header) - e.g. a
+        # constant client id + a service token defined ONCE on the provider instead of hardcoded per
+        # tool. Each value is a literal or a secret:// ref (resolved from the secret store), so a
+        # secret never has to live in plaintext in a tool's header config.
+        for hname, hval in (cfg.get("extra_headers") or {}).items():
+            resolved_val = await read(hval) if isinstance(hval, str) and hval.startswith("secret://") else hval
+            if resolved_val is not None:
+                resolved.headers[hname] = str(resolved_val)
+
         self._cache[key] = resolved
         return resolved
+
+    async def _value_for(self, provider, cfg: dict, read, context: dict, *, shared_ref, fallback):
+        """The token/value for a bearer/api_key provider.
+
+        When the provider is PER-USER (config.per_user_context_keys set, e.g. ["end_user_id"]) the
+        value is the acting user's OWN connected credential - read from the per-user bundle each user
+        deposits self-service (set_user_connection), keyed by the same per_user dims. So every end
+        user supplies their own token and a tool acts as them downstream, with NO shared secret and
+        NO passthrough of the inbound (MCP/session) token. A user who hasn't connected yet resolves
+        to a clear "not connected" error rather than a silent miss.
+
+        Otherwise it's the shared secret ref (or the credentials_ref fallback) - the prior behavior,
+        preserved exactly for non-per-user providers."""
+        per_user = cfg.get("per_user_context_keys")
+        if not per_user:
+            return await read(shared_ref) or fallback
+        # Inline per-request token (server-to-server /run forwarding via X-Forge-Context) takes
+        # precedence over the stored connection, so ONE per-user provider serves both delivery paths:
+        # a chat backend forwards the user's token inline, OR the user connected it once (MCP/console).
+        ctx_key = cfg.get("token_ctx_key")
+        if ctx_key and (context or {}).get(ctx_key):
+            return context[ctx_key]
+        name = self.bundle_secret_name(provider.id, context, per_user)
+        try:
+            bundle = await read(f"secret://proj/{name}")
+        except Exception:  # noqa: BLE001 - "not connected" surfaces as a missing secret
+            bundle = None
+        if not isinstance(bundle, dict) or not bundle.get("access_token"):
+            raise KeyError(
+                f"Auth provider {provider.id!r} is per-user and the acting user has not connected "
+                f"their credential yet (and no inline token was forwarded)"
+            )
+        return bundle["access_token"]
 
     async def _oauth2(self, cfg: dict, read, client: httpx.AsyncClient | None) -> ResolvedAuth:
         data = {

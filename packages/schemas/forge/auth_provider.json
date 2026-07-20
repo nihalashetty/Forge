@@ -9,7 +9,9 @@
     "credentials_ref": { "$ref": "forge/common#/$defs/SecretRef" },
     "cache_ttl_seconds": { "type": "integer", "default": 1800 },
     "refresh_on": { "type": "array", "items": { "type": "integer" }, "default": [401, 403] },
-    "per_user_context_keys": { "type": "array", "items": { "type": "string" }, "description": "Context keys (e.g. csrf, session from the widget) that vary the cache key and feed templates as {{ctx.*}}." }
+    "per_user_context_keys": { "type": "array", "items": { "type": "string" }, "description": "Context keys (e.g. csrf, session from the widget) that vary the cache key and feed templates as {{ctx.*}}." },
+    "token_ctx_key": { "type": "string", "description": "Per-user bearer/api_key only: a run-context key (X-Forge-Context) whose value is used as the token when present, taking precedence over the stored per-user connection. Lets a server-to-server caller (e.g. a web chat) forward the acting user's token inline while MCP/console fall back to the stored credential." },
+    "extra_headers": { "type": "object", "additionalProperties": { "type": "string" }, "x-ui": { "widget": "rows-table", "section": "Extra headers" }, "description": "Fixed headers stamped on every outbound call in addition to the primary auth header. Each value is a literal OR a secret:// ref (resolved from the secret store). Define shared service/attestation headers (e.g. X-Forge-Client-Id, a service token) once here instead of hardcoding them per tool." }
   },
   "allOf": [
     { "if": { "properties": { "kind": { "const": "csrf_session" } } }, "then": { "$ref": "#/$defs/FetchExtractInject" } },

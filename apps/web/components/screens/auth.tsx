@@ -151,6 +151,21 @@ function ProviderDetail({ project, provider, onSaved }: { project: any; provider
   }
   const get = (path: string[], dflt: any = "") => path.reduce((o, k) => (o == null ? o : o[k]), cfg) ?? dflt;
 
+  // Per-user ("external") auth: bearer/api_key providers can be marked so EACH user supplies their
+  // own token (stored per-user) instead of one shared secret - the mechanism behind per-user MCP +
+  // on-behalf-of calls. Marked by per_user_context_keys containing "end_user_id".
+  const supportsPerUser = kind === "bearer" || kind === "api_key";
+  const perUser = ((cfg.per_user_context_keys as string[]) || []).includes("end_user_id");
+  function setPerUser(on: boolean) {
+    setCfg((c: any) => {
+      const next = structuredClone(c);
+      if (on) next.per_user_context_keys = ["end_user_id"];
+      else delete next.per_user_context_keys;
+      return next;
+    });
+    setSaved(false);
+  }
+
   async function save() {
     setSaving(true);
     try {
@@ -262,21 +277,68 @@ function ProviderDetail({ project, provider, onSaved }: { project: any; provider
             <Field label="Prefix"><input className="input mono" value={get(["prefix"], "Bearer ")} onChange={(e) => setPath(["prefix"], e.target.value)} /></Field>
           </div>
         )}
+
+        {supportsPerUser && (
+          <label className="card row spread" style={{ padding: 12, marginTop: 12, background: "var(--bg-3)", cursor: "pointer" }}>
+            <div className="col gap1" style={{ maxWidth: 640 }}>
+              <span className="t-body-sm" style={{ fontWeight: 600 }}>Per-user credential</span>
+              <span className="t-caption fg-2">Each user supplies their OWN token instead of one shared secret — tools then act as the calling user downstream (works for MCP and on-behalf-of runs). Users set theirs on their token page; you can set yours below.</span>
+            </div>
+            <Toggle on={perUser} onChange={setPerUser} />
+          </label>
+        )}
       </div>
 
       {/* Credentials */}
       <div className="card" style={{ padding: 18 }}>
-        <div className="row spread" style={{ marginBottom: 12 }}><div className="t-h2">Credentials</div><span className="chip" style={{ color: "var(--fg-2)" }}><Icon name="secret" size={12} />from secret store</span></div>
-        {credentialFields(kind).map((cf) => (
-          <Field key={cf.path} label={cf.label} help={cf.help}>
-            <div className="row gap2">
-              <input className="input mono" type={reveal ? "text" : "password"} value={get([cf.path])} onChange={(e) => setPath([cf.path], e.target.value)} style={{ flex: 1 }} placeholder="secret://proj/…" />
-              <button className="iconbtn" style={{ border: "1px solid var(--line-strong)" }} title={reveal ? "Hide" : "Reveal"} onClick={() => setReveal((r) => !r)}><Icon name={reveal ? "eyeoff" : "eye"} size={15} /></button>
-            </div>
-          </Field>
-        ))}
-        <div className="fg-2 t-caption" style={{ marginTop: 4 }}>Secret values live in Settings → Secrets. Reference them as <span className="mono-sm">secret://proj/&lt;name&gt;</span>.</div>
+        <div className="row spread" style={{ marginBottom: 12 }}><div className="t-h2">Credentials</div><span className="chip" style={{ color: "var(--fg-2)" }}><Icon name="secret" size={12} />{perUser ? "per-user (each user connects)" : "from secret store"}</span></div>
+        {perUser ? (
+          <PerUserConnect project={project} provider={provider} />
+        ) : (
+          <>
+            {credentialFields(kind).map((cf) => (
+              <Field key={cf.path} label={cf.label} help={cf.help}>
+                <div className="row gap2">
+                  <input className="input mono" type={reveal ? "text" : "password"} value={get([cf.path])} onChange={(e) => setPath([cf.path], e.target.value)} style={{ flex: 1 }} placeholder="secret://proj/…" />
+                  <button className="iconbtn" style={{ border: "1px solid var(--line-strong)" }} title={reveal ? "Hide" : "Reveal"} onClick={() => setReveal((r) => !r)}><Icon name={reveal ? "eyeoff" : "eye"} size={15} /></button>
+                </div>
+              </Field>
+            ))}
+            <div className="fg-2 t-caption" style={{ marginTop: 4 }}>Secret values live in Settings → Secrets. Reference them as <span className="mono-sm">secret://proj/&lt;name&gt;</span>.</div>
+          </>
+        )}
       </div>
+
+      {/* Extra headers: fixed headers stamped on EVERY call, alongside the auth header. Values may
+          be a literal or a secret:// ref, so a shared service token stays in the store (not per-tool). */}
+      <div className="card" style={{ padding: 18, marginTop: 16 }}>
+        <div className="row spread" style={{ marginBottom: 8 }}><div className="t-h2">Extra headers</div><span className="chip" style={{ color: "var(--fg-2)" }}><Icon name="secret" size={12} />literal or secret://</span></div>
+        <div className="fg-2 t-caption" style={{ marginBottom: 12 }}>Sent on every call alongside the auth header — use for fixed service / attestation headers (e.g. a client id, a service token). Each value is a literal <em>or</em> a <span className="mono-sm">secret://proj/&lt;name&gt;</span> ref, so a shared secret stays in Settings → Secrets instead of hardcoded per tool.</div>
+        <ExtraHeadersEditor value={cfg.extra_headers || {}} onChange={(v) => setPath(["extra_headers"], v)} />
+      </div>
+    </div>
+  );
+}
+
+/* Rows editor for a provider's extra_headers (name -> value). Values are literals or secret:// refs;
+   the resolver stamps them on every call and resolves any secret ref from the store. */
+function ExtraHeadersEditor({ value, onChange }: { value: Record<string, string>; onChange: (v: Record<string, string>) => void }) {
+  const rows = Object.entries(value || {});
+  const rebuild = (next: [string, string][]) => onChange(Object.fromEntries(next.filter(([k]) => k.trim())));
+  return (
+    <div className="col gap2">
+      {rows.map(([k, v], i) => (
+        <div key={i} className="row gap2">
+          <input className="input mono" placeholder="Header name" value={k} style={{ flex: 1 }}
+            onChange={(e) => rebuild(rows.map((r, idx): [string, string] => (idx === i ? [e.target.value, r[1]] : r)))} />
+          <input className="input mono" placeholder="value or secret://proj/name" value={v} style={{ flex: 2 }}
+            onChange={(e) => rebuild(rows.map((r, idx): [string, string] => (idx === i ? [r[0], e.target.value] : r)))} />
+          <button className="iconbtn" style={{ border: "1px solid var(--line-strong)" }} title="Remove"
+            onClick={() => rebuild(rows.filter((_, idx) => idx !== i))}><Icon name="trash" size={14} /></button>
+        </div>
+      ))}
+      <button className="btn btn-ghost btn-sm" style={{ alignSelf: "flex-start" }}
+        onClick={() => onChange({ ...(value || {}), "": "" })}><Icon name="plus" size={13} />Add header</button>
     </div>
   );
 }
@@ -313,6 +375,43 @@ function OAuthConnect({ project, provider }: { project: any; provider: AuthProvi
       {status?.scope && <div className="fg-2 t-caption" style={{ marginTop: 6 }}>scope: {status.scope}</div>}
       {err && <div className="t-caption" style={{ color: "var(--err)", marginTop: 6 }}>{err}</div>}
       <div className="fg-2 t-caption" style={{ marginTop: 6 }}>Save the provider, set the client_id/secret secrets, then Connect. A popup completes the grant; tokens auto-refresh.</div>
+    </div>
+  );
+}
+
+/* Per-user credential: the CURRENT user's own downstream token for a per-user provider. Stored
+   server-side keyed by their user id (same identity the MCP PAT resolves to), so tools act as them
+   without a shared secret. The same box appears on the connector token page. */
+function PerUserConnect({ project, provider }: { project: any; provider: AuthProviderT }) {
+  const [status, setStatus] = useState<{ connected: boolean } | null>(null);
+  const [token, setToken] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const refresh = useCallback(() => { api.getMyConnection(project.id, provider.id).then(setStatus).catch(() => setStatus(null)); }, [project.id, provider.id]);
+  useEffect(() => { refresh(); }, [refresh]);
+
+  async function save() {
+    setErr(null); setBusy(true);
+    try {
+      const res = await api.setMyConnection(project.id, provider.id, token.trim());
+      if (!res.ok) throw new Error(res.status === 400 ? "Save this provider as per-user first, then set your token." : "Could not save token.");
+      setToken(""); refresh();
+    } catch (e: any) { setErr(e?.message || String(e)); } finally { setBusy(false); }
+  }
+  async function clear() { setErr(null); try { await api.clearMyConnection(project.id, provider.id); } catch { /* best-effort */ } refresh(); }
+
+  return (
+    <div className="card" style={{ padding: 14, background: "var(--bg-3)" }}>
+      <div className="row spread" style={{ marginBottom: 8 }}>
+        <div className="row gap2"><Icon name="link" size={15} /><span className="t-body-sm" style={{ fontWeight: 600 }}>Your token</span>{status?.connected ? <span className="pill pill-ok">connected</span> : <span className="pill pill-muted">not connected</span>}</div>
+        {status?.connected && <button className="btn btn-ghost btn-sm" onClick={clear}>Clear</button>}
+      </div>
+      <div className="row gap2">
+        <input className="input mono" type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder="paste your token…" style={{ flex: 1 }} />
+        <button className="btn btn-primary" onClick={save} disabled={busy || !token.trim()}>{busy ? "Saving…" : "Save"}</button>
+      </div>
+      {err && <div className="t-caption" style={{ color: "var(--err)", marginTop: 6 }}>{err}</div>}
+      <div className="fg-2 t-caption" style={{ marginTop: 6 }}>Stored per-user and encrypted; used only for calls made as you, and never shown again after saving.</div>
     </div>
   );
 }
