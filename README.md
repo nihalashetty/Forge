@@ -56,11 +56,19 @@ Register **REST, GraphQL, Code, SQL, MCP, or built-in** tools and test them live
 
 <p align="center"><img src="docs/media/Tools.png" alt="Forge tool builder with request config, live response, and a raw-to-projected token cost meter" width="90%"></p>
 
+The Tools screen groups everything by set (switchable between grid and list), with one-click **export / import** to move tools between projects:
+
+<p align="center"><img src="docs/media/Tools_dashboard.png" alt="Forge Tools screen: the tool grid grouped into reusable tool sets, with grid/list views and one-click export and import" width="90%"></p>
+
 ### Knowledge & RAG
 
 Ground agents in **your own data**. Add pasted text, URLs, crawled sites, or uploaded files (`.txt/.md/.csv/.json/.html/.pdf`); Forge chunks, embeds (**offline-capable by default**), and stores them as vectors organized in folders. Curated **Q&A pairs** deflect common questions, and a **search debugger** lets you inspect exactly what retrieval returns.
 
 <p align="center"><img src="docs/media/Knowledge.png" alt="Forge knowledge screen showing document sources, folders, chunking status, and Q&A" width="90%"></p>
+
+The built-in **search debugger** plots every chunk by semantic similarity and overlays a query - so you can see exactly which chunks a search retrieves, and why:
+
+<p align="center"><img src="docs/media/Knowledge_storage_debugger.png" alt="Forge knowledge search debugger: a PCA chunk map colored by source, with a query overlay marking the retrieved chunks" width="90%"></p>
 
 ### Generative UI Components
 
@@ -74,11 +82,23 @@ Drop your assistant onto **any website** with a one-line script - a floating cha
 
 <p align="center"><img src="docs/media/Embeddings.png" alt="Forge embed screen with widget toggle, allowed origins, and a copy-paste launcher snippet" width="90%"></p>
 
+### Deploy anywhere - one run API, MCP & channels
+
+Ship the same workflow through many surfaces without rewriting it: call it server-to-server over a **single run API** (`POST /run` handles new turns, streaming, and human-in-the-loop resumes), expose it as an **MCP server**, deploy it to **email**, or drop in the **web widget**. Per-request caller context (`X-Forge-Context`) lets tools act on behalf of your end users - with secrets never in the request body.
+
+<p align="center"><img src="docs/media/Integrations.png" alt="Forge Connect screen showing the run API: the Forge API base URL, the POST /run endpoint, and a copy-paste curl example" width="90%"></p>
+
 ### Observability & Traces
 
 Every run is captured as a **span waterfall** - model calls, tools, chains, latency, tokens, and **cost** - so you can see exactly what happened and what it cost. Pair it with **Evaluations** to catch regressions before you publish, and export traces to any **OpenTelemetry** collector (e.g. Langfuse).
 
 <p align="center"><img src="docs/media/Traces.png" alt="Forge traces screen showing a run's span waterfall with per-step latency, tokens, and cost" width="90%"></p>
+
+### Guardrails, budgets & governance
+
+Run it like production. A project-level **Guardrails & Egress** policy (PII redaction, blocked terms, and a network allow/deny list) applies to every agent by default; **budgets & quotas** cap spend and tokens; **versioning** snapshots every change; and it all sits behind per-project **roles / RBAC** and an audit log - from one Settings surface.
+
+<p align="center"><img src="docs/media/Settings.png" alt="Forge project Settings with a section sidebar: General, Members and Roles, API Keys, Model Pricing, Budgets and Quotas, Guardrails and Egress, Versioning, and more" width="90%"></p>
 
 ### And many more
 
