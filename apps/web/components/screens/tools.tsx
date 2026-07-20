@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "../icons";
 import { Field, Modal, Segmented, StatusPill, Tabs, Tile, TokenMeter, Toggle } from "../primitives";
 import { VersionHistory } from "../version-history";
+import { ImportExport } from "../import-export";
 import { api, AuthProviderT, Tool, ToolSet, ToolTestResult } from "@/lib/api";
 import { KIND_ICON, KIND_LABEL } from "@/lib/data";
 
@@ -123,6 +124,8 @@ export function ToolsScreen({ project, onOpen }: { project: any; onOpen: (t: Too
               <div className="row gap2 wrap" style={{ marginTop: 16, alignItems: "center" }}>
                 <input className="input" style={{ width: 220 }} placeholder="Search tools" value={query} onChange={(e) => setQuery(e.target.value)} />
                 <button className="btn btn-primary" onClick={() => setOpen(true)}><Icon name="plus" size={15} />New tool</button>
+                <ImportExport project={project} type="tool" typeLabel="tool" size="md" onImported={reload}
+                  items={tools.map((t) => ({ id: t.id, name: t.name, sub: KIND_LABEL[t.kind] || t.kind }))} />
                 <div style={{ flex: 1, minWidth: 8 }} />
                 <Segmented options={[{ value: "grid", label: "Grid" }, { value: "list", label: "List" }]} value={view} onChange={(v) => setView(v as any)} />
               </div>

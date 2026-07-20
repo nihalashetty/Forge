@@ -6,11 +6,39 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from forge.deps import CurrentUser, current_tenant_id, get_session, require_role
-from forge.schemas.dto import AgentCreate, AgentOut, AgentUpdate, ValidateOut
+from forge.schemas.dto import (
+    AgentCreate,
+    AgentOut,
+    AgentUpdate,
+    ExportIn,
+    ImportIn,
+    ImportReport,
+    ValidateOut,
+)
 from forge.services.agents import AgentService
+from forge.services.portability import PortabilityService
 from forge.services.versions import safe_snapshot
 
 router = APIRouter(prefix="/v1/projects/{project_id}/agents", tags=["agents"])
+
+
+@router.post("/export")
+async def export_agents(project_id: str, body: ExportIn, session: AsyncSession = Depends(get_session),
+                        tenant_id: str = Depends(current_tenant_id)):
+    """Serialize the selected agent presets (full config) into a downloadable bundle."""
+    return await PortabilityService.export(session, tenant_id, project_id, "agent", body.ids)
+
+
+@router.post("/import", response_model=ImportReport)
+async def import_agents(project_id: str, body: ImportIn, session: AsyncSession = Depends(get_session),
+                        tenant_id: str = Depends(current_tenant_id), user: CurrentUser = Depends(require_role("editor"))):
+    """Create agent presets from an uploaded bundle in THIS project (auto-renamed on collision)."""
+    if body.type not in (None, "agent"):
+        raise HTTPException(422, f"This file contains '{body.type}' exports — import it from the matching screen.")
+    try:
+        return await PortabilityService.import_bundle(session, tenant_id, project_id, body.model_dump(), author=user)
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
 
 
 @router.get("", response_model=list[AgentOut])

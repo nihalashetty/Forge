@@ -324,10 +324,11 @@ class AuthTestIn(BaseModel):
 
 
 class UserConnectionIn(BaseModel):
-    """A per-user downstream credential the app owner's connect flow stores in Forge so a tool can
-    act as that end user - without the MCP/session token being passed through. Minimally an
-    access token; refresh_token + expires_at (epoch seconds) enable Forge's automatic refresh. The
-    provider must be kind oauth2_authorization_code with per_user_context_keys: ["end_user_id"]."""
+    """A per-user downstream credential stored in Forge so a tool can act as that end user - without
+    the MCP/session token being passed through. Minimally an access token; refresh_token + expires_at
+    (epoch seconds) enable Forge's automatic refresh (oauth2_authorization_code). Used both by the
+    OAuth connect callback and by per-user bearer/api_key providers, where each user self-serves their
+    own token. The provider must set per_user_context_keys: ["end_user_id"] to be per-user."""
 
     access_token: str
     refresh_token: str | None = None
@@ -464,6 +465,34 @@ class ProjectRunIn(BaseModel):
     session_token: str | None = None
     resume: ResumeIn | None = None
     stream: bool = True
+
+
+# --- import / export (portable single-type bundles of tools|workflows|components|agents) ---
+class ExportIn(BaseModel):
+    """Which rows to export. The frontend's 'Select all' sends every id; an empty list
+    produces an empty bundle."""
+
+    ids: list[str] = Field(default_factory=list)
+
+
+class ImportIn(BaseModel):
+    """An uploaded bundle. Only `type` + `items` are load-bearing; the rest of the envelope
+    (format/exported_at/source) is accepted and ignored so older/newer files still import."""
+
+    type: str | None = None
+    items: list[dict[str, Any]] = Field(default_factory=list)
+    format: str | None = None
+    exported_at: str | None = None
+    source: dict[str, Any] | None = None
+
+
+class ImportReport(BaseModel):
+    type: str
+    imported: int
+    skipped: int = 0
+    # One entry per bundle item: {id, name, original_name, renamed} or {original_name, skipped}.
+    items: list[dict[str, Any]] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
 
 
 # --- node catalog ---

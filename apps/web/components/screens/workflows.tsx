@@ -15,6 +15,7 @@ import { WorkflowTestPanel } from "../canvas/WorkflowTestPanel";
 import { FieldsForm, ModelSelect, MultiSelectChips, type FieldSpec } from "../canvas/ConfigForm";
 import { Field, Toggle } from "../primitives";
 import { VersionHistory } from "../version-history";
+import { ImportExport } from "../import-export";
 import type { ComponentT } from "@/lib/api";
 import { api, openSSE, Agent, McpClientT, NodeType, Tool, ToolSet, Workflow } from "@/lib/api";
 import { NODE_META, NODE_HELP, IO_COLOR, fmtUSD } from "@/lib/data";
@@ -171,7 +172,11 @@ export function WorkflowsScreen({ project, onOpen }: { project: any; onOpen: (w:
             <div className="t-display">Workflows</div>
             <div className="fg-1" style={{ marginTop: 3 }}>Visual graphs compiled to LangGraph. Build agents, routers, tools, and HITL on the canvas.</div>
           </div>
-          <button className="btn btn-primary" onClick={create} disabled={busy}><Icon name="plus" size={15} />{busy ? "Creating…" : "New workflow"}</button>
+          <div className="row gap2">
+            <ImportExport project={project} type="workflow" typeLabel="workflow" size="md" onImported={reload}
+              items={wfs.map((w) => ({ id: w.id, name: w.name || "Untitled workflow", sub: `${(w.executable?.nodes || []).length} nodes` }))} />
+            <button className="btn btn-primary" onClick={create} disabled={busy}><Icon name="plus" size={15} />{busy ? "Creating…" : "New workflow"}</button>
+          </div>
         </div>
         {loaded && wfs.length === 0 ? (
           <div className="card col center" style={{ padding: 48, gap: 12, textAlign: "center" }}>

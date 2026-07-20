@@ -14,7 +14,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from forge.deps import CurrentUser, current_tenant_id, get_session, require_role
+from forge.schemas.dto import ExportIn, ImportIn, ImportReport
 from forge.services.components import ComponentService
+from forge.services.portability import PortabilityService
 from forge.services.versions import safe_snapshot
 
 router = APIRouter(prefix="/v1/projects/{project_id}/components", tags=["components"])
@@ -65,6 +67,25 @@ class ComponentOut(BaseModel):
 @router.get("", response_model=list[ComponentOut])
 async def list_components(project_id: str, session: AsyncSession = Depends(get_session), tenant_id: str = Depends(current_tenant_id)):
     return await ComponentService.list(session, tenant_id, project_id)
+
+
+@router.post("/export")
+async def export_components(project_id: str, body: ExportIn, session: AsyncSession = Depends(get_session),
+                            tenant_id: str = Depends(current_tenant_id)):
+    """Serialize the selected components (HTML/CSS/props/actions) into a downloadable bundle."""
+    return await PortabilityService.export(session, tenant_id, project_id, "component", body.ids)
+
+
+@router.post("/import", response_model=ImportReport)
+async def import_components(project_id: str, body: ImportIn, session: AsyncSession = Depends(get_session),
+                            tenant_id: str = Depends(current_tenant_id), user: CurrentUser = Depends(require_role("editor"))):
+    """Create components from an uploaded bundle in THIS project (auto-renamed on collision)."""
+    if body.type not in (None, "component"):
+        raise HTTPException(422, f"This file contains '{body.type}' exports — import it from the matching screen.")
+    try:
+        return await PortabilityService.import_bundle(session, tenant_id, project_id, body.model_dump(), author=user)
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
 
 
 @router.post("", response_model=ComponentOut, status_code=201)

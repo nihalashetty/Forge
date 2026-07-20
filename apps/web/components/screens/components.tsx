@@ -3,10 +3,11 @@
    button actions) that an agent can render in chat. Code-first editor (no visual builder,
    per product direction) with a live sandboxed preview. A new component pre-loads with a
    simple 2-column table example. */
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Icon } from "../icons";
 import { Tile } from "../primitives";
 import { VersionHistory } from "../version-history";
+import { ImportExport } from "../import-export";
 import { api, ComponentT } from "@/lib/api";
 import { ComponentRenderer } from "../component-renderer";
 
@@ -68,7 +69,7 @@ export function ComponentsScreen({ project, onOpen }: { project: any; onOpen: (c
   const [err, setErr] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
 
-  useEffect(() => {
+  const reload = useCallback(() => {
     if (!project?.id) return;
     setLoaded(false);
     setErr(null);
@@ -83,6 +84,7 @@ export function ComponentsScreen({ project, onOpen }: { project: any; onOpen: (c
         setLoaded(true);
       });
   }, [project?.id]);
+  useEffect(() => { reload(); }, [reload]);
 
   async function create() {
     if (creating) return;
@@ -106,10 +108,14 @@ export function ComponentsScreen({ project, onOpen }: { project: any; onOpen: (c
             <div className="fg-2 t-caption">UI widgets the agent can render in chat - attached to agents like tools.</div>
           </div>
         </div>
-        <button className="btn btn-primary btn-sm" onClick={create} disabled={creating || !project}>
-          <Icon name="plus" size={14} />
-          New component
-        </button>
+        <div className="row gap2">
+          <ImportExport project={project} type="component" typeLabel="component" onImported={reload}
+            items={items.map((c) => ({ id: c.id, name: c.name, sub: c.title || c.description || undefined }))} />
+          <button className="btn btn-primary btn-sm" onClick={create} disabled={creating || !project}>
+            <Icon name="plus" size={14} />
+            New component
+          </button>
+        </div>
       </div>
       <div style={{ padding: 20 }}>
         {err && <div className="card" style={{ padding: 14, color: "var(--err)", marginBottom: 12 }}>{err}</div>}

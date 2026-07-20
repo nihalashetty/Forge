@@ -9,15 +9,38 @@ from forge.deps import CurrentUser, current_tenant_id, get_session, require_role
 from forge.schemas.dto import (
     CanvasSaveIn,
     ExecutableIn,
+    ExportIn,
+    ImportIn,
+    ImportReport,
     ValidateOut,
     WorkflowCreate,
     WorkflowOut,
     WorkflowUpdate,
 )
+from forge.services.portability import PortabilityService
 from forge.services.versions import safe_snapshot
 from forge.services.workflows import WorkflowService
 
 router = APIRouter(prefix="/v1/projects/{project_id}/workflows", tags=["workflows"])
+
+
+@router.post("/export")
+async def export_workflows(project_id: str, body: ExportIn, session: AsyncSession = Depends(get_session),
+                           tenant_id: str = Depends(current_tenant_id)):
+    """Serialize the selected workflows (canvas + executable) into a downloadable bundle."""
+    return await PortabilityService.export(session, tenant_id, project_id, "workflow", body.ids)
+
+
+@router.post("/import", response_model=ImportReport)
+async def import_workflows(project_id: str, body: ImportIn, session: AsyncSession = Depends(get_session),
+                           tenant_id: str = Depends(current_tenant_id), user: CurrentUser = Depends(require_role("editor"))):
+    """Create workflows from an uploaded bundle in THIS project (imported as drafts)."""
+    if body.type not in (None, "workflow"):
+        raise HTTPException(422, f"This file contains '{body.type}' exports — import it from the matching screen.")
+    try:
+        return await PortabilityService.import_bundle(session, tenant_id, project_id, body.model_dump(), author=user)
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
 
 
 @router.get("", response_model=list[WorkflowOut])

@@ -5,6 +5,7 @@ import { Icon } from "../icons";
 import { StatusPill, Tile } from "../primitives";
 import { AgentConfig } from "../canvas/AgentConfig";
 import { VersionHistory } from "../version-history";
+import { ImportExport } from "../import-export";
 import { api, Agent, ComponentT, McpClientT, Tool, ToolSet } from "@/lib/api";
 
 const NEW_AGENT_CONFIG = { flavor: "agent", model: "openai:gpt-4o-mini", system_prompt: "", tools: [], components: [], middleware: [] };
@@ -52,7 +53,11 @@ export function AgentsScreen({ project, onOpen }: { project: any; onOpen: (a: Ag
             <div className="t-display">Agents</div>
             <div className="fg-1" style={{ marginTop: 3 }}>Reusable agent presets - model, tools, and a middleware stack. Drop them into workflows.</div>
           </div>
-          <button className="btn btn-primary" onClick={create} disabled={busy}><Icon name="plus" size={15} />{busy ? "Creating…" : "New agent"}</button>
+          <div className="row gap2">
+            <ImportExport project={project} type="agent" typeLabel="agent" size="md" onImported={reload}
+              items={agents.map((a) => ({ id: a.id, name: a.name, sub: `${a.config?.flavor || "agent"} · ${a.config?.model || "-"}` }))} />
+            <button className="btn btn-primary" onClick={create} disabled={busy}><Icon name="plus" size={15} />{busy ? "Creating…" : "New agent"}</button>
+          </div>
         </div>
         {loaded && agents.length === 0 ? (
           <div className="card col center" style={{ padding: 48, gap: 12, textAlign: "center" }}>
