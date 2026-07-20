@@ -44,6 +44,12 @@ Forge is built directly on the **MIT-licensed LangChain v1 + LangGraph v1** fram
 
 > **[Watch the demo](docs/media/forge-assistant-demo.mp4)** - the in-product **Forge Assistant** builds and runs a workflow end to end. *(If the player doesn't load inline, click the link to play.)*
 
+### Visual Workflow Builder
+
+Wire an entire app on a **drag-and-drop canvas** (React Flow): drop nodes from the palette - **agents** & deep agents, model calls, classifiers, tools, transforms, retrieval, human input/handoff, routers, loops, parallel fan-out/join, subworkflows, and triggers - and connect them with **typed, validated** edges. A per-node inspector and a live **state schema** keep runs type-safe, while a minimap, undo/redo, and copy/paste keep big graphs manageable. **Save**, **Test**, or open the **Playground** to watch nodes light up as the run streams - then **Publish**.
+
+<p align="center"><img src="docs/media/Workflow.png" alt="Forge visual workflow builder: a React Flow canvas wiring retrieval, router, agent, and end nodes, with a node palette, a state-schema inspector, and a minimap" width="90%"></p>
+
 ### Visual Agent Builder
 
 Compose an **Agent** or a **Deep Agent** (planning + subagents for long multi-step tasks) from a model, a system prompt, tools, knowledge, Q&A, and a reorderable **middleware stack** - all from friendly forms, no JSON. A live *"what the model sees"* panel shows the exact compiled prompt and middleware execution order before you ship.
@@ -102,7 +108,6 @@ Run it like production. A project-level **Guardrails & Egress** policy (PII reda
 
 ### And many more
 
-- **Visual workflow canvas** (React Flow) - routers, loops, parallel fan-out/join, transforms, and reusable subworkflows with typed, validated connections.
 - **Channels** - deploy a workflow to **Email**.
 - **Triggers** - webhooks, schedules (interval/cron), inbound email, and polling "app events".
 - **Human-in-the-loop** - approve/reject pauses and live **handoff** to an Agent inbox, with the reply delivered back over the same channel.
