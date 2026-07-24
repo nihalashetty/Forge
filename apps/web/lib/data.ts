@@ -333,7 +333,7 @@ export type NavGroup = { section: string; items: NavLeaf[] };
 export type NavEntry = NavLeaf | NavGroup;
 
 export const PROJECT_NAV: NavEntry[] = [
-  { id: "overview", label: "Overview", icon: "layout-dashboard", help: "Project dashboard - usage, cost, and recent activity at a glance." },
+  { id: "overview", label: "Analytics", icon: "layout-dashboard", help: "Observability dashboard - volume, latency, cost, tokens, and per-source/tool breakdowns over time." },
   { section: "Build", items: [
     { id: "playground", label: "Playground", icon: "playground", help: "Chat with a workflow to test it live, with token + cost metering." },
     { id: "workflows", label: "Workflows", icon: "workflow", countKey: "workflows", help: "The visual canvas - wire nodes (agents, tools, routers, triggers) into a graph." },

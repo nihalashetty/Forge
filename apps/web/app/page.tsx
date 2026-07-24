@@ -2,7 +2,8 @@
 /* Forge - root app: routing + chrome assembly (a single navigable SPA, like the handoff). */
 import { ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Topbar, ProjectSidebar, CommandPalette, AssistantPanel, Crumb } from "@/components/shell";
-import { DashboardScreen, OverviewScreen, OnboardingScreen, ProjectCard } from "@/components/screens/home";
+import { DashboardScreen, OnboardingScreen, ProjectCard } from "@/components/screens/home";
+import { AnalyticsScreen } from "@/components/screens/analytics";
 import { PlaygroundScreen } from "@/components/screens/playground";
 import { ToolsScreen, ToolBuilderScreen } from "@/components/screens/tools";
 import { WorkflowsScreen, WorkflowCanvas } from "@/components/screens/workflows";
@@ -185,7 +186,7 @@ function App() {
       );
     if (view.name === "project") {
       switch (view.screen) {
-        case "overview": return <OverviewScreen project={project} onNav={navScreen} />;
+        case "overview": return <AnalyticsScreen project={project} onNav={navScreen} />;
         case "playground": return <PlaygroundScreen project={project} />;
         case "workflows": return <WorkflowsScreen project={project} onOpen={(w) => { setSelWorkflow(w); navScreen("workflow-canvas"); }} />;
         case "workflow-canvas": return <WorkflowCanvas project={project} workflowId={selWorkflow?.id} onWorkflowChange={setSelWorkflow} onBack={() => navScreen("workflows")} onRun={() => navScreen("playground")} onRegisterFlush={(fn) => { canvasFlushRef.current = fn; }} />;
@@ -206,7 +207,7 @@ function App() {
         case "connect": return <ConnectScreen project={project} />;
         case "embed": return <EmbedScreen project={project} />;
         case "settings": return <SettingsScreen project={project} onDeleteProject={(p) => deleteProject(p, { skipConfirm: true })} />;
-        default: return <OverviewScreen project={project} onNav={navScreen} />;
+        default: return <AnalyticsScreen project={project} onNav={navScreen} />;
       }
     }
     return null;

@@ -1,43 +1,12 @@
 "use client";
 /* Forge home screens: Dashboard, Project Overview, Onboarding wizard. */
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Icon } from "../icons";
-import { Sparkline, StatusPill, Tabs, Tile, Field, Toggle, EmptyState } from "../primitives";
-import { api, Workflow, DashboardStats, ProjectCounts, ProjectStats, ReportRow } from "@/lib/api";
+import { Sparkline, StatusPill, Tile, Field, Toggle, EmptyState } from "../primitives";
+import { DashboardStats } from "@/lib/api";
 import { fmtUSD } from "@/lib/data";
 
 const fmtLatencyMs = (ms: number) => (ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`);
-
-/** Usage breakdown table - one row per workflow + the Forge Assistant. */
-function ReportTable({ rows, empty }: { rows: ReportRow[]; empty: string }) {
-  return (
-    <div className="card" style={{ overflow: "hidden" }}>
-      <table className="tbl">
-        <thead><tr><th>Source</th><th>Runs</th><th>Tokens</th><th>Avg latency</th><th>Cost</th></tr></thead>
-        <tbody>
-          {rows.map((r, i) => (
-            <tr key={i}>
-              <td>
-                <div className="row gap2">
-                  <Tile icon={r.kind === "assistant" ? "sparkles" : "workflows"} color="var(--accent)" size={24} />
-                  <div>
-                    <div style={{ fontWeight: 600, fontSize: 13 }}>{r.label}</div>
-                    <div className="fg-2 t-caption">{r.kind === "assistant" ? "Forge Assistant turns" : "workflow runs (playground & API)"}</div>
-                  </div>
-                </div>
-              </td>
-              <td className="mono-sm">{r.runs.toLocaleString()}</td>
-              <td className="mono-sm">{r.tokens.toLocaleString()}</td>
-              <td className="mono-sm">{fmtLatencyMs(r.avg_latency_ms)}</td>
-              <td className="mono-sm">{fmtUSD(r.cost_usd)}</td>
-            </tr>
-          ))}
-          {rows.length === 0 && <tr><td colSpan={5}><div className="fg-2 t-caption" style={{ padding: 22, textAlign: "center" }}>{empty}</div></td></tr>}
-        </tbody>
-      </table>
-    </div>
-  );
-}
 
 export interface ProjectCard {
   id: string; name: string; slug: string; status: string;
@@ -199,120 +168,6 @@ export function DashboardScreen({
               </table>
             </div>
           </>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/* ============ PROJECT OVERVIEW ============ */
-export function OverviewScreen({ project, onNav }: { project: any; onNav: (s: string) => void }) {
-  const [workflows, setWorkflows] = useState<Workflow[]>([]);
-  const [counts, setCounts] = useState<ProjectCounts | null>(null);
-  const [stats, setStats] = useState<ProjectStats | null>(null);
-  const [tab, setTab] = useState("overview");
-  useEffect(() => {
-    if (!project?.id) return;
-    // The workflow list is rendered below (needs the rows); the other tiles only need
-    // counts, so they come from the single shared counts call (deduped with the sidebar's).
-    api.listWorkflows(project.id).then(setWorkflows).catch(() => setWorkflows([]));
-    api.projectCounts(project.id).then(setCounts).catch(() => setCounts(null));
-    api.projectStats(project.id).then(setStats).catch(() => setStats(null));
-  }, [project?.id]);
-
-  const health = [
-    { label: "Workflows", value: counts?.workflows ?? workflows.length, icon: "workflows", screen: "workflows" },
-    { label: "Agents", value: counts?.agents ?? "-", icon: "agents", screen: "agents" },
-    { label: "Tools", value: counts?.tools ?? "-", icon: "tools", screen: "tools" },
-    { label: "Knowledge", value: counts?.knowledge ?? "-", icon: "knowledge", screen: "knowledge" },
-  ];
-  const usage = [
-    { label: "API calls (all-time)", value: stats ? stats.totals.runs.toLocaleString() : "-", sub: stats ? `${stats.last_7d.runs.toLocaleString()} in last 7 days` : "" },
-    { label: "Tokens", value: stats ? stats.totals.tokens.toLocaleString() : "-", sub: "across all runs" },
-    { label: "Avg latency", value: stats && stats.totals.runs ? fmtLatencyMs(stats.totals.avg_latency_ms) : "-", sub: "per run" },
-    { label: "Total cost", value: stats ? fmtUSD(stats.totals.cost_usd) : "-", sub: stats ? `incl. ${fmtUSD(stats.assistant.cost_usd)} Forge Assistant` : "" },
-  ];
-  return (
-    <div className="scroll-y" style={{ flex: 1, padding: "24px 28px" }}>
-      <div className="fade-up" style={{ maxWidth: 1600, margin: "0 auto" }}>
-        <div className="row spread" style={{ marginBottom: 14 }}>
-          <div>
-            <div className="t-display">{project?.name}</div>
-            <div className="fg-1" style={{ marginTop: 3 }}>Visual agent workspace · {project?.slug}</div>
-          </div>
-        </div>
-        <div style={{ marginBottom: 18 }}>
-          <Tabs tabs={[{ value: "overview", label: "Overview" }, { value: "reports", label: "Reports" }]} value={tab} onChange={setTab} />
-        </div>
-
-        {tab === "reports" ? (
-          <>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 14, marginBottom: 22 }}>
-              {usage.map((k, i) => (
-                <div key={i} className="card" style={{ padding: 16 }}>
-                  <div className="t-micro" style={{ marginBottom: 8 }}>{k.label}</div>
-                  <div className="t-display" style={{ fontSize: 24 }}>{k.value}</div>
-                  <div className="fg-2 t-caption" style={{ marginTop: 2 }}>{k.sub}</div>
-                </div>
-              ))}
-            </div>
-            <div className="t-h1" style={{ marginBottom: 12 }}>Usage by source</div>
-            <ReportTable rows={stats?.reports || []} empty="No usage yet. Run a workflow in the Playground or chat with the Forge Assistant." />
-          </>
-        ) : (
-        <>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 14, marginBottom: 18 }}>
-          {health.map((h, i) => (
-            <button key={i} className="card card-hover" style={{ padding: 16, textAlign: "left", background: "var(--bg-1)" }} onClick={() => onNav(h.screen)}>
-              <div className="row spread"><Icon name={h.icon} size={20} style={{ color: "var(--fg-2)" }} /><Icon name="chevright" size={16} style={{ color: "var(--fg-2)" }} /></div>
-              <div className="t-display" style={{ fontSize: 28, marginTop: 12 }}>{h.value}</div>
-              <div className="fg-2 t-caption">{h.label}</div>
-            </button>
-          ))}
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 14, marginBottom: 22 }}>
-          {usage.map((k, i) => (
-            <div key={i} className="card" style={{ padding: 14 }}>
-              <div className="t-micro" style={{ marginBottom: 6 }}>{k.label}</div>
-              <div className="t-display" style={{ fontSize: 20 }}>{k.value}</div>
-              <div className="fg-2 t-caption" style={{ marginTop: 2 }}>{k.sub}</div>
-            </div>
-          ))}
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 20 }}>
-          <div className="card" style={{ padding: 18 }}>
-            <div className="row spread" style={{ marginBottom: 14 }}>
-              <div className="t-h1">Workflows</div>
-              <button className="btn btn-ghost btn-sm" onClick={() => onNav("workflow-canvas")}><Icon name="plus" size={14} />New</button>
-            </div>
-            {workflows.length === 0 ? (
-              <div className="fg-2 t-caption" style={{ padding: "18px 0", textAlign: "center" }}>No workflows yet. Open the canvas to build one.</div>
-            ) : (
-              <div className="col gap2">
-                {workflows.map((w) => (
-                  <button key={w.id} className="row gap3" onClick={() => onNav("workflow-canvas")} style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid var(--line)", background: "var(--bg-1)", cursor: "pointer", textAlign: "left" }}>
-                    <Icon name="workflows" size={18} style={{ color: "var(--accent)", flex: "none" }} />
-                    <div className="grow"><div style={{ fontWeight: 600, fontSize: 13 }}>{w.name}</div><div className="fg-2 t-caption">v{w.active_version}</div></div>
-                    <StatusPill status={w.status === "active" ? "active" : "draft"} />
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-          <div className="card" style={{ padding: 18 }}>
-            <div className="t-h1" style={{ marginBottom: 14 }}>Deployment</div>
-            <div className="col gap3">
-              {[["msg", "Channels", "Email", "var(--fg-2)", "channels"], ["connect", "MCP Server", "Not exposed", "var(--fg-2)", "connect"], ["playground", "Playground", "Test your workflow", "var(--fg-2)", "playground"]].map((d, i) => (
-                <button key={i} className="row gap3" onClick={() => onNav(d[4])} style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid var(--line)", background: "var(--bg-1)", cursor: "pointer", textAlign: "left" }}>
-                  <Icon name={d[0]} size={18} style={{ color: d[3], flex: "none" }} />
-                  <div className="grow"><div style={{ fontWeight: 600, fontSize: 13 }}>{d[1]}</div><div className="fg-2 t-caption">{d[2]}</div></div>
-                  <Icon name="chevright" size={16} style={{ color: "var(--fg-2)" }} />
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-        </>
         )}
       </div>
     </div>

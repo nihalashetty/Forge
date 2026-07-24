@@ -192,8 +192,29 @@ export interface ConversationDetail { conversation: Conversation; turns: Turn[];
 export interface Facets { actors: string[]; sources: string[]; }
 export interface Secret { id: string; name: string; kind: string; version: number; }
 
-export interface StatRollup { runs: number; tokens: number; cost_usd: number; avg_latency_ms: number; }
+export interface StatRollup { runs: number; tokens: number; cost_usd: number; avg_latency_ms: number; errors?: number; error_rate?: number; }
 export interface ReportRow extends StatRollup { label: string; kind: "workflow" | "assistant" | "other"; }
+
+/* ---- analytics dashboard (time-series + breakdowns over a date range) ---- */
+export interface TimeBucket { date: string; runs: number; tokens: number; cost_usd: number; avg_latency_ms: number; errors: number; success: number; }
+export interface SourceRollup extends StatRollup { source: string; }
+export interface ToolStat { name: string; calls: number; avg_latency_ms: number; errors: number; cost_usd: number; tokens: number; }
+export interface ModelStat { model: string; calls: number; tokens: number; cost_usd: number; avg_latency_ms: number; }
+export interface LatencyBucket { label: string; count: number; }
+export interface AnalyticsRange { days: number; since: string; until: string; bucket: string; }
+export interface AnalyticsRecentRun { id: string; workflow: string; project: string; status: string; tokens: number; latency_ms: number; cost_usd: number; started_at: string | null; }
+export interface Analytics {
+  range: AnalyticsRange;
+  totals: StatRollup;
+  prev_totals: StatRollup;
+  timeseries: TimeBucket[];
+  by_source: SourceRollup[];
+  by_workflow: ReportRow[];
+  tools: ToolStat[];
+  models: ModelStat[];
+  latency_histogram: LatencyBucket[];
+  recent: AnalyticsRecentRun[];
+}
 export interface ProjectStats {
   totals: StatRollup;
   last_7d: StatRollup;
@@ -361,6 +382,7 @@ export const api = {
     notifyCounts(fetch(`${BASE}/v1/projects/${pid}/workflows/${wid}`, { method: "DELETE", headers: authHeader() })),
   dashboardStats: () => json<DashboardStats>("/v1/stats/dashboard"),
   projectStats: (pid: string) => json<ProjectStats>(`/v1/stats/projects/${pid}`),
+  projectAnalytics: (pid: string, days = 30) => json<Analytics>(`/v1/stats/projects/${pid}/analytics?days=${days}`),
   listAgents: (pid: string) => json<Agent[]>(`/v1/projects/${pid}/agents`),
   getAgent: (pid: string, aid: string) => json<Agent>(`/v1/projects/${pid}/agents/${aid}`),
   createAgent: (pid: string, body: { name: string; config: Record<string, unknown> }) =>

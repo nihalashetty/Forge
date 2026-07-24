@@ -16,10 +16,22 @@ from pydantic import BaseModel
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from forge.db.base import engine
 from forge.deps import current_tenant_id, get_session
-from forge.models import Project, Tool, Trace, Workflow
+from forge.models import Project, Span, Tool, Trace, Workflow
 
 router = APIRouter(prefix="/v1/stats", tags=["stats"])
+
+# Postgres (prod) and SQLite (dev/test) format dates differently. Bucket a timestamp to a
+# "YYYY-MM-DD" string in SQL - grouped in the database, so a chart load never pulls a
+# project's whole trace history into memory - via the right function for the active dialect.
+_DIALECT = engine.dialect.name
+
+
+def _day_bucket(col):
+    if _DIALECT == "sqlite":
+        return func.strftime("%Y-%m-%d", col)
+    return func.to_char(func.date_trunc("day", col), "YYYY-MM-DD")
 
 
 # --- response models (typed contract for the generated OpenAPI schema) --------------------
@@ -83,6 +95,64 @@ class ProjectStatsOut(BaseModel):
     last_7d: RollupOut
     assistant: AssistantRollupOut
     reports: list[ReportRowOut]
+
+
+# --- analytics dashboard (time-series + breakdowns over a date range) ---------------------
+
+class TimeBucketOut(BaseModel):
+    date: str            # "YYYY-MM-DD" (one point per day across the whole range, gaps zero-filled)
+    runs: int
+    tokens: int
+    cost_usd: float
+    avg_latency_ms: int
+    errors: int
+    success: int
+
+
+class SourceRollupOut(RollupOut):
+    source: str
+
+
+class ToolStatOut(BaseModel):
+    name: str
+    calls: int
+    avg_latency_ms: int
+    errors: int
+    cost_usd: float
+    tokens: int
+
+
+class ModelStatOut(BaseModel):
+    model: str
+    calls: int
+    tokens: int
+    cost_usd: float
+    avg_latency_ms: int
+
+
+class LatencyBucketOut(BaseModel):
+    label: str
+    count: int
+
+
+class AnalyticsRangeOut(BaseModel):
+    days: int
+    since: str
+    until: str
+    bucket: str
+
+
+class AnalyticsOut(BaseModel):
+    range: AnalyticsRangeOut
+    totals: RollupOut               # windowed over the selected range
+    prev_totals: RollupOut          # the immediately-preceding window of equal length (for deltas)
+    timeseries: list[TimeBucketOut]
+    by_source: list[SourceRollupOut]
+    by_workflow: list[ReportRowOut]
+    tools: list[ToolStatOut]
+    models: list[ModelStatOut]
+    latency_histogram: list[LatencyBucketOut]
+    recent: list[RecentRunOut]
 
 # When a trace has no start time, fall back to its insert time (matches the old
 # `t.started_at or t.created_at`) for the 7-day activity window.
@@ -264,4 +334,202 @@ async def project_stats(project_id: str, session: AsyncSession = Depends(get_ses
         "last_7d": last_7d,
         "assistant": assistant,
         "reports": reports,
+    }
+
+
+# Fixed latency buckets for the distribution histogram (upper bound in ms; None = open-ended).
+_LATENCY_BUCKETS: list[tuple[str, int | None]] = [
+    ("<250ms", 250), ("250-500ms", 500), ("500ms-1s", 1000), ("1-2s", 2000),
+    ("2-5s", 5000), ("5-10s", 10000), (">10s", None),
+]
+
+
+def _ts_row(row) -> dict:
+    """Fold one daily aggregate row into a time-series point (adds a success count)."""
+    runs = int(row.runs or 0)
+    return {
+        "date": row.day,
+        "runs": runs,
+        "tokens": int(row.tokens or 0),
+        "cost_usd": round(float(row.cost or 0.0), 6),
+        "avg_latency_ms": int((row.latency_sum or 0) / runs) if runs else 0,
+        "errors": int(row.errors or 0),
+        "success": int(row.success or 0),
+    }
+
+
+@router.get("/projects/{project_id}/analytics", response_model=AnalyticsOut)
+async def project_analytics(
+    project_id: str,
+    days: int = 30,
+    session: AsyncSession = Depends(get_session),
+    tenant_id: str = Depends(current_tenant_id),
+):
+    """Time-series + breakdowns for the project Analytics dashboard, over the last `days`.
+
+    Everything is a grouped SQL aggregate (daily buckets, per-source, per-workflow, and
+    per-tool/per-model spans) so a dashboard load returns a bounded number of rows no matter
+    how large the trace history is. The previous equal-length window is rolled up too, so the
+    UI can show period-over-period deltas on each KPI.
+    """
+    days = max(1, min(days, 365))
+    now = datetime.utcnow()
+    since = now - timedelta(days=days)
+    prev_since = since - timedelta(days=days)
+    scope = (Trace.tenant_id == tenant_id, Trace.project_id == project_id)
+    span_scope = (Trace.tenant_id == tenant_id, Trace.project_id == project_id, _ACTIVITY >= since)
+
+    totals = _rollup((await session.execute(select(*_agg_columns()).where(*scope, _ACTIVITY >= since))).one())
+    prev_totals = _rollup(
+        (await session.execute(select(*_agg_columns()).where(*scope, _ACTIVITY >= prev_since, _ACTIVITY < since))).one()
+    )
+
+    # Daily time-series: one grouped row per calendar day present, then zero-fill the gaps so
+    # the chart draws a continuous line across the whole range.
+    day = _day_bucket(_ACTIVITY).label("day")
+    ts_rows = (await session.execute(
+        select(
+            day, *_agg_columns(),
+            func.coalesce(func.sum(case((Trace.status.in_(("done", "interrupted")), 1), else_=0)), 0).label("success"),
+        ).where(*scope, _ACTIVITY >= since).group_by(day).order_by(day)
+    )).all()
+    by_day = {r.day: _ts_row(r) for r in ts_rows}
+    timeseries: list[dict] = []
+    cursor = since.date()
+    end = now.date()
+    while cursor <= end:
+        key = cursor.isoformat()
+        timeseries.append(by_day.get(key) or {
+            "date": key, "runs": 0, "tokens": 0, "cost_usd": 0.0, "avg_latency_ms": 0, "errors": 0, "success": 0,
+        })
+        cursor += timedelta(days=1)
+
+    # Per-source rollup (playground / api / embed / channels / assistant / ...).
+    src_rows = (await session.execute(
+        select(Trace.source, *_agg_columns()).where(*scope, _ACTIVITY >= since).group_by(Trace.source)
+    )).all()
+    by_source = [{"source": r.source or "-", **_rollup(r)} for r in src_rows]
+    by_source.sort(key=lambda r: r["runs"], reverse=True)
+
+    # Per-workflow (+ assistant + name-keyed "other") report rows, same shape as project_stats.
+    kind = case(
+        (Trace.name == "assistant", "assistant"),
+        (Trace.workflow_id.isnot(None), "workflow"),
+        else_="other",
+    ).label("kind")
+    ident = case(
+        (Trace.name == "assistant", "assistant"),
+        (Trace.workflow_id.isnot(None), Trace.workflow_id),
+        else_=Trace.name,
+    ).label("ident")
+    grouped = (await session.execute(
+        select(kind, ident, *_agg_columns()).where(*scope, _ACTIVITY >= since).group_by(kind, ident)
+    )).all()
+    wf_names: dict[str, str] = {wid: name for wid, name in (await session.execute(
+        select(Workflow.id, Workflow.name).where(Workflow.tenant_id == tenant_id, Workflow.project_id == project_id)
+    )).all()}
+    by_workflow = []
+    for r in grouped:
+        if r.kind == "assistant":
+            label = "Forge Assistant"
+        elif r.kind == "workflow":
+            label = wf_names.get(r.ident, "(deleted workflow)")
+        else:
+            label = r.ident
+        by_workflow.append({"label": label, "kind": r.kind, **_rollup(r)})
+    by_workflow.sort(key=lambda r: r["cost_usd"], reverse=True)
+
+    # Tool + model breakdowns from spans, joined to their trace for tenant/project/window scope.
+    span_lat = func.coalesce(func.sum(Span.latency_ms), 0).label("latency_sum")
+    span_calls = func.count().label("calls")
+    span_tokens = func.coalesce(func.sum(Span.input_tokens + Span.output_tokens), 0).label("tokens")
+    span_cost = func.coalesce(func.sum(Span.cost_usd), 0.0).label("cost")
+
+    tool_rows = (await session.execute(
+        select(
+            Span.name, span_calls, span_lat, span_tokens, span_cost,
+            func.coalesce(func.sum(case((Span.error.isnot(None), 1), else_=0)), 0).label("errors"),
+        ).join(Trace, Trace.id == Span.trace_id)
+        .where(*span_scope, Span.kind == "tool")
+        .group_by(Span.name).order_by(span_calls.desc()).limit(12)
+    )).all()
+    tools = [
+        {
+            "name": r.name,
+            "calls": int(r.calls or 0),
+            "avg_latency_ms": int((r.latency_sum or 0) / r.calls) if r.calls else 0,
+            "errors": int(r.errors or 0),
+            "cost_usd": round(float(r.cost or 0.0), 6),
+            "tokens": int(r.tokens or 0),
+        }
+        for r in tool_rows
+    ]
+
+    model_rows = (await session.execute(
+        select(Span.model, span_calls, span_lat, span_tokens, span_cost)
+        .join(Trace, Trace.id == Span.trace_id)
+        .where(*span_scope, Span.kind == "llm", Span.model.isnot(None))
+        .group_by(Span.model).order_by(span_cost.desc()).limit(12)
+    )).all()
+    models = [
+        {
+            "model": r.model,
+            "calls": int(r.calls or 0),
+            "tokens": int(r.tokens or 0),
+            "cost_usd": round(float(r.cost or 0.0), 6),
+            "avg_latency_ms": int((r.latency_sum or 0) / r.calls) if r.calls else 0,
+        }
+        for r in model_rows
+    ]
+
+    # Latency distribution: one row, a conditional count per bucket (SQL-side, no row scan).
+    hist_cols = []
+    lo = 0
+    for i, (_, hi) in enumerate(_LATENCY_BUCKETS):
+        if hi is None:
+            cond = Trace.latency_ms >= lo
+        elif lo == 0:
+            cond = Trace.latency_ms < hi
+        else:
+            cond = (Trace.latency_ms >= lo) & (Trace.latency_ms < hi)
+        hist_cols.append(func.coalesce(func.sum(case((cond, 1), else_=0)), 0).label(f"b{i}"))
+        lo = hi or lo
+    hist_row = (await session.execute(select(*hist_cols).where(*scope, _ACTIVITY >= since))).one()
+    latency_histogram = [
+        {"label": label, "count": int(getattr(hist_row, f"b{i}") or 0)}
+        for i, (label, _) in enumerate(_LATENCY_BUCKETS)
+    ]
+
+    # 8 most recent runs in the window (for the activity feed).
+    recent_rows = (await session.execute(
+        select(
+            Trace.id, Trace.workflow_id, Trace.name, Trace.status,
+            Trace.total_tokens, Trace.latency_ms, Trace.total_cost_usd, Trace.started_at,
+        ).where(*scope, _ACTIVITY >= since).order_by(Trace.started_at.desc()).limit(8)
+    )).all()
+    recent = [
+        {
+            "id": r.id,
+            "workflow": wf_names.get(r.workflow_id or "", r.name or "run"),
+            "project": "",
+            "status": r.status,
+            "tokens": r.total_tokens,
+            "latency_ms": r.latency_ms,
+            "cost_usd": round(r.total_cost_usd or 0.0, 6),
+            "started_at": r.started_at.isoformat() if r.started_at else None,
+        }
+        for r in recent_rows
+    ]
+
+    return {
+        "range": {"days": days, "since": since.isoformat(), "until": now.isoformat(), "bucket": "day"},
+        "totals": totals,
+        "prev_totals": prev_totals,
+        "timeseries": timeseries,
+        "by_source": by_source,
+        "by_workflow": by_workflow,
+        "tools": tools,
+        "models": models,
+        "latency_histogram": latency_histogram,
+        "recent": recent,
     }
