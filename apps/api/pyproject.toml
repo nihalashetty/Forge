@@ -87,7 +87,7 @@ dev = [
   "anyio>=4.6",
   # Pin the minor so CI lint is reproducible (an unbounded ruff pulls new rule sets that
   # can turn CI red without a code change). Bump deliberately.
-  "ruff>=0.15,<0.16",
+  "ruff>=0.15,<0.17",
   "mypy>=1.13,<3",
 ]
 
