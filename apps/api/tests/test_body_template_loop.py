@@ -230,3 +230,45 @@ def test_a_literal_dollar_mime_string_does_not_trigger_structural_rendering():
     body_template = '{ "note": "use $mime for email", "qty": {{input.qty}} }'
     body = _build_body({"body_template": body_template}, [], {"qty": 3}, {})
     assert body == {"note": "use $mime for email", "qty": 3}
+
+
+# --- interpolating a list/dict into a JSON body ----------------------------------------------
+#
+# `str()` on a list yields Python's repr - single quotes, True/None - which is not JSON. The body
+# then fails to parse and is sent as raw text, and the API answers 400. It only ever showed up on
+# STRING data: `[[1, 2]]` is valid JSON by coincidence, `[['a', 'b']]` is not.
+
+def test_embedded_list_renders_as_json_not_python_repr():
+    body = _build_body({"body_template": '{"values":{{input.rows}}}'},
+                       [{"path": "rows", "in": "body", "type": "array"}],
+                       {"rows": [["Test Data 1", "Test Data 2"]]}, {})
+    assert body == {"values": [["Test Data 1", "Test Data 2"]]}
+
+
+def test_embedded_dict_renders_as_json():
+    body = _build_body({"body_template": '{"fields":{{input.fields}}}'},
+                       [{"path": "fields", "in": "body", "type": "object"}],
+                       {"fields": {"Name": "Ada", "Active": True, "Notes": None}}, {})
+    assert body == {"fields": {"Name": "Ada", "Active": True, "Notes": None}}
+
+
+def test_embedded_list_of_numbers_still_works():
+    """The case that accidentally passed before, which is why this went unnoticed."""
+    body = _build_body({"body_template": '{"values":{{input.rows}}}'},
+                       [{"path": "rows", "in": "body", "type": "array"}],
+                       {"rows": [[1, 2]]}, {})
+    assert body == {"values": [[1, 2]]}
+
+
+def test_embedded_scalars_keep_their_plain_string_form():
+    """Only containers change. A bare token in a query string still renders "False"/"0", which is
+    what that context wants - see test_render_template_embedded_falsy_values_are_not_dropped."""
+    assert render_template("on={{input.flag}}", {"input": {"flag": False}}) == "on=False"
+    assert render_template("qty={{input.qty}}", {"input": {"qty": 0}}) == "qty=0"
+
+
+def test_non_ascii_in_an_interpolated_list_is_not_escaped_away():
+    body = _build_body({"body_template": '{"values":{{input.rows}}}'},
+                       [{"path": "rows", "in": "body", "type": "array"}],
+                       {"rows": [["café", "naïve"]]}, {})
+    assert body == {"values": [["café", "naïve"]]}

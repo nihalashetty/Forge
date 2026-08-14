@@ -2,7 +2,7 @@
   "format": "forge.connector/1",
   "slug": "google-sheets",
   "name": "Google Sheets",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "publisher": "forge",
   "summary": "Read and append rows in a Google Sheets spreadsheet.",
   "categories": [
@@ -86,8 +86,8 @@
       },
       {
         "name": "sheets_append_row",
-        "display_name": "Append row",
-        "description": "Append one row to the end of a range. `values` is a list of cell values, left to right.",
+        "display_name": "Append rows",
+        "description": "Append one or more rows after the last row of data in a range. `rows` is ALWAYS a list of rows, even when adding a single row: [[\"a\",1]] adds one row, [[\"a\",1],[\"b\",2]] adds two. Send every row in ONE call rather than calling this repeatedly.",
         "request": {
           "method": "POST",
           "url_template": "/{spreadsheet_id}/values/{range}:append",
@@ -110,12 +110,12 @@
               "description": "A1 range to append into, e.g. Sheet1!A:D."
             },
             {
-              "path": "values",
+              "path": "rows",
               "in": "body",
               "type": "array",
               "required": true,
               "llm_visible": true,
-              "description": "Cell values for the new row, left to right."
+              "description": "Rows to append. Each row is a list of cell values, left to right."
             },
             {
               "path": "valueInputOption",
@@ -124,9 +124,17 @@
               "required": false,
               "llm_visible": false,
               "default": "USER_ENTERED"
+            },
+            {
+              "path": "insertDataOption",
+              "in": "query",
+              "type": "string",
+              "required": false,
+              "llm_visible": false,
+              "default": "INSERT_ROWS"
             }
           ],
-          "body_template": "{\"values\":[{{input.values}}]}"
+          "body_template": "{\"values\": {{input.rows}}}"
         },
         "response": {
           "projection_jmespath": "updates.{range: updatedRange, rows: updatedRows}"

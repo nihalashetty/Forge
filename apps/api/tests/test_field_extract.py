@@ -96,3 +96,38 @@ async def test_extract_bounds_the_subject_it_matches():
     url = await _call("x" * 10000 + "/spreadsheets/d/TOO_LATE/edit")
     assert "/spreadsheets/TOO_LATE/values/" not in url, "matched past the bound"
     assert "/spreadsheets/xxx" in url, "the value should be passed through untouched"
+
+
+# --- Sheets write shape ----------------------------------------------------------------------
+#
+# `values` in the Sheets API is ALWAYS a 2-D array (a list of rows). The append action used to
+# take a 1-D "cells of the one new row" and wrap it, so asking for 100 rows - where the model
+# naturally sends 2-D - produced a 3-D array and a 400.
+
+def _write_body(action_name: str, args: dict) -> dict:
+    from forge.tools.rest import _build_body
+
+    a = next(x for x in get_manifest("google-sheets").backend.actions if x.name == action_name)
+    return _build_body(a.request, a.request["fields"], args, {})
+
+
+@pytest.mark.parametrize("action", ["sheets_append_row", "sheets_update_range"])
+@pytest.mark.parametrize("rows", [
+    [["one row"]],
+    [["Test Data 1", "Test Data 2"], ["Test Data 5", "Test Data 6"]],
+    [[f"row {i}", i] for i in range(100)],
+])
+def test_sheets_writes_are_always_a_2d_array(action: str, rows: list):
+    body = _write_body(action, {"rows": rows})
+    assert isinstance(body, dict), "body must parse as JSON, not fall through as raw text"
+    assert body["values"] == rows, "rows must reach the API unchanged - not wrapped, not repr'd"
+
+
+def test_sheets_append_takes_rows_not_a_single_row():
+    """The regression guard for 'add random 100 row': one row and many rows are the same shape."""
+    a = next(x for x in get_manifest("google-sheets").backend.actions if x.name == "sheets_append_row")
+    args = {f["path"] for f in a.request["fields"]}
+    assert "rows" in args and "values" not in args
+    # Appending must not overwrite whatever sits below the table.
+    insert = next(f for f in a.request["fields"] if f["path"] == "insertDataOption")
+    assert insert["default"] == "INSERT_ROWS"

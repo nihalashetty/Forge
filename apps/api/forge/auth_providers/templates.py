@@ -11,6 +11,7 @@ template can build a variable-length array from one list-valued arg (see `_rende
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Collection
 from typing import Any
@@ -47,7 +48,16 @@ def _sub_one(mm: re.Match, vars: dict, strict_ns: Collection[str] = ()) -> str:
     # value (None) becomes empty - a falsy-but-real value like 0 or False must render as "0"/
     # "False", not "" (an `x or ""` here would silently drop legitimate zeros/booleans).
     v = _lookup(mm.group(1), vars, strict_ns)
-    return "" if v is None else str(v)
+    if v is None:
+        return ""
+    # A list/dict interpolated into a body template is being placed into JSON - `str()` there
+    # yields Python's repr (single quotes, True/None), which is not JSON, so the body fails to
+    # parse and gets sent as raw text. `[[1, 2]]` happens to be valid JSON and `[['a', 'b']]` is
+    # not, which is why this only ever showed up on string data. Scalars keep str(): a bare
+    # `{{input.flag}}` in a query string renders "False", which is what that context wants.
+    if isinstance(v, (list, dict)):
+        return json.dumps(v, ensure_ascii=False)
+    return str(v)
 
 
 def render_template(s: str, vars: dict, *, strict_ns: Collection[str] = ()) -> Any:
