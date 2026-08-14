@@ -571,13 +571,21 @@ class ConnectorInstaller:
         if not isinstance(backend, RestBackend):
             return len(install.created_tool_ids or [])
 
-        rows = (await session.execute(
+        rows = list((await session.execute(
             select(Tool).where(
                 Tool.tenant_id == install.tenant_id, Tool.project_id == install.project_id,
                 Tool.id.in_(install.created_tool_ids or ["__none__"]),
             )
-        )).scalars()
+        )).scalars())
         by_name = {t.name: t for t in rows}
+        # An action this install ALREADY created that no longer has a row was deleted on purpose
+        # - a project that removed "send email" made a decision. Recreating it on refresh would
+        # quietly hand back a capability someone took away. The frozen manifest says what this
+        # install created, so a name in there with no live row is a deliberate deletion, while a
+        # name absent from it is genuinely new in the upgrade and worth adding.
+        previously_declared = {
+            a.name for a in (frozen.backend.actions if isinstance(frozen.backend, RestBackend) else [])
+        }
 
         ts = await ToolSetService.get(session, install.tenant_id, install.tool_set_id or "")
         # The non-secret values THIS install was created with (a Jira site, a custom connector's
@@ -604,6 +612,10 @@ class ConnectorInstaller:
                 if (tool.config or {}) != cfg:
                     tool.config = cfg
                     changed += 1
+                continue
+            if action.name in previously_declared:
+                log.info("connector %s: leaving %s deleted (removed from this project on purpose)",
+                         install.slug, action.name)
                 continue
             created = await ToolService.create(
                 session, install.tenant_id, install.project_id,
@@ -696,7 +708,7 @@ class ConnectorInstaller:
                 await session.delete(client)
                 await session.commit()
                 from forge.tools.mcp import invalidate_client
-                invalidate_client(install.mcp_client_id)
+                await invalidate_client(install.mcp_client_id)
 
         if install.tool_set_id:
             ts = await ToolSetService.get(session, tenant_id, install.tool_set_id)

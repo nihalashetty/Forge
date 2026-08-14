@@ -933,3 +933,78 @@ async def test_examples_route_offers_the_key_based_manifests():
         assert stripe["needs"], "an example should say what it will ask for"
         # The payload is a manifest the custom form can install as-is.
         assert parse_manifest(stripe["manifest"]).slug == "stripe"
+
+
+async def test_refresh_does_not_resurrect_a_deliberately_deleted_action(google_app):
+    """A project that deleted "send email" made a decision. Picking up a manifest fix must not
+    quietly hand the capability back."""
+    from forge.services.tools import ToolService
+
+    tenant, project = "t_upg4", "p_upg4"
+    install = await _install_catalog(tenant, project, "gmail")
+    async with SessionLocal() as s:
+        send = next(t for t in [await s.get(Tool, i) for i in install.created_tool_ids]
+                    if t.name == "gmail_send_message")
+        gone_id = send.id
+        await ToolService.delete(s, send)
+
+    async with SessionLocal() as s:
+        row = await ConnectorInstaller.get_install(s, tenant, project, "gmail")
+        await ConnectorInstaller().sync_tools(s, row)
+
+    async with SessionLocal() as s:
+        row = await ConnectorInstaller.get_install(s, tenant, project, "gmail")
+        live = [t for t in [await s.get(Tool, i) for i in row.created_tool_ids] if t is not None]
+    assert gone_id not in [t.id for t in live]
+    assert "gmail_send_message" not in {t.name for t in live}, "refresh restored a removed capability"
+    # ...while the actions that ARE still there were refreshed as usual.
+    assert "gmail_search_messages" in {t.name for t in live}
+
+
+async def test_refresh_still_adds_an_action_new_in_the_upgrade(google_app):
+    """The mirror case: a name the install never created is genuinely new and must appear."""
+    tenant, project = "t_upg5", "p_upg5"
+    install = await _install_catalog(tenant, project, "gmail")
+    before = len(install.created_tool_ids)
+
+    # Rewind the frozen manifest so one existing action reads as "not created by this install",
+    # which is exactly the shape of an action added by a later catalog version.
+    async with SessionLocal() as s:
+        row = await ConnectorInstaller.get_install(s, tenant, project, "gmail")
+        trimmed = {**row.manifest}
+        trimmed["backend"] = {**trimmed["backend"], "actions": [
+            a for a in trimmed["backend"]["actions"] if a["name"] != "gmail_list_labels"
+        ]}
+        row.manifest = trimmed
+        listing = next(t for t in [await s.get(Tool, i) for i in row.created_tool_ids]
+                       if t.name == "gmail_list_labels")
+        row.created_tool_ids = [i for i in row.created_tool_ids if i != listing.id]
+        from forge.services.tools import ToolService
+        await ToolService.delete(s, listing)
+        await s.commit()
+
+    async with SessionLocal() as s:
+        row = await ConnectorInstaller.get_install(s, tenant, project, "gmail")
+        await ConnectorInstaller().sync_tools(s, row)
+
+    async with SessionLocal() as s:
+        row = await ConnectorInstaller.get_install(s, tenant, project, "gmail")
+        names = {t.name for t in [await s.get(Tool, i) for i in row.created_tool_ids] if t}
+    assert "gmail_list_labels" in names
+    assert len(row.created_tool_ids) == before
+
+
+async def test_refreshing_a_rest_connector_requires_editor(google_app):
+    """It rewrites project tool configs, which is a project-level write - unlike MCP discovery,
+    which only asks the vendor what it exposes using the caller's own credential."""
+    c, pid = await _editor_client()
+    async with aclosing(c):
+        tenant = (await c.get("/v1/auth/me")).json()["tenant_id"]
+        await c.post(f"/v1/projects/{pid}/connectors/gmail/connect", json={})
+
+    uid = await _make_user(tenant, "viewer-sync@example.com", "viewer")
+    c2 = await _client_for(uid, tenant, "viewer")
+    async with aclosing(c2):
+        r = await c2.post(f"/v1/projects/{pid}/connectors/gmail/sync")
+        assert r.status_code == 403
+        assert "editor" in r.json()["detail"]

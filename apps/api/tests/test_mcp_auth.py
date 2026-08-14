@@ -154,14 +154,71 @@ async def test_missing_provider_degrades_to_no_auth_rather_than_failing():
     assert auth is None and suffix == ""
 
 
-async def test_invalidate_client_drops_every_per_user_variant():
+class _FakeClient:
+    """Stands in for a MultiServerMCPClient so we can see whether it gets closed."""
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+async def test_invalidate_client_drops_and_closes_every_per_user_variant():
+    """Popping an entry without closing it strands a socket nothing will ever reclaim."""
     mcp_mod._CLIENT_CACHE.clear()
-    mcp_mod._CLIENT_CACHE["cid"] = (0.0, object())
-    mcp_mod._CLIENT_CACHE["cid::abc"] = (0.0, object())
-    mcp_mod._CLIENT_CACHE["cid::def"] = (0.0, object())
-    mcp_mod._CLIENT_CACHE["other"] = (0.0, object())
-    mcp_mod.invalidate_client("cid")
+    mine = {k: _FakeClient() for k in ("cid", "cid::abc", "cid::def")}
+    other = _FakeClient()
+    for k, c in mine.items():
+        mcp_mod._CLIENT_CACHE[k] = (0.0, c)
+    mcp_mod._CLIENT_CACHE["other"] = (0.0, other)
+
+    await mcp_mod.invalidate_client("cid")
+
     assert set(mcp_mod._CLIENT_CACHE) == {"other"}
+    assert all(c.closed for c in mine.values()), "dropped connections must be closed"
+    assert not other.closed, "an unrelated server's connection must survive"
+
+
+async def test_cache_is_bounded_so_per_user_keys_cannot_grow_without_limit():
+    """The cache key carries a per-user suffix and every catalog MCP connector is per-user, so
+    the cache grows with distinct PEOPLE. Without a ceiling a busy project pins one live
+    transport per user for the lifetime of the process."""
+    import time
+
+    mcp_mod._CLIENT_CACHE.clear()
+    now = time.monotonic()
+    clients = []
+    for i in range(mcp_mod._CACHE_MAX + 10):
+        c = _FakeClient()
+        clients.append(c)
+        # Ascending timestamps so "oldest" is unambiguous.
+        mcp_mod._CLIENT_CACHE[f"cid::{i:04d}"] = (now + i, c)
+
+    await mcp_mod._evict(now + len(clients))
+
+    assert len(mcp_mod._CLIENT_CACHE) == mcp_mod._CACHE_MAX
+    evicted = [c for c in clients if c.closed]
+    assert len(evicted) == 10
+    assert clients[:10] == evicted, "eviction should drop the oldest entries first"
+    mcp_mod._CLIENT_CACHE.clear()
+
+
+async def test_expired_entries_are_closed_not_merely_replaced():
+    import time
+
+    mcp_mod._CLIENT_CACHE.clear()
+    stale = _FakeClient()
+    fresh = _FakeClient()
+    now = time.monotonic()
+    mcp_mod._CLIENT_CACHE["a"] = (now - mcp_mod._CACHE_TTL - 1, stale)
+    mcp_mod._CLIENT_CACHE["b"] = (now, fresh)
+
+    await mcp_mod._evict(now)
+
+    assert set(mcp_mod._CLIENT_CACHE) == {"b"}
+    assert stale.closed and not fresh.closed
+    mcp_mod._CLIENT_CACHE.clear()
 
 
 def test_auth_context_from_puts_end_user_last():
@@ -175,3 +232,43 @@ def test_auth_context_from_puts_end_user_last():
     out = mcp_mod.auth_context_from(_Ctx())
     assert out["end_user_id"] == "real-user"
     assert out["csrf"] == "x"
+
+
+async def test_retry_after_401_does_not_double_apply_params_or_cookies():
+    """Headers overwrite on re-apply, but params are MERGED and the cookie jar is CONCATENATED.
+    Applying twice to the same request sends `?api_key=X&api_key=X` and `Cookie: s=1; s=1`,
+    which some servers reject - turning a recoverable 401 into a hard failure."""
+    import httpx
+
+    from forge.auth_providers.resolver import ResolvedAuth
+
+    class _Resolver:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def resolve(self, **kw):
+            self.calls += 1
+            return ResolvedAuth(
+                headers={"X-Auth": f"tok{self.calls}"},
+                params={"api_key": "K"},
+                cookies={"sess": "S"},
+            )
+
+    resolver = _Resolver()
+    auth = mcp_mod._ProviderAuth(resolver, tenant_id="t", project_id="p",
+                                 provider_id="ap", context={})
+    request = httpx.Request("POST", "https://mcp.example.com/mcp?keep=1")
+
+    flow = auth.async_auth_flow(request)
+    first = await flow.__anext__()
+    assert first.url.params.get_list("api_key") == ["K"]
+    try:
+        second = await flow.asend(httpx.Response(401, request=first))
+    except StopAsyncIteration:  # pragma: no cover - the retry is expected to happen
+        raise AssertionError("a 401 should have triggered exactly one retry") from None
+
+    assert second.url.params.get_list("api_key") == ["K"], "auth param was merged twice"
+    assert second.url.params.get("keep") == "1", "the request's own params must survive"
+    assert second.headers["Cookie"] == "sess=S", "cookie jar was concatenated twice"
+    assert second.headers["X-Auth"] == "tok2", "the retry must use the freshly forced credential"
+    assert resolver.calls == 2

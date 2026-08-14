@@ -107,7 +107,7 @@ async def update_client(project_id: str, client_id: str, body: McpClientPatch, s
     await session.refresh(m)
     # Drop the cached connection so running agents pick up the new config (audit F12).
     from forge.tools.mcp import invalidate_client
-    invalidate_client(client_id)
+    await invalidate_client(client_id)
     return _out(m)
 
 
@@ -147,5 +147,5 @@ async def delete_client(project_id: str, client_id: str, session: AsyncSession =
     await session.delete(m)
     await session.commit()
     from forge.tools.mcp import invalidate_client
-    invalidate_client(client_id)
+    await invalidate_client(client_id)
     return {"ok": True}

@@ -47,22 +47,49 @@ log = logging.getLogger("forge.mcp")
 # `close_all` is called on shutdown.
 _CLIENT_CACHE: dict[str, tuple[float, Any]] = {}
 _CACHE_TTL = 300.0  # seconds
+# Hard ceiling on live connections. The key carries a per-user suffix and every catalog MCP
+# connector is per-user, so the cache grows with DISTINCT PEOPLE, not distinct servers - a
+# project where 500 users each connect Notion would otherwise pin 500 transports for the life
+# of the process. The TTL alone doesn't bound it: it only replaces an entry when that same key
+# is asked for again, so an idle user's connection is never revisited and never released.
+_CACHE_MAX = 64
 
 
-def invalidate_client(client_id: str) -> None:
+async def _aclose(client: Any) -> None:
+    aclose = getattr(client, "aclose", None)
+    if aclose is not None:
+        with contextlib.suppress(Exception):
+            await aclose()
+
+
+async def _drop(key: str) -> None:
+    entry = _CLIENT_CACHE.pop(key, None)
+    if entry is not None:
+        await _aclose(entry[1])
+
+
+async def _evict(now: float) -> None:
+    """Release connections nobody is coming back for: first anything past its TTL, then the
+    least-recently-created entries once the cache is over its ceiling."""
+    for key in [k for k, (ts, _) in _CLIENT_CACHE.items() if now - ts > _CACHE_TTL]:
+        await _drop(key)
+    while len(_CLIENT_CACHE) > _CACHE_MAX:
+        await _drop(min(_CLIENT_CACHE, key=lambda k: _CLIENT_CACHE[k][0]))
+
+
+async def invalidate_client(client_id: str) -> None:
     """Drop every cached connection for a server so the next run reconnects with the latest
-    config - including all per-user variants, which share the `<client_id>::` prefix."""
+    config - including all per-user variants, which share the `<client_id>::` prefix.
+
+    Closes what it drops: a popped-but-open transport is a socket nothing will ever reclaim."""
     for key in [k for k in _CLIENT_CACHE if k == client_id or k.startswith(client_id + "::")]:
-        _CLIENT_CACHE.pop(key, None)
+        await _drop(key)
 
 
 async def close_all() -> None:
     """Best-effort close of every cached MCP client (transports/subprocesses) on shutdown."""
     for _, client in list(_CLIENT_CACHE.values()):
-        aclose = getattr(client, "aclose", None)
-        if aclose is not None:
-            with contextlib.suppress(Exception):
-                await aclose()
+        await _aclose(client)
     _CLIENT_CACHE.clear()
 
 
@@ -137,9 +164,21 @@ class _ProviderAuth(httpx.Auth):
             request.url = request.url.copy_merge_params(resolved.params)
 
     async def async_auth_flow(self, request: httpx.Request):
+        # Snapshot the pre-auth URL and Cookie so the retry re-applies onto a CLEAN request.
+        # Headers are set by assignment and overwrite, but params are MERGED and the cookie jar
+        # is CONCATENATED - applying twice to the same mutated request would send
+        # `?api_key=X&api_key=X` and `Cookie: s=1; s=1`, which some servers reject outright,
+        # turning a recoverable 401 into a hard failure.
+        original_url = request.url
+        original_cookie = request.headers.get("Cookie")
         await self._apply(request, force=False)
         response = yield request
         if response.status_code in (401, 403):
+            request.url = original_url
+            if original_cookie is None:
+                request.headers.pop("Cookie", None)
+            else:
+                request.headers["Cookie"] = original_cookie
             await self._apply(request, force=True)
             yield request
 
@@ -170,7 +209,13 @@ async def _auth_for(client_row: McpClient, tenant_id: str, project_id: str, cont
 
 
 async def _connection_for(client_row: McpClient, tenant_id: str, project_id: str,
-                          context: dict | None = None) -> dict:
+                          context: dict | None = None, auth: httpx.Auth | None = None) -> dict:
+    """Build the langchain-mcp-adapters connection dict for a server.
+
+    `auth` lets a caller that has ALREADY resolved the provider hand it in - `_auth_for` does a
+    DB read, and computing the cache-key suffix plus building the connection would otherwise
+    query the same AuthProvider row twice on the path every agent turn takes.
+    """
     from forge.config import settings
 
     transport = client_row.transport or "streamable_http"
@@ -206,7 +251,8 @@ async def _connection_for(client_row: McpClient, tenant_id: str, project_id: str
     # stdio has no HTTP layer to attach auth to; a provider on a stdio server is a config
     # mistake rather than something to silently half-apply.
     if transport != "stdio":
-        auth, _suffix = await _auth_for(client_row, tenant_id, project_id, context)
+        if auth is None:
+            auth, _suffix = await _auth_for(client_row, tenant_id, project_id, context)
         if auth is not None:
             conn["auth"] = auth
     return conn
@@ -216,13 +262,16 @@ async def _client_and_tools(client_row: McpClient, tenant_id: str, project_id: s
                             context: dict | None = None):
     MultiServerMCPClient = _require_adapters()
     now = time.monotonic()
-    _auth, suffix = await _auth_for(client_row, tenant_id, project_id, context)
+    auth, suffix = await _auth_for(client_row, tenant_id, project_id, context)
     key = client_row.id + suffix
     entry = _CLIENT_CACHE.get(key)
     if entry is None or (now - entry[0]) > _CACHE_TTL:
-        conn = await _connection_for(client_row, tenant_id, project_id, context)
+        await _drop(key)  # close the expired connection rather than orphaning it
+        # Reuse the provider we just resolved instead of making _connection_for re-read it.
+        conn = await _connection_for(client_row, tenant_id, project_id, context, auth=auth)
         client = MultiServerMCPClient({client_row.name: conn})
         _CLIENT_CACHE[key] = (now, client)
+        await _evict(now)
     else:
         client = entry[1]
     tools = await client.get_tools()
@@ -237,11 +286,17 @@ async def discover_tools(client_row: McpClient, tenant_id: str, project_id: str,
     current McpClient config, and drops any stale cached client so the next run
     reconnects with the latest settings. Raises McpUnavailable / connection errors.
     """
-    invalidate_client(client_row.id)
+    await invalidate_client(client_row.id)
     MultiServerMCPClient = _require_adapters()
     conn = await _connection_for(client_row, tenant_id, project_id, context)
     client = MultiServerMCPClient({client_row.name: conn})
-    tools = await client.get_tools()
+    # This client is deliberately NOT cached, so nothing else will ever close it. Discovery runs
+    # on every connect callback and every "Refresh actions" click, so dropping it on return
+    # would leak one transport per click.
+    try:
+        tools = await client.get_tools()
+    finally:
+        await _aclose(client)
     return [{"name": t.name, "description": (getattr(t, "description", "") or "").strip()} for t in tools]
 
 

@@ -253,24 +253,24 @@ def _build_body(req: dict, fields: list[dict], values: dict, context: dict | Non
                 parsed = None
             if parsed is not None and has_structural_directive(parsed):
                 return render_value(parsed, tvars, allow_each=True, strict_ns=_STRICT_NS)
-        # Two passes, because a template is either a JSON document or it isn't and we can't know
-        # which without trying. The first JSON-escapes substituted strings so that model-written
-        # text containing a newline or a quote can't terminate a JSON string early - which is what
-        # silently turned a note body into an unparseable body, and then into raw text the API
-        # rejected. If that parses, it was JSON. If it doesn't, re-render literally so a
-        # form-encoded or plain-text template still gets its values verbatim.
-        rendered = render_template(tmpl, tvars, strict_ns=_STRICT_NS, escape_json=True)
+        # Substituted strings are JSON-escaped when the template IS a JSON document, so that
+        # model-written text containing a newline or a quote can't terminate a JSON string early
+        # - which is what silently turned a note body into an unparseable body, and then into raw
+        # text the API rejected. A form-encoded or plain-text template must NOT be escaped, and
+        # is recognised by its opening character rather than by rendering it twice and seeing
+        # which one parses.
+        as_json = tmpl.lstrip()[:1] in ("{", "[")
+        rendered = render_template(tmpl, tvars, strict_ns=_STRICT_NS, escape_json=as_json)
         if isinstance(rendered, (dict, list)):
             return rendered
         if isinstance(rendered, str):
-            if not rendered.strip():
+            s = rendered.strip()
+            if not s:
                 return None
             try:
-                return _json.loads(rendered.strip())
+                return _json.loads(s)
             except ValueError:
-                pass
-            literal = render_template(tmpl, tvars, strict_ns=_STRICT_NS)
-            return literal if not isinstance(literal, str) else literal.strip()
+                return s  # non-JSON body (e.g. application/x-www-form-urlencoded) -> raw content
         return rendered
     return _collect(fields, values, "body") or None
 

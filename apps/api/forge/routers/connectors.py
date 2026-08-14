@@ -62,6 +62,7 @@ from forge.deps import (
 from forge.models import AuthProvider, ConnectorInstall, Tool
 from forge.secrets.store import SecretNotFound, SecretStore
 from forge.services.auth_providers import AuthProviderService
+from forge.util.locks import KeyedLocks
 
 log = logging.getLogger("forge.connectors")
 
@@ -477,6 +478,14 @@ async def _install_on_demand(request: Request, session: AsyncSession, tenant_id:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
 
 
+#: Serializes the once-per-install discovery + dynamic client registration. Two people clicking
+#: Connect on the same connector in the same second would otherwise both register a client and
+#: both write the credential: last writer wins, and the first person's browser is already sitting
+#: on an authorize URL carrying a client_id whose secret has just been replaced, so their callback
+#: fails at the token exchange with nothing to explain it.
+_discovery_locks = KeyedLocks()
+
+
 async def _ensure_oauth_endpoints(session: AsyncSession, tenant_id: str, project_id: str,
                                   row: ConnectorInstall, ap: AuthProvider) -> None:
     """Fill in authorize/token endpoints (and a client registration) for a discovery connector.
@@ -484,8 +493,20 @@ async def _ensure_oauth_endpoints(session: AsyncSession, tenant_id: str, project
     Runs at most once per install: the discovered values are written back onto the provider
     config, so the second connect is a plain authorize-URL build with no extra round trips.
     """
+    if not (ap.config or {}).get("oauth_discover"):
+        return
+    lock = await _discovery_locks.acquire_cm(f"{tenant_id}:{project_id}:{ap.id}")
+    async with lock:
+        # Re-read INSIDE the lock: a peer may have completed the whole dance while we waited,
+        # in which case there is nothing left to do and re-registering would replace their app.
+        await session.refresh(ap)
+        await _discover_and_register(session, tenant_id, project_id, row, ap)
+
+
+async def _discover_and_register(session: AsyncSession, tenant_id: str, project_id: str,
+                                 row: ConnectorInstall, ap: AuthProvider) -> None:
     cfg = dict(ap.config or {})
-    if not cfg.get("oauth_discover") or (cfg.get("authorize_url") and cfg.get("token_url")):
+    if cfg.get("authorize_url") and cfg.get("token_url"):
         return
     manifest = parse_manifest(row.manifest or {})
     if not isinstance(manifest.backend, McpBackend):
@@ -581,18 +602,29 @@ async def connector_status(project_id: str, slug: str, session: AsyncSession = D
 
 
 @router.post("/{slug}/sync")
-async def sync_connector(project_id: str, slug: str, session: AsyncSession = Depends(get_session),
+async def sync_connector(request: Request, project_id: str, slug: str,
+                         session: AsyncSession = Depends(get_session),
                          tenant_id: str = Depends(current_tenant_id),
                          user: CurrentUser = Depends(get_current_user)):
-    """Re-discover an MCP connector's actions (after connecting, or when the vendor ships new
-    tools). Existing tool rows are reused, so workflow nodes and agent grants keep their ids.
+    """Bring a connector's actions back in line with its manifest.
 
-    Asks the server with the CALLER's credential, because that is the only one a per-user
-    connector has. Open to anyone who can connect rather than editor-only: the rows it creates
-    are entirely determined by what the vendor advertises for a connector an editor already
-    added, and gating it would leave whoever actually signed in staring at zero actions.
+    Two different operations behind one button, with two different gates:
+
+    * MCP - ask the server what it exposes, using the CALLER's credential because that is the
+      only one a per-user connector has. Open to anyone who can connect: gating it would leave
+      whoever actually signed in staring at zero actions, and the rows created are entirely
+      determined by what the vendor advertises for a connector an editor already added.
+    * REST - re-apply the bundled manifest over existing Tool rows. That is a project-level
+      write (it rewrites tool configs everyone's workflows run), so it stays editor-gated even
+      though the values are deterministic.
     """
     row = await _load_install(session, tenant_id, project_id, slug)
+    if (row.manifest or {}).get("backend", {}).get("type") != "mcp":
+        if not role_at_least(await effective_role(user, request), "editor"):
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                "refreshing this connector's actions rewrites project tools - requires role 'editor'",
+            )
     context = {"end_user_id": str(user.id)} if row.auth_mode == "per_user" else None
     try:
         count = await ConnectorInstaller().sync_tools(session, row, context=context)

@@ -98,6 +98,11 @@ async def discover(mcp_url: str, *, client=None) -> dict[str, Any]:
         # fallback issuer, which is what most single-tenant servers implement.
         as_urls = [origin]
 
+    # Endpoints are accumulated PER SERVER and only merged in once one server has yielded a
+    # complete pair. Accumulating straight into `out` would let an authorization server that
+    # advertises only an authorize endpoint be paired with a token endpoint from the NEXT
+    # server in the list - a config that looks valid and then fails the exchange, because the
+    # consent and the token call went to different issuers.
     for as_url in as_urls:
         as_origin = _origin(as_url)
         as_path = urlparse(as_url).path.rstrip("/")
@@ -111,18 +116,17 @@ async def discover(mcp_url: str, *, client=None) -> dict[str, Any]:
             meta = await _get_json(candidate, client=client)
             if not meta:
                 continue
-            if meta.get("authorization_endpoint"):
-                out["authorize_url"] = meta["authorization_endpoint"]
-            if meta.get("token_endpoint"):
-                out["token_url"] = meta["token_endpoint"]
+            if not (meta.get("authorization_endpoint") and meta.get("token_endpoint")):
+                continue
+            out["authorize_url"] = meta["authorization_endpoint"]
+            out["token_url"] = meta["token_endpoint"]
             if meta.get("registration_endpoint"):
                 out["registration_url"] = meta["registration_endpoint"]
             if meta.get("issuer"):
                 out["issuer"] = meta["issuer"]
             if meta.get("scopes_supported") and "scopes_supported" not in out:
                 out["scopes_supported"] = meta["scopes_supported"]
-            if out.get("authorize_url") and out.get("token_url"):
-                return out
+            return out
     return out
 
 
