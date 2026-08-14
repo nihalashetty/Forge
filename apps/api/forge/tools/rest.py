@@ -501,6 +501,23 @@ async def execute_rest(
                 if isinstance(parsed, (list, dict)):
                     values[f["path"]] = parsed
 
+    # A field may declare `extract`: a regex that pulls the real value out of something a PERSON
+    # would paste. Opaque ids (a Google Sheets key, a Notion page id) live inside a URL, and what
+    # a user actually says is "here's my sheet: https://docs.google.com/spreadsheets/d/1AbC…/edit".
+    # Without this the model either forwards the URL - which URL-encodes into a 404 - or, worse,
+    # invents an id from the document's NAME and gets a 404 that looks like a permissions problem.
+    # No match leaves the value untouched, so a bare id still passes straight through.
+    for f in fields:
+        pattern = f.get("extract")
+        v = values.get(f["path"])
+        if not pattern or not isinstance(v, str) or not v:
+            continue
+        # Bound the subject before matching: the pattern is authored (trusted) but the value is
+        # model-supplied, and an unbounded string is what turns a sloppy regex into a stall.
+        m = re.search(pattern, v[:4096])
+        if m:
+            values[f["path"]] = m.group(1) if m.groups() else m.group(0)
+
     # {{ctx.*}} is honored in the URL itself too (e.g. a base host, or a ?token= carried in run
     # context); {name} path params are then substituted from `values` as before.
     url_t = render_template(req["url_template"], ctx_vars, strict_ns=_STRICT_NS)

@@ -2,7 +2,7 @@
   "format": "forge.connector/1",
   "slug": "google-sheets",
   "name": "Google Sheets",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "publisher": "forge",
   "summary": "Read and append rows in a Google Sheets spreadsheet.",
   "categories": [
@@ -67,7 +67,8 @@
               "type": "string",
               "required": true,
               "llm_visible": true,
-              "description": "Spreadsheet id from its URL."
+              "description": "The spreadsheet's ID, or paste its full URL and Forge will pull the ID out. This is the long key in the sheet's link (docs.google.com/spreadsheets/d/<ID>/edit) - NOT the document's name. If you only know the name, ask the user for the link: a title cannot be turned into an ID. If Google Drive is also connected, drive_search_files with mimeType='application/vnd.google-apps.spreadsheet' resolves a name to an ID.",
+              "extract": "/spreadsheets/d/([a-zA-Z0-9_-]+)"
             },
             {
               "path": "range",
@@ -96,7 +97,9 @@
               "in": "path",
               "type": "string",
               "required": true,
-              "llm_visible": true
+              "llm_visible": true,
+              "description": "The spreadsheet's ID, or paste its full URL and Forge will pull the ID out. This is the long key in the sheet's link (docs.google.com/spreadsheets/d/<ID>/edit) - NOT the document's name. If you only know the name, ask the user for the link: a title cannot be turned into an ID. If Google Drive is also connected, drive_search_files with mimeType='application/vnd.google-apps.spreadsheet' resolves a name to an ID.",
+              "extract": "/spreadsheets/d/([a-zA-Z0-9_-]+)"
             },
             {
               "path": "range",
@@ -142,7 +145,9 @@
               "in": "path",
               "type": "string",
               "required": true,
-              "llm_visible": true
+              "llm_visible": true,
+              "description": "The spreadsheet's ID, or paste its full URL and Forge will pull the ID out. This is the long key in the sheet's link (docs.google.com/spreadsheets/d/<ID>/edit) - NOT the document's name. If you only know the name, ask the user for the link: a title cannot be turned into an ID. If Google Drive is also connected, drive_search_files with mimeType='application/vnd.google-apps.spreadsheet' resolves a name to an ID.",
+              "extract": "/spreadsheets/d/([a-zA-Z0-9_-]+)"
             },
             {
               "path": "range",

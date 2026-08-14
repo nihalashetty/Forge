@@ -2,7 +2,7 @@
   "format": "forge.connector/1",
   "slug": "google-drive",
   "name": "Google Drive",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "publisher": "forge",
   "summary": "Search Drive files and read document contents as text.",
   "categories": [
@@ -56,7 +56,7 @@
       {
         "name": "drive_search_files",
         "display_name": "Search files",
-        "description": "Search Drive. `q` uses Drive query syntax, e.g. \"name contains 'roadmap' and mimeType='application/vnd.google-apps.document'\".",
+        "description": "Search Drive and return each match's ID. `q` uses Drive query syntax, e.g. \"name contains 'roadmap' and mimeType='application/vnd.google-apps.document'\". This is how you turn a document NAME into the id every other Google action needs - spreadsheets are mimeType='application/vnd.google-apps.spreadsheet'.",
         "request": {
           "method": "GET",
           "url_template": "/files",
@@ -105,7 +105,8 @@
               "type": "string",
               "required": true,
               "llm_visible": true,
-              "description": "Drive file id."
+              "description": "Drive file id, or paste the file's full URL and Forge will pull the id out. Use drive_search_files first if you only know the name.",
+              "extract": "/d/([a-zA-Z0-9_-]+)"
             },
             {
               "path": "mimeType",
@@ -131,7 +132,9 @@
               "in": "path",
               "type": "string",
               "required": true,
-              "llm_visible": true
+              "llm_visible": true,
+              "extract": "/d/([a-zA-Z0-9_-]+)",
+              "description": "Drive file id, or paste the file's full URL and Forge will pull the id out. Use drive_search_files first if you only know the name."
             },
             {
               "path": "fields",

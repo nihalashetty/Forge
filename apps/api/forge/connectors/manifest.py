@@ -177,6 +177,16 @@ class RestAction(BaseModel):
             where = field.get("in", "query")
             if where not in ("query", "header", "body", "cookie", "path"):
                 raise ValueError(f"action {self.name!r}: field {field['path']!r} has invalid `in`: {where!r}")
+            # `extract` pulls an id out of a pasted URL at call time. Compile it HERE so a typo in
+            # a manifest fails at install, not on someone's first tool call.
+            pattern = field.get("extract")
+            if pattern is not None:
+                try:
+                    re.compile(pattern)
+                except re.error as e:
+                    raise ValueError(
+                        f"action {self.name!r}: field {field['path']!r} has an invalid `extract` regex: {e}"
+                    ) from e
         return self
 
 
