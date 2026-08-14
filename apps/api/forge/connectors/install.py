@@ -603,7 +603,10 @@ class ConnectorInstaller:
             for key, val in ((ap.config or {}).get("connector_vars") or {}).items() if ap else ():
                 if val:
                     setup_vars[key] = val
-        ids = list(install.created_tool_ids or [])
+        # Start from the tools that still EXIST. Ids of rows deleted from the Tools screen would
+        # otherwise sit in the receipt forever, growing the IN clause on every refresh and
+        # sending uninstall looking for rows that are already gone.
+        ids = [t.id for t in rows]
         changed = 0
         for action in backend.actions:
             cfg = self._rest_tool_config(latest, backend, action, setup_vars)

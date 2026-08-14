@@ -259,7 +259,11 @@ def _build_body(req: dict, fields: list[dict], values: dict, context: dict | Non
         # text the API rejected. A form-encoded or plain-text template must NOT be escaped, and
         # is recognised by its opening character rather than by rendering it twice and seeing
         # which one parses.
-        as_json = tmpl.lstrip()[:1] in ("{", "[")
+        # A JSON document opens with { or [ - but so does a form-encoded template whose FIRST
+        # thing is a token, `{{input.q}}=1&note={{input.n}}`. Escaping that one puts a literal
+        # backslash into the form body, so a leading `{{` disqualifies it.
+        head = tmpl.lstrip()
+        as_json = head[:1] in ("{", "[") and not head.startswith("{{")
         rendered = render_template(tmpl, tvars, strict_ns=_STRICT_NS, escape_json=as_json)
         if isinstance(rendered, (dict, list)):
             return rendered

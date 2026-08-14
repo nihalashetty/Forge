@@ -247,6 +247,19 @@ async def list_installed(project_id: str, session: AsyncSession = Depends(get_se
             select(Tool.id).where(Tool.tenant_id == tenant_id, Tool.project_id == project_id, Tool.id.in_(ids))
         )
         alive = {r[0] for r in found.all()}
+    # One query for every provider rather than one per install: painting this screen for a
+    # project with the full catalog installed was a dozen sequential SELECTs before the secret
+    # reads even started.
+    provider_ids = [r.auth_provider_id for r in rows if r.auth_provider_id]
+    providers: dict[str, AuthProvider] = {}
+    if provider_ids:
+        found_aps = await session.execute(
+            select(AuthProvider).where(
+                AuthProvider.tenant_id == tenant_id, AuthProvider.id.in_(provider_ids)
+            )
+        )
+        providers = {ap.id: ap for ap in found_aps.scalars()}
+
     out = []
     for r in rows:
         item = _install_out(r, tool_count=len([t for t in (r.created_tool_ids or []) if t in alive]))
@@ -254,17 +267,24 @@ async def list_installed(project_id: str, session: AsyncSession = Depends(get_se
         # CALLER. Without this the gallery would show a green tick to everyone the moment one
         # colleague connected their own account, and the person clicking Connect would be told
         # they were already done.
-        item["connected"] = await _connected_for(session, tenant_id, project_id, r, str(user.id))
+        item["connected"] = await _connected_for(
+            session, tenant_id, project_id, r, str(user.id),
+            provider=providers.get(r.auth_provider_id or ""),
+        )
         out.append(item)
     return out
 
 
 async def _connected_for(session: AsyncSession, tenant_id: str, project_id: str,
-                         row: ConnectorInstall, user_id: str) -> bool:
-    """Whether THIS user can currently act through this connector."""
+                         row: ConnectorInstall, user_id: str,
+                         *, provider: AuthProvider | None = None) -> bool:
+    """Whether THIS user can currently act through this connector.
+
+    `provider` lets a caller that already batched the lookup pass the row in; without it this
+    reads the provider itself, which is what the single-connector status route wants."""
     if not row.auth_provider_id:
         return True
-    ap = await AuthProviderService.get(session, tenant_id, row.auth_provider_id)
+    ap = provider or await AuthProviderService.get(session, tenant_id, row.auth_provider_id)
     if ap is None:
         return False
     if row.auth_mode == "per_user":
@@ -483,6 +503,10 @@ async def _install_on_demand(request: Request, session: AsyncSession, tenant_id:
 #: both write the credential: last writer wins, and the first person's browser is already sitting
 #: on an authorize URL carrying a client_id whose secret has just been replaced, so their callback
 #: fails at the token exchange with nothing to explain it.
+#:
+#: IN-PROCESS ONLY, like the OAuth refresh locks in auth_providers/resolver.py. Across scaled
+#: `api` replicas the two connects can still collide; the stored-credential re-check below is
+#: what keeps that case converging on one registered client rather than flip-flopping.
 _discovery_locks = KeyedLocks()
 
 
@@ -548,6 +572,17 @@ async def _discover_and_register(session: AsyncSession, tenant_id: str, project_
                 f"Could not register with {manifest.name} automatically ({e}). Create an app with the "
                 "vendor and paste its Client ID/Secret in the connector's settings.",
             ) from e
+        # Last check before writing. The in-process lock can't see a peer on ANOTHER replica
+        # that registered while we were talking to the vendor; if one did, keep theirs and
+        # discard the client we just registered. Both sides then converge on a single stored
+        # app instead of overwriting each other and stranding whoever is mid-consent.
+        try:
+            if await store.read_ref(tenant_id=tenant_id, project_id=project_id,
+                                    ref=f"secret://proj/{secret_name(manifest.group, 'client_id')}"):
+                log.info("connector %s: another registration won the race; keeping it", manifest.slug)
+                reg = {}
+        except SecretNotFound:
+            pass
         names = list(row.created_secret_names or [])
         for key, value in (("client_id", reg.get("client_id")), ("client_secret", reg.get("client_secret"))):
             if not value:
@@ -619,7 +654,10 @@ async def sync_connector(request: Request, project_id: str, slug: str,
       though the values are deterministic.
     """
     row = await _load_install(session, tenant_id, project_id, slug)
-    if (row.manifest or {}).get("backend", {}).get("type") != "mcp":
+    # `or {}` on the inner get too: a stored manifest with an explicit null backend would make
+    # `.get("backend", {})` return None and the next .get() raise, 500ing instead of falling
+    # through to the safe editor-gated branch.
+    if ((row.manifest or {}).get("backend") or {}).get("type") != "mcp":
         if not role_at_least(await effective_role(user, request), "editor"):
             raise HTTPException(
                 status.HTTP_403_FORBIDDEN,

@@ -164,6 +164,14 @@ class _FakeClient:
         self.closed = True
 
 
+async def _settle() -> None:
+    """Let the background close task spawned by _evict actually run."""
+    import asyncio
+
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+
 async def test_invalidate_client_drops_and_closes_every_per_user_variant():
     """Popping an entry without closing it strands a socket nothing will ever reclaim."""
     mcp_mod._CLIENT_CACHE.clear()
@@ -195,9 +203,12 @@ async def test_cache_is_bounded_so_per_user_keys_cannot_grow_without_limit():
         # Ascending timestamps so "oldest" is unambiguous.
         mcp_mod._CLIENT_CACHE[f"cid::{i:04d}"] = (now + i, c)
 
-    await mcp_mod._evict(now + len(clients))
+    mcp_mod._evict(now + len(clients))
 
+    # The ceiling is honoured immediately; the closes are handed to a background task so one
+    # unlucky agent turn isn't billed for tearing down every shed connection.
     assert len(mcp_mod._CLIENT_CACHE) == mcp_mod._CACHE_MAX
+    await _settle()
     evicted = [c for c in clients if c.closed]
     assert len(evicted) == 10
     assert clients[:10] == evicted, "eviction should drop the oldest entries first"
@@ -214,9 +225,10 @@ async def test_expired_entries_are_closed_not_merely_replaced():
     mcp_mod._CLIENT_CACHE["a"] = (now - mcp_mod._CACHE_TTL - 1, stale)
     mcp_mod._CLIENT_CACHE["b"] = (now, fresh)
 
-    await mcp_mod._evict(now)
+    mcp_mod._evict(now)
 
     assert set(mcp_mod._CLIENT_CACHE) == {"b"}
+    await _settle()
     assert stale.closed and not fresh.closed
     mcp_mod._CLIENT_CACHE.clear()
 

@@ -35,6 +35,8 @@ from sqlalchemy import select
 from forge.db.base import SessionLocal
 from forge.models import AuthProvider, McpClient
 from forge.secrets.store import SecretStore
+from forge.util.locks import KeyedLocks
+from forge.util.tasks import spawn
 
 log = logging.getLogger("forge.mcp")
 
@@ -53,6 +55,9 @@ _CACHE_TTL = 300.0  # seconds
 # of the process. The TTL alone doesn't bound it: it only replaces an entry when that same key
 # is asked for again, so an idle user's connection is never revisited and never released.
 _CACHE_MAX = 64
+#: Serializes building a connection for one cache key, so concurrent misses share one client
+#: instead of racing to replace each other's.
+_build_locks = KeyedLocks()
 
 
 async def _aclose(client: Any) -> None:
@@ -68,13 +73,28 @@ async def _drop(key: str) -> None:
         await _aclose(entry[1])
 
 
-async def _evict(now: float) -> None:
+def _evict(now: float) -> None:
     """Release connections nobody is coming back for: first anything past its TTL, then the
-    least-recently-created entries once the cache is over its ceiling."""
+    least-recently-created entries once the cache is over its ceiling.
+
+    Removal from the dict is synchronous (so the ceiling is honoured immediately), but each
+    close is a network teardown and is handed to a background task. Awaiting a batch of them
+    here would bill one unlucky agent turn for every connection the cache decided to shed.
+    """
+    doomed: list[Any] = []
     for key in [k for k, (ts, _) in _CLIENT_CACHE.items() if now - ts > _CACHE_TTL]:
-        await _drop(key)
+        doomed.append(_CLIENT_CACHE.pop(key)[1])
     while len(_CLIENT_CACHE) > _CACHE_MAX:
-        await _drop(min(_CLIENT_CACHE, key=lambda k: _CLIENT_CACHE[k][0]))
+        oldest = min(_CLIENT_CACHE, key=lambda k: _CLIENT_CACHE[k][0])
+        doomed.append(_CLIENT_CACHE.pop(oldest)[1])
+    if doomed:
+        log.debug("mcp cache: evicting %d idle connection(s)", len(doomed))
+        spawn(_close_many(doomed), name="mcp-cache-evict")
+
+
+async def _close_many(clients: list[Any]) -> None:
+    for client in clients:
+        await _aclose(client)
 
 
 async def invalidate_client(client_id: str) -> None:
@@ -164,21 +184,20 @@ class _ProviderAuth(httpx.Auth):
             request.url = request.url.copy_merge_params(resolved.params)
 
     async def async_auth_flow(self, request: httpx.Request):
-        # Snapshot the pre-auth URL and Cookie so the retry re-applies onto a CLEAN request.
-        # Headers are set by assignment and overwrite, but params are MERGED and the cookie jar
-        # is CONCATENATED - applying twice to the same mutated request would send
-        # `?api_key=X&api_key=X` and `Cookie: s=1; s=1`, which some servers reject outright,
-        # turning a recoverable 401 into a hard failure.
+        # Snapshot the whole pre-auth request shape so the retry re-applies onto a CLEAN one.
+        # Params are MERGED and the cookie jar is CONCATENATED, so applying twice to the same
+        # mutated request would send `?api_key=X&api_key=X` and `Cookie: s=1; s=1`, which some
+        # servers reject outright - turning a recoverable 401 into a hard failure. Headers do
+        # overwrite, but only the ones the SECOND resolve returns: restoring them wholesale
+        # means a provider that changed shape between the attempts (a renamed header_name)
+        # can't leave its first-attempt header behind alongside the new one.
         original_url = request.url
-        original_cookie = request.headers.get("Cookie")
+        original_headers = request.headers.copy()
         await self._apply(request, force=False)
         response = yield request
         if response.status_code in (401, 403):
             request.url = original_url
-            if original_cookie is None:
-                request.headers.pop("Cookie", None)
-            else:
-                request.headers["Cookie"] = original_cookie
+            request.headers = original_headers
             await self._apply(request, force=True)
             yield request
 
@@ -266,12 +285,22 @@ async def _client_and_tools(client_row: McpClient, tenant_id: str, project_id: s
     key = client_row.id + suffix
     entry = _CLIENT_CACHE.get(key)
     if entry is None or (now - entry[0]) > _CACHE_TTL:
-        await _drop(key)  # close the expired connection rather than orphaning it
-        # Reuse the provider we just resolved instead of making _connection_for re-read it.
-        conn = await _connection_for(client_row, tenant_id, project_id, context, auth=auth)
-        client = MultiServerMCPClient({client_row.name: conn})
-        _CLIENT_CACHE[key] = (now, client)
-        await _evict(now)
+        # Build under a per-key lock. Without it two concurrent misses both construct a client
+        # and the second assignment silently replaces the first, orphaning a transport nobody
+        # holds a reference to and nothing will ever close.
+        lock = await _build_locks.acquire_cm(key)
+        async with lock:
+            entry = _CLIENT_CACHE.get(key)
+            now = time.monotonic()
+            if entry is None or (now - entry[0]) > _CACHE_TTL:
+                await _drop(key)  # close the expired connection rather than orphaning it
+                # Reuse the provider we just resolved instead of making _connection_for re-read it.
+                conn = await _connection_for(client_row, tenant_id, project_id, context, auth=auth)
+                client = MultiServerMCPClient({client_row.name: conn})
+                _CLIENT_CACHE[key] = (now, client)
+                _evict(now)
+            else:
+                client = entry[1]
     else:
         client = entry[1]
     tools = await client.get_tools()

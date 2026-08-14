@@ -1008,3 +1008,26 @@ async def test_refreshing_a_rest_connector_requires_editor(google_app):
         r = await c2.post(f"/v1/projects/{pid}/connectors/gmail/sync")
         assert r.status_code == 403
         assert "editor" in r.json()["detail"]
+
+
+async def test_refresh_prunes_ids_of_tools_that_no_longer_exist(google_app):
+    """Dead ids in the receipt grow the IN clause on every refresh and send uninstall looking
+    for rows that are already gone."""
+    from forge.services.tools import ToolService
+
+    tenant, project = "t_upg6", "p_upg6"
+    install = await _install_catalog(tenant, project, "gmail")
+    before = len(install.created_tool_ids)
+    async with SessionLocal() as s:
+        doomed = await s.get(Tool, install.created_tool_ids[0])
+        doomed_id = doomed.id
+        await ToolService.delete(s, doomed)
+
+    async with SessionLocal() as s:
+        row = await ConnectorInstaller.get_install(s, tenant, project, "gmail")
+        await ConnectorInstaller().sync_tools(s, row)
+
+    async with SessionLocal() as s:
+        row = await ConnectorInstaller.get_install(s, tenant, project, "gmail")
+    assert doomed_id not in row.created_tool_ids
+    assert len(row.created_tool_ids) == before - 1

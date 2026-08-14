@@ -272,3 +272,24 @@ def test_non_ascii_in_an_interpolated_list_is_not_escaped_away():
                        [{"path": "rows", "in": "body", "type": "array"}],
                        {"rows": [["café", "naïve"]]}, {})
     assert body == {"values": [["café", "naïve"]]}
+
+
+def test_form_encoded_template_starting_with_a_token_is_not_json_escaped():
+    """A JSON body opens with `{`, but so does a form template whose first thing is a token.
+    Escaping that one puts a literal backslash into the form body."""
+    body = _build_body({"body_template": "{{input.q}}=1&note={{input.n}}"}, [],
+                       {"q": 'a"b', "n": "x"}, {})
+    assert body == 'a"b=1&note=x'
+
+
+def test_a_json_template_is_still_escaped():
+    body = _build_body({"body_template": '{"q":"{{input.q}}"}'}, [], {"q": 'a"b'}, {})
+    assert body == {"q": 'a"b'}
+
+
+def test_a_bare_token_template_keeps_its_native_value():
+    """`{{input.payload}}` alone is a whole-string match, so it resolves to the object itself and
+    never goes near the escaping path - even though it also starts with `{`."""
+    body = _build_body({"body_template": "{{input.payload}}"}, [],
+                       {"payload": {"a": 'q"uote', "b": [1, 2]}}, {})
+    assert body == {"a": 'q"uote', "b": [1, 2]}
