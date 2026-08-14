@@ -229,6 +229,40 @@ def _collect(fields: list[dict], values: dict, where: str) -> dict:
     return out
 
 
+def _declared_content_type(req: dict) -> str:
+    """The Content-Type the tool config declares, if any. Read from the raw header specs (these
+    are authored values, not templated per-call ones), lowercased."""
+    for h in req.get("headers", []) or []:
+        if str(h.get("name", "")).lower() == "content-type":
+            return str(h.get("value", "")).lower()
+    return ""
+
+
+def _template_is_json(req: dict, tmpl: str) -> bool:
+    """Whether a `body_template` should have its substituted strings JSON-escaped.
+
+    This has to agree with `_resolve_body_encoding`, which decides how the body is SERIALIZED.
+    Two independent answers to "is this JSON?" can disagree - a `body_encoding: raw` template
+    that happens to open with `{` would get JSON-escaped and then sent verbatim, putting literal
+    backslashes in the payload - so both read the declared encoding first and only fall back to
+    inspecting the template when the tool declares nothing.
+
+    The fallback is a character test rather than rendering twice and seeing which parses: a JSON
+    document opens with `{` or `[`, but so does a form-encoded template whose first thing is a
+    token (`{{input.q}}=1&note={{input.n}}`), so a leading `{{` disqualifies it.
+    """
+    enc = str(req.get("body_encoding") or "").strip().lower()
+    if enc in ("json", "form", "multipart", "raw"):
+        return enc == "json"
+    ct = _declared_content_type(req)
+    if "json" in ct:
+        return True
+    if ct:
+        return False  # form-urlencoded, multipart, text/plain, xml - none of them JSON-escape
+    head = tmpl.lstrip()
+    return head[:1] in ("{", "[") and not head.startswith("{{")
+
+
 def _build_body(req: dict, fields: list[dict], values: dict, context: dict | None):
     """Request body. A free-form `body_template` takes precedence and is interpolated with two
     namespaces - `{{input.*}}` (the validated tool args + defaults) and `{{ctx.*}}` (run
@@ -256,15 +290,9 @@ def _build_body(req: dict, fields: list[dict], values: dict, context: dict | Non
         # Substituted strings are JSON-escaped when the template IS a JSON document, so that
         # model-written text containing a newline or a quote can't terminate a JSON string early
         # - which is what silently turned a note body into an unparseable body, and then into raw
-        # text the API rejected. A form-encoded or plain-text template must NOT be escaped, and
-        # is recognised by its opening character rather than by rendering it twice and seeing
-        # which one parses.
-        # A JSON document opens with { or [ - but so does a form-encoded template whose FIRST
-        # thing is a token, `{{input.q}}=1&note={{input.n}}`. Escaping that one puts a literal
-        # backslash into the form body, so a leading `{{` disqualifies it.
-        head = tmpl.lstrip()
-        as_json = head[:1] in ("{", "[") and not head.startswith("{{")
-        rendered = render_template(tmpl, tvars, strict_ns=_STRICT_NS, escape_json=as_json)
+        # text the API rejected. A form-encoded or plain-text template must NOT be escaped.
+        rendered = render_template(tmpl, tvars, strict_ns=_STRICT_NS,
+                                   escape_json=_template_is_json(req, tmpl))
         if isinstance(rendered, (dict, list)):
             return rendered
         if isinstance(rendered, str):

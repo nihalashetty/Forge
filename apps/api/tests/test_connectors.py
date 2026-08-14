@@ -406,6 +406,88 @@ async def test_failed_install_leaves_no_orphan_rows():
         assert aps == [] and sets == [] and installs == []
 
 
+async def test_failed_install_clears_the_credentials_it_created():
+    """Rows are not the only thing a half-install leaves behind.
+
+    Every service on the install path commits as it goes, so a failure has no transaction to
+    unwind - the secrets written in step 1 survive with no install pointing at them. That is not
+    just litter: `group_has_credentials` reads the store, so an orphaned client id/secret makes
+    the whole credential group look already-configured to the next install.
+    """
+    tenant, project = "t_conn_secx", "p_conn_secx"
+    manifest = parse_manifest({**REST_MANIFEST, "slug": "acme-secboom"})
+    installer = ConnectorInstaller()
+
+    async def _explode(*a, **kw):
+        raise RuntimeError("boom")
+
+    installer._create_rest_tools = _explode  # type: ignore[method-assign]
+    async with SessionLocal() as s:
+        with pytest.raises(RuntimeError):
+            await installer.install(s, tenant, project, manifest, values={"token": "x"}, source="custom")
+
+    async with SessionLocal() as s:
+        assert not await group_has_credentials(SecretStore(), tenant, project, manifest), (
+            "a failed install must not leave its group looking configured"
+        )
+        value = await SecretStore().read_ref(
+            tenant_id=tenant, project_id=project,
+            ref=f"secret://proj/{secret_name('acme-secboom', 'token')}",
+        )
+        assert not value
+
+
+async def test_a_failed_install_does_not_blank_a_siblings_shared_credential(google_app):
+    """Gmail and Calendar are one Google OAuth app. Rolling back a failed Calendar install must
+    clear only what that install CREATED - blanking the shared client secret it merely re-wrote
+    would sign every Gmail user out on the way past."""
+    tenant, project = "t_conn_sib", "p_conn_sib"
+    await _install_catalog(tenant, project, "gmail")
+
+    installer = ConnectorInstaller()
+
+    async def _explode(*a, **kw):
+        raise RuntimeError("boom")
+
+    installer._create_rest_tools = _explode  # type: ignore[method-assign]
+    async with SessionLocal() as s:
+        with pytest.raises(RuntimeError):
+            await installer.install(s, tenant, project, get_manifest("google-calendar"), source="catalog")
+
+    secret = await SecretStore().read_ref(
+        tenant_id=tenant, project_id=project, ref=f"secret://proj/{secret_name('google', 'client_secret')}",
+    )
+    assert secret == "deployment-csec", "the sibling's shared credential must survive the rollback"
+
+
+async def test_a_concurrent_duplicate_install_is_reported_not_raised_raw():
+    """The duplicate check is a read and `POST /connect` installs on demand, so two people
+    clicking Connect at once both pass it. The loser hits the unique constraint; that must come
+    back as the same InstallError the read produces, not a raw IntegrityError (a 500)."""
+    tenant, project = "t_conn_race", "p_conn_race"
+    manifest = parse_manifest({**REST_MANIFEST, "slug": "acme-race"})
+    installer = ConnectorInstaller()
+
+    async def _blind(*a, **kw):
+        return None  # both callers "see" no existing install
+
+    installer.get_install = _blind  # type: ignore[method-assign]
+    await _install(tenant, project, {**REST_MANIFEST, "slug": "acme-race"})
+
+    async with SessionLocal() as s:
+        with pytest.raises(InstallError, match="already installed"):
+            await installer.install(s, tenant, project, manifest, values={"token": "x"}, source="custom")
+
+    # ...and the loser's half-built rows are gone, so the winner's install is the only one.
+    async with SessionLocal() as s:
+        from sqlalchemy import select
+        installs = (await s.execute(
+            select(ConnectorInstall).where(ConnectorInstall.project_id == project)
+        )).scalars().all()
+        sets = (await s.execute(select(ToolSet).where(ToolSet.project_id == project))).scalars().all()
+        assert len(installs) == 1 and len(sets) == 1
+
+
 async def test_install_adds_connector_hosts_to_the_project_egress_allow_list():
     tenant, project = "t_conn_e", "p_conn_e"
     from forge.models import Project
@@ -847,6 +929,49 @@ async def test_refresh_delivers_a_corrected_manifest_to_an_existing_install(goog
     # The auth provider - and therefore everyone's stored sign-in - is untouched.
     async with SessionLocal() as s:
         assert await s.get(AuthProvider, install.auth_provider_id) is not None
+
+
+async def test_refresh_never_moves_an_install_to_a_new_credential_group(google_app):
+    """A refresh rewrites the stored manifest, and the stored manifest is where the credential
+    GROUP is read from. The group is a pointer, not a description: `secret_name(group, ...)`
+    names the secrets this install actually wrote, and uninstall compares groups to decide
+    whether a sibling still needs the shared vendor app. If a catalog edit could repoint it,
+    uninstalling Gmail would blank the Google client secret while Calendar and Sheets are still
+    using it."""
+    tenant, project = "t_upg_grp", "p_upg_grp"
+    await _install_catalog(tenant, project, "gmail")
+    await _install_catalog(tenant, project, "google-calendar")
+
+    # A catalog update that regroups Gmail away from the shared Google app.
+    regrouped = {**get_manifest("gmail").model_dump(mode="json")}
+    regrouped["version"] = "9.9.9"
+    regrouped["auth"] = {**regrouped["auth"], "credential_group": "gmail-only"}
+
+    import forge.connectors.catalog as catalog_mod
+    real = catalog_mod.get_manifest
+    catalog_mod.get_manifest = lambda slug: (  # type: ignore[assignment]
+        parse_manifest(regrouped) if slug == "gmail" else real(slug)
+    )
+    try:
+        async with SessionLocal() as s:
+            row = await ConnectorInstaller.get_install(s, tenant, project, "gmail")
+            await ConnectorInstaller().sync_tools(s, row)
+    finally:
+        catalog_mod.get_manifest = real  # type: ignore[assignment]
+
+    async with SessionLocal() as s:
+        row = await ConnectorInstaller.get_install(s, tenant, project, "gmail")
+        assert row.version == "9.9.9", "the upgrade itself must still land"
+        assert parse_manifest(row.manifest).group == "google", (
+            "the credential group must stay where this install's secrets actually are"
+        )
+        # ...and uninstalling Gmail still recognises Calendar as sharing the vendor app.
+        await ConnectorInstaller().uninstall(s, row)
+
+    secret = await SecretStore().read_ref(
+        tenant_id=tenant, project_id=project, ref=f"secret://proj/{secret_name('google', 'client_secret')}",
+    )
+    assert secret == "deployment-csec", "the surviving sibling's credential must not be blanked"
 
 
 async def test_refresh_keeps_the_values_this_install_was_configured_with():

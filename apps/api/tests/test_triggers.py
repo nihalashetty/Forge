@@ -338,8 +338,10 @@ async def test_a_viewer_cannot_publish_a_trigger_to_the_whole_project():
             s.add(wf)
             await s.commit()
             await s.refresh(wf)
-            [trig] = await TriggerService.sync_from_workflow(s, wf, scope="user")
+            owner = await _make_user_role(tenant, f"o{uuid.uuid4().hex[:6]}@example.com", "editor")
+            [trig] = await TriggerService.sync_from_workflow(s, wf, owner=owner, scope="user")
             tid = trig.id
+            assert trig.scope == "user"
 
     viewer_id = await _make_user_role(tenant, f"v{uuid.uuid4().hex[:6]}@example.com", "viewer")
     cv = await _client_for(viewer_id, tenant, "viewer")
@@ -349,6 +351,102 @@ async def test_a_viewer_cannot_publish_a_trigger_to_the_whole_project():
         # An unknown scope is rejected outright rather than silently stored.
         assert (await cv.put(f"/v1/projects/{pid}/triggers/{tid}/scope",
                              json={"scope": "everyone"})).status_code == 422
+
+
+def test_a_machine_principal_is_not_a_run_as_identity():
+    """A workflow can be saved by the service token or a scoped API key. Neither has connected
+    accounts, and `apikey:<uuid>` is 43 characters going into a String(36) column - which
+    Postgres rejects, inside a trigger sync whose exceptions are swallowed. The visible symptom
+    would be webhooks and schedules silently never being registered."""
+    from forge.services.triggers import owner_id_for
+
+    assert owner_id_for("service") is None
+    assert owner_id_for(f"apikey:{'a' * 36}") is None
+    assert owner_id_for("x" * 37) is None, "anything too long for the column is not an owner"
+    real = "3f8b1c22-9a1e-4f77-8c31-2b6d5e0a7c44"
+    assert owner_id_for(real) == real
+    assert owner_id_for(None) is None
+
+
+async def test_a_workflow_saved_by_a_machine_principal_yields_a_shared_trigger():
+    """No owner means nobody to be personal TO: "listed only for the person it runs as" hides a
+    trigger from everyone when that person doesn't exist. So an unowned trigger stays the
+    project's, whatever default scope the caller's role suggested."""
+    async with SessionLocal() as s:
+        wf = Workflow(tenant_id="t_trig_svc", project_id="p_trig_svc", name="Svc",
+                      executable=_WEBHOOK_WF, status="active")
+        s.add(wf)
+        await s.commit()
+        await s.refresh(wf)
+        [trig] = await TriggerService.sync_from_workflow(
+            s, wf, owner=f"apikey:{'b' * 36}", scope="user",
+        )
+    assert trig.run_as_user_id is None
+    assert trig.scope == "project", "an ownerless trigger must not be invisible to everyone"
+
+
+async def test_an_editor_cannot_make_someone_elses_trigger_personal():
+    """"Personal" means "listed only for the person it runs as". An editor doing it to a trigger
+    that runs as somebody else removes it from their OWN screen the moment they click, with no
+    control left to undo it."""
+    import uuid
+
+    app = create_app()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as c:
+        reg = await c.post("/v1/auth/register",
+                           json={"email": f"t{uuid.uuid4().hex[:10]}@example.com", "password": "supersecret1"})
+        c.headers["Authorization"] = f"Bearer {reg.json()['access_token']}"
+        tenant = (await c.get("/v1/auth/me")).json()["tenant_id"]
+        pid = (await c.post("/v1/projects", json={"name": "T", "slug": f"mp-{uuid.uuid4().hex[:8]}"})).json()["id"]
+
+    colleague = await _make_user_role(tenant, f"c{uuid.uuid4().hex[:6]}@example.com", "editor")
+    editor = await _make_user_role(tenant, f"e{uuid.uuid4().hex[:6]}@example.com", "editor")
+    async with SessionLocal() as s:
+        wf = Workflow(tenant_id=tenant, project_id=pid, name="P", executable=_WEBHOOK_WF, status="active")
+        s.add(wf)
+        await s.commit()
+        await s.refresh(wf)
+        [trig] = await TriggerService.sync_from_workflow(s, wf, owner=colleague, scope="project")
+        tid = trig.id
+
+    ce = await _client_for(editor, tenant, "editor")
+    async with aclosing(ce):
+        r = await ce.put(f"/v1/projects/{pid}/triggers/{tid}/scope", json={"scope": "user"})
+        assert r.status_code == 403, "an editor is not the person this trigger runs as"
+        # It is still on their screen, which is the point.
+        listed = (await ce.get(f"/v1/projects/{pid}/triggers")).json()
+        assert any(t["id"] == tid for t in listed)
+
+    # The person it actually runs as may.
+    cc = await _client_for(colleague, tenant, "editor")
+    async with aclosing(cc):
+        assert (await cc.put(f"/v1/projects/{pid}/triggers/{tid}/scope",
+                             json={"scope": "user"})).status_code == 200
+
+
+async def test_a_trigger_with_no_owner_cannot_be_made_personal():
+    """Personal to nobody is listed for nobody. Refuse it and say what to do instead."""
+    import uuid
+
+    app = create_app()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as c:
+        reg = await c.post("/v1/auth/register",
+                           json={"email": f"t{uuid.uuid4().hex[:10]}@example.com", "password": "supersecret1"})
+        c.headers["Authorization"] = f"Bearer {reg.json()['access_token']}"
+        tenant = (await c.get("/v1/auth/me")).json()["tenant_id"]
+        pid = (await c.post("/v1/projects", json={"name": "T", "slug": f"noown-{uuid.uuid4().hex[:8]}"})).json()["id"]
+        async with SessionLocal() as s:
+            wf = Workflow(tenant_id=tenant, project_id=pid, name="N", executable=_WEBHOOK_WF, status="active")
+            s.add(wf)
+            await s.commit()
+            await s.refresh(wf)
+            [trig] = await TriggerService.sync_from_workflow(s, wf)
+            tid = trig.id
+        assert trig.run_as_user_id is None
+
+        r = await c.put(f"/v1/projects/{pid}/triggers/{tid}/scope", json={"scope": "user"})
+        assert r.status_code == 400
+        assert "Runs as" in r.json()["detail"]
 
 
 async def test_an_unowned_trigger_still_runs_for_workflows_that_need_no_identity():

@@ -16,6 +16,7 @@ import logging
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from forge.connectors.manifest import ConnectorManifest, McpBackend, RestBackend
@@ -280,6 +281,11 @@ class ConnectorInstaller:
                 self._check_required(manifest, values)
 
         created_secrets: list[str] = []
+        # Secrets this install actually BROUGHT INTO EXISTENCE, as opposed to re-wrote with the
+        # same deployment value. Only these may be cleared if the install fails: blanking a
+        # credential a sibling connector in the same group is already using (install Gmail, then
+        # a failed Calendar install) would break the sibling on the way out.
+        new_secrets: list[str] = []
         auth_provider_id: str | None = None
         tool_set_id: str | None = None
         mcp_client_id: str | None = None
@@ -302,6 +308,8 @@ class ConnectorInstaller:
                 if not val:
                     continue
                 name = secret_name(manifest.group, field.key)
+                if not await self._secret_exists(tenant_id, project_id, name):
+                    new_secrets.append(name)
                 await self.secrets.write(
                     session, tenant_id=tenant_id, project_id=project_id,
                     name=name, value=val, kind="connector",
@@ -361,12 +369,31 @@ class ConnectorInstaller:
             await session.commit()
             await session.refresh(row)
             return row
+        except IntegrityError as e:
+            # The duplicate check above is a read, and `POST /{slug}/connect` installs on demand -
+            # so two people clicking Connect on the same connector in the same second both pass
+            # it and the loser hits `uq_connector_install_slug` here. That is the same condition
+            # the read detected, so report it the same way rather than letting a raw DB error
+            # surface as a 500 on the one-click path.
+            await self._rollback(session, tenant_id, project_id, tool_ids, tool_set_id,
+                                 auth_provider_id, mcp_client_id, new_secrets)
+            raise InstallError(f"{manifest.name} is already installed in this project") from e
         except Exception:
             # A half-installed connector is worse than none: it leaves orphan tools pointing at
             # an auth provider the user can't see the origin of. Roll the created rows back.
             await self._rollback(session, tenant_id, project_id, tool_ids, tool_set_id,
-                                 auth_provider_id, mcp_client_id, created_secrets)
+                                 auth_provider_id, mcp_client_id, new_secrets)
             raise
+
+    async def _secret_exists(self, tenant_id: str, project_id: str, name: str) -> bool:
+        """Whether a credential is already in this project's store, so a failed install can tell
+        the secrets it created from the ones it merely re-wrote."""
+        try:
+            return bool(await self.secrets.read_ref(
+                tenant_id=tenant_id, project_id=project_id, ref=f"secret://proj/{name}",
+            ))
+        except Exception:  # noqa: BLE001 - absent / unreadable both mean "not already set up"
+            return False
 
     @staticmethod
     def _resolve_per_user(manifest: ConnectorManifest, auth_mode: str, *, managed: bool = False) -> bool:
@@ -631,11 +658,37 @@ class ConnectorInstaller:
                 await ToolSetService.add_member(session, ts, created.id)
 
         install.created_tool_ids = ids
-        install.manifest = latest.model_dump(mode="json")
+        install.manifest = self._stored_manifest(latest, frozen, slug=install.slug)
         install.version = latest.version
         await session.commit()
         log.info("connector %s: refreshed %d action(s) to v%s", install.slug, changed, latest.version)
         return len(ids)
+
+    @staticmethod
+    def _stored_manifest(latest: ConnectorManifest, frozen: ConnectorManifest, *, slug: str) -> dict:
+        """The manifest to store after an upgrade: the new one, with this install's ORIGINAL
+        credential group pinned.
+
+        Everything else about a manifest may legitimately move on - new actions, corrected
+        request templates, a new summary. The credential GROUP may not, because it is not a
+        description, it is a pointer: `secret_name(group, ...)` names the secrets this install
+        actually wrote, and `_group_still_in_use` compares groups to decide whether uninstalling
+        one connector may clear the vendor app the rest of its family shares. Letting a catalog
+        edit repoint that would make an install's own credentials unreachable, and would let
+        uninstalling Gmail blank the Google client secret while Calendar, Drive and Sheets are
+        still using it.
+        """
+        stored = latest.model_dump(mode="json")
+        if latest.group != frozen.group:
+            log.warning(
+                "connector %s: catalog moved it from credential group %r to %r; keeping %r, "
+                "which is where this install's credentials actually live",
+                slug, frozen.group, latest.group, frozen.group,
+            )
+            auth = dict(stored.get("auth") or {})
+            auth["credential_group"] = frozen.group
+            stored["auth"] = auth
+        return stored
 
     @staticmethod
     def _rest_tool_config(manifest: ConnectorManifest, backend: RestBackend, action,
@@ -777,8 +830,10 @@ class ConnectorInstaller:
     async def _group_still_in_use(session: AsyncSession, install: ConnectorInstall) -> str | None:
         """The name of another installed connector sharing this one's credential group, if any.
 
-        Read from each install's FROZEN manifest rather than the live catalog, so the answer
-        reflects what is actually deployed even if a catalog update later regrouped things."""
+        Read from each install's STORED manifest rather than the live catalog, so the answer
+        reflects what is actually deployed even if a catalog update later regrouped things. An
+        upgrade rewrites that manifest but pins the credential group (see `_stored_manifest`),
+        which is what keeps this comparison meaningful across refreshes."""
         from forge.connectors.manifest import parse_manifest
 
         try:
@@ -807,19 +862,22 @@ class ConnectorInstaller:
     ) -> None:
         """Best-effort teardown of a failed partial install. Each step is independently guarded:
         the reason we're here is that something already went wrong, so a second failure must not
-        mask the original exception being re-raised by the caller."""
+        mask the original exception being re-raised by the caller.
+
+        `secret_names` must be only the credentials this install BROUGHT INTO EXISTENCE (see
+        `new_secrets` in `install`). Every service on this path commits as it goes, so there is
+        no transaction to unwind - the rows and the secrets both have to be removed explicitly,
+        and leaving the secrets behind would strand a vendor client id/secret in the store with
+        no install pointing at it, which `group_has_credentials` then reads as "this group is
+        already set up".
+        """
         try:
             await session.rollback()
         except Exception:  # noqa: BLE001
             pass
-        stub = ConnectorInstall(
-            tenant_id=tenant_id, project_id=project_id, slug="__rollback__", name="rollback",
-            created_tool_ids=tool_ids, created_secret_names=secret_names,
-            tool_set_id=tool_set_id, auth_provider_id=auth_provider_id, mcp_client_id=mcp_client_id,
-        )
         try:
-            # Reuse uninstall's teardown, minus the final row delete (the stub was never added).
-            for tool_id in stub.created_tool_ids or []:
+            # Reuse uninstall's teardown, minus the final row delete (nothing was ever added).
+            for tool_id in tool_ids or []:
                 tool = await ToolService.get(session, tenant_id, tool_id)
                 if tool is not None:
                     await ToolService.delete(session, tool)
@@ -842,3 +900,11 @@ class ConnectorInstaller:
                     await AuthProviderService.delete(session, ap)
         except Exception as e:  # noqa: BLE001
             log.warning("connector install rollback was incomplete: %s", e)
+        for name in secret_names or []:
+            try:
+                await self.secrets.write(
+                    session, tenant_id=tenant_id, project_id=project_id,
+                    name=name, value="", kind="connector",
+                )
+            except Exception as e:  # noqa: BLE001 - an unwritable secret is not worth masking
+                log.warning("connector install rollback could not clear secret %s: %s", name, e)

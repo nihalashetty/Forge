@@ -127,13 +127,75 @@ async def test_success_does_not_re_resolve():
     assert len(resolver.calls) == 1
 
 
-async def test_shared_provider_pools_one_connection_for_everyone():
+@pytest.fixture
+def no_default_ctx_key(monkeypatch):
+    """`FORGE_DEFAULT_TOKEN_CTX_KEY` is a deployment-wide setting read from the developer's own
+    .env, and it legitimately makes EVERY provider caller-specific. Pin it off so these tests
+    assert the shared-pooling case rather than whatever the local machine is configured for."""
+    from forge.config import settings
+
+    monkeypatch.setattr(settings, "default_token_ctx_key", "")
+
+
+async def test_shared_provider_pools_one_connection_for_everyone(no_default_ctx_key):
     tenant, project = "t_ma_sh", "p_ma_sh"
     ap_id = await _provider(tenant, project, per_user=False)
     row = await _client(tenant, project, ap_id)
     _a, s1 = await mcp_mod._auth_for(row, tenant, project, {"end_user_id": "u1"})
     _b, s2 = await mcp_mod._auth_for(row, tenant, project, {"end_user_id": "u2"})
     assert s1 == s2 == ""
+
+
+async def test_an_inline_run_token_gets_its_own_pooled_connection(no_default_ctx_key):
+    """A provider can take its token INLINE from the run context (token_ctx_key) instead of from
+    a stored per-user connection. The resolver varies its own cache on that key; if the MCP cache
+    key ignores it, the first caller's connection - carrying the first caller's token in its
+    attached httpx.Auth - is pooled and handed to everyone else for the whole TTL."""
+    tenant, project = "t_ma_inline", "p_ma_inline"
+    async with SessionLocal() as s:
+        ap = await AuthProviderService.create(
+            s, tenant, project, name="inline", kind="bearer",
+            config={"token_ref": "secret://proj/tok", "token_ctx_key": "user_token"},
+        )
+        ap_id = ap.id
+    row = await _client(tenant, project, ap_id)
+
+    _a, s1 = await mcp_mod._auth_for(row, tenant, project, {"user_token": "tok-alice"})
+    _b, s2 = await mcp_mod._auth_for(row, tenant, project, {"user_token": "tok-bob"})
+    _c, s3 = await mcp_mod._auth_for(row, tenant, project, {"user_token": "tok-alice"})
+
+    assert s1 and s1 != s2, "two callers' inline tokens must not share one pooled connection"
+    assert s1 == s3, "the same inline token should reuse its own pooled connection"
+
+
+async def test_the_deployment_wide_inline_token_key_also_splits_the_pool(monkeypatch):
+    """token_ctx_key has a deployment-wide fallback, and the resolver honours it. So must this."""
+    from forge.config import settings
+
+    monkeypatch.setattr(settings, "default_token_ctx_key", "user_token")
+    tenant, project = "t_ma_dflt", "p_ma_dflt"
+    ap_id = await _provider(tenant, project, per_user=False)
+    row = await _client(tenant, project, ap_id)
+
+    _a, s1 = await mcp_mod._auth_for(row, tenant, project, {"user_token": "tok-alice"})
+    _b, s2 = await mcp_mod._auth_for(row, tenant, project, {"user_token": "tok-bob"})
+    assert s1 and s1 != s2
+
+
+def test_auth_cache_dims_covers_everything_the_resolver_varies_on():
+    """A regression guard with teeth: the resolver builds its cache key from
+    per_user_context_keys + token_ctx_key. If a future dimension is added there and not here,
+    the pooled MCP connection starts serving one caller's credential to another."""
+    from forge.config import settings
+
+    cfg = {"per_user_context_keys": ["end_user_id"], "token_ctx_key": "user_token"}
+    dims = set(mcp_mod.auth_cache_dims(cfg))
+
+    per_user = cfg.get("per_user_context_keys", [])
+    effective_ctx_key = cfg.get("token_ctx_key") or settings.default_token_ctx_key
+    resolver_dims = set([*per_user, effective_ctx_key] if effective_ctx_key else per_user)
+
+    assert resolver_dims <= dims, f"MCP pooling ignores caller dimension(s) {resolver_dims - dims}"
 
 
 async def test_per_user_provider_gets_a_distinct_connection_per_end_user():
@@ -164,22 +226,37 @@ class _FakeClient:
         self.closed = True
 
 
-async def _settle() -> None:
-    """Let the background close task spawned by _evict actually run."""
-    import asyncio
+def _seed(key: str, client, *, created: float, used: float | None = None) -> None:
+    mcp_mod._CLIENT_CACHE[key] = mcp_mod._Cached(
+        created=created, used=used if used is not None else created, client=client
+    )
 
-    for _ in range(5):
-        await asyncio.sleep(0)
+
+def _reset_cache() -> None:
+    mcp_mod._CLIENT_CACHE.clear()
+    mcp_mod._RETIRED.clear()
+
+
+@pytest.fixture(autouse=True)
+def _clean_cache():
+    """The cache and the retirement queue are module globals; a test that leaves entries in
+    either one changes what the next test's eviction sees."""
+    _reset_cache()
+    yield
+    _reset_cache()
 
 
 async def test_invalidate_client_drops_and_closes_every_per_user_variant():
-    """Popping an entry without closing it strands a socket nothing will ever reclaim."""
-    mcp_mod._CLIENT_CACHE.clear()
+    """Popping an entry without closing it strands a socket nothing will ever reclaim.
+
+    This path closes IMMEDIATELY rather than retiring: it runs when the server row was edited or
+    deleted, so the connection points at config that no longer exists.
+    """
     mine = {k: _FakeClient() for k in ("cid", "cid::abc", "cid::def")}
     other = _FakeClient()
     for k, c in mine.items():
-        mcp_mod._CLIENT_CACHE[k] = (0.0, c)
-    mcp_mod._CLIENT_CACHE["other"] = (0.0, other)
+        _seed(k, c, created=0.0)
+    _seed("other", other, created=0.0)
 
     await mcp_mod.invalidate_client("cid")
 
@@ -189,48 +266,141 @@ async def test_invalidate_client_drops_and_closes_every_per_user_variant():
 
 
 async def test_cache_is_bounded_so_per_user_keys_cannot_grow_without_limit():
-    """The cache key carries a per-user suffix and every catalog MCP connector is per-user, so
+    """The cache key carries a per-caller suffix and every catalog MCP connector is per-user, so
     the cache grows with distinct PEOPLE. Without a ceiling a busy project pins one live
     transport per user for the lifetime of the process."""
     import time
 
-    mcp_mod._CLIENT_CACHE.clear()
     now = time.monotonic()
     clients = []
     for i in range(mcp_mod._CACHE_MAX + 10):
         c = _FakeClient()
         clients.append(c)
-        # Ascending timestamps so "oldest" is unambiguous.
-        mcp_mod._CLIENT_CACHE[f"cid::{i:04d}"] = (now + i, c)
+        # Ascending `used` so "least recently used" is unambiguous.
+        _seed(f"cid::{i:04d}", c, created=now, used=now + i)
 
-    mcp_mod._evict(now + len(clients))
+    await mcp_mod._evict(now + 1)
 
-    # The ceiling is honoured immediately; the closes are handed to a background task so one
-    # unlucky agent turn isn't billed for tearing down every shed connection.
-    assert len(mcp_mod._CLIENT_CACHE) == mcp_mod._CACHE_MAX
-    await _settle()
+    assert len(mcp_mod._CLIENT_CACHE) == mcp_mod._CACHE_MAX, "the ceiling is honoured immediately"
+    # Shed connections are NOT closed on the spot - a caller may still be running against one.
+    assert not any(c.closed for c in clients), "eviction must not abort an in-flight call"
+
+    await mcp_mod._reap(now + 1 + mcp_mod._CLOSE_GRACE)
     evicted = [c for c in clients if c.closed]
     assert len(evicted) == 10
-    assert clients[:10] == evicted, "eviction should drop the oldest entries first"
-    mcp_mod._CLIENT_CACHE.clear()
+    assert clients[:10] == evicted, "eviction should drop the least recently used entries first"
 
 
-async def test_expired_entries_are_closed_not_merely_replaced():
+async def test_eviction_is_least_recently_used_not_oldest_connection():
+    """The hot shared connection is the one built first and used constantly. Evicting by build
+    time would shed it before any of the idle per-user connections that displaced it."""
     import time
 
-    mcp_mod._CLIENT_CACHE.clear()
+    now = time.monotonic()
+    hot = _FakeClient()
+    _seed("shared", hot, created=now, used=now + 10_000)  # built first, used most recently
+    idle = []
+    for i in range(mcp_mod._CACHE_MAX):
+        c = _FakeClient()
+        idle.append(c)
+        _seed(f"cid::{i:04d}", c, created=now + 1 + i, used=now + i)
+
+    await mcp_mod._evict(now + 1)
+
+    assert "shared" in mcp_mod._CLIENT_CACHE, "the busiest connection must not be evicted first"
+    assert "cid::0000" not in mcp_mod._CLIENT_CACHE
+
+
+async def test_expired_entries_are_retired_and_then_closed():
+    import time
+
     stale = _FakeClient()
     fresh = _FakeClient()
     now = time.monotonic()
-    mcp_mod._CLIENT_CACHE["a"] = (now - mcp_mod._CACHE_TTL - 1, stale)
-    mcp_mod._CLIENT_CACHE["b"] = (now, fresh)
+    _seed("a", stale, created=now - mcp_mod._CACHE_TTL - 1)
+    _seed("b", fresh, created=now)
 
-    mcp_mod._evict(now)
+    await mcp_mod._evict(now)
 
     assert set(mcp_mod._CLIENT_CACHE) == {"b"}
-    await _settle()
+    assert not stale.closed, "the grace period lets an in-flight call finish"
+    await mcp_mod._reap(now + mcp_mod._CLOSE_GRACE)
     assert stale.closed and not fresh.closed
-    mcp_mod._CLIENT_CACHE.clear()
+
+
+async def test_a_connection_being_rebuilt_is_never_evicted():
+    """Evicting a locked entry detaches it from the cache while its builder is still writing
+    into it - producing a live client nothing tracks and nothing will ever close."""
+    import time
+
+    now = time.monotonic()
+    building = mcp_mod._Cached(created=0.0, used=now)
+    await building.lock.acquire()
+    try:
+        mcp_mod._CLIENT_CACHE["mid-build"] = building
+        for i in range(mcp_mod._CACHE_MAX + 5):
+            _seed(f"cid::{i:04d}", _FakeClient(), created=now, used=now + i)
+
+        await mcp_mod._evict(now + 1)
+
+        assert mcp_mod._CLIENT_CACHE.get("mid-build") is building
+    finally:
+        building.lock.release()
+
+
+async def test_invalidating_a_server_mid_build_does_not_orphan_the_new_connection():
+    """`invalidate_client` doesn't wait for an in-flight build, so the builder can finish into an
+    entry that is no longer in the cache. Nothing would then hold that transport, and nothing
+    would ever close it."""
+    import time
+
+    tenant, project = "t_ma_midb", "p_ma_midb"
+    row = await _client(tenant, project)
+    built = _FakeClient()
+
+    class _Adapters:
+        def __call__(self, _servers):
+            return built
+
+    async def _connection(*a, **kw):
+        # The server row is deleted (and the cache invalidated) while we are connecting.
+        await mcp_mod.invalidate_client(row.id)
+        return {"url": "https://mcp.example/mcp", "transport": "streamable_http"}
+
+    async def _no_tools():
+        return []
+
+    built.get_tools = _no_tools  # type: ignore[attr-defined]
+    real_adapters, real_connection = mcp_mod._require_adapters, mcp_mod._connection_for
+    mcp_mod._require_adapters = lambda: _Adapters()  # type: ignore[assignment]
+    mcp_mod._connection_for = _connection  # type: ignore[assignment]
+    try:
+        await mcp_mod._client_and_tools(row, tenant, project, {})
+    finally:
+        # Restore, don't delete: these are the module's own functions, and `del` would remove
+        # them outright for every test that runs after this one.
+        mcp_mod._require_adapters = real_adapters  # type: ignore[assignment]
+        mcp_mod._connection_for = real_connection  # type: ignore[assignment]
+
+    assert row.id not in mcp_mod._CLIENT_CACHE, "the invalidation stands"
+    assert not built.closed, "the caller's own call must still be able to finish"
+    await mcp_mod._reap(time.monotonic() + mcp_mod._CLOSE_GRACE + 1)
+    assert built.closed, "the detached connection must still be closed"
+
+
+async def test_close_all_drains_retired_connections_too():
+    import time
+
+    now = time.monotonic()
+    retired = _FakeClient()
+    live = _FakeClient()
+    mcp_mod._retire(retired, now)
+    _seed("a", live, created=now)
+
+    await mcp_mod.close_all()
+
+    assert live.closed and retired.closed, "shutdown must not leave a retired transport open"
+    assert not mcp_mod._CLIENT_CACHE and not mcp_mod._RETIRED
 
 
 def test_auth_context_from_puts_end_user_last():

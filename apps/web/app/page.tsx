@@ -15,7 +15,6 @@ import { TracesScreen } from "@/components/screens/traces";
 import { AuthProvidersScreen } from "@/components/screens/auth";
 import { SettingsScreen } from "@/components/screens/settings";
 import { ConnectScreen } from "@/components/screens/deploy";
-import { McpClientsScreen } from "@/components/screens/mcp";
 import { ConnectorsScreen } from "@/components/screens/connectors";
 import { ChannelsScreen, TriggersScreen, DatasetsScreen, HandoffScreen } from "@/components/screens/platform";
 import { Icon } from "@/components/icons";
@@ -30,7 +29,7 @@ const SCREEN_LABEL: Record<string, string> = {
   overview: "Overview", workflows: "Workflows", "workflow-canvas": "Support Router",
   agents: "Agents", "agent-config": "billing_agent", tools: "Tools", "tool-builder": "Tool", components: "Components", "component-builder": "Component",
   auth: "Auth Providers", knowledge: "Knowledge", playground: "Playground", traces: "Traces",
-  connect: "Connect", mcp: "External MCP", connectors: "Connectors", settings: "Settings",
+  connect: "Connect", connectors: "Connectors", settings: "Settings",
   channels: "Channels", triggers: "Triggers", datasets: "Evaluations", handoff: "Agent inbox", embed: "Embed",
 };
 const PARENT: Record<string, [string, string]> = {
@@ -208,7 +207,6 @@ function App() {
         // "Open in Tools" from a connector jumps to the Tools screen focused on its tool set,
         // so the actions a connector just created are one click from the canvas.
         case "connectors": return <ConnectorsScreen project={project} onOpenToolSet={(setId) => { setFocusToolSet(setId); navScreen("tools"); }} />;
-        case "mcp": return <McpClientsScreen project={project} />;
         case "knowledge": return <KnowledgeScreen project={project} />;
         case "channels": return <ChannelsScreen project={project} />;
         case "triggers": return <TriggersScreen project={project} />;

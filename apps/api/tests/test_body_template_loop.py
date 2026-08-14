@@ -293,3 +293,46 @@ def test_a_bare_token_template_keeps_its_native_value():
     body = _build_body({"body_template": "{{input.payload}}"}, [],
                        {"payload": {"a": 'q"uote', "b": [1, 2]}}, {})
     assert body == {"a": 'q"uote', "b": [1, 2]}
+
+
+def test_a_declared_body_encoding_decides_the_escaping_not_the_first_character():
+    """Escaping (`_build_body`) and serialization (`_resolve_body_encoding`) are two answers to
+    the same question - is this body JSON? - and they must not be able to disagree. A tool that
+    DECLARES its encoding has already answered; sniffing the template instead would JSON-escape
+    a raw payload that merely happens to open with `{`, then send it verbatim with the
+    backslashes in it."""
+    tmpl = '{"q":"{{input.q}}"}'
+    for enc in ("raw", "form"):
+        body = _build_body({"body_template": tmpl, "body_encoding": enc}, [], {"q": 'a"b'}, {})
+        assert body == '{"q":"a"b"}', f"body_encoding={enc} must not be JSON-escaped"
+    assert _build_body({"body_template": tmpl, "body_encoding": "json"}, [], {"q": 'a"b'}, {}) == {"q": 'a"b'}
+
+
+def test_a_declared_content_type_decides_the_escaping_too():
+    """The declared Content-Type is the other place a tool states what it is sending."""
+    form = _build_body(
+        {"body_template": "{{input.q}}=1",
+         "headers": [{"name": "Content-Type", "value": "application/x-www-form-urlencoded"}]},
+        [], {"q": 'a"b'}, {},
+    )
+    assert form == 'a"b=1'
+    js = _build_body(
+        {"body_template": '{"q":"{{input.q}}"}',
+         "headers": [{"name": "Content-Type", "value": "application/json"}]},
+        [], {"q": 'a"b'}, {},
+    )
+    assert js == {"q": 'a"b'}
+
+
+def test_escaping_and_serialization_agree_on_every_declared_encoding():
+    """A guard against the two decisions drifting apart again: whenever the tool declares an
+    encoding, `_build_body`'s escaping choice must match what `_resolve_body_encoding` will
+    actually do with the result."""
+    from forge.tools.rest import _resolve_body_encoding, _template_is_json
+
+    for enc in ("json", "form", "multipart", "raw"):
+        req = {"body_template": '{"q":"{{input.q}}"}', "body_encoding": enc}
+        body = _build_body(req, [], {"q": "ab"}, {})
+        assert _template_is_json(req, req["body_template"]) == (
+            _resolve_body_encoding(req, {}, body) == "json"
+        ), f"escaping and serialization disagree for body_encoding={enc}"

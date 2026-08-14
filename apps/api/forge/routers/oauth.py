@@ -16,9 +16,13 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from forge.auth_providers.oauth_flow import OAuthNotConfigured, build_authorize_url, token_request
+from forge.auth_providers.oauth_flow import (
+    OAuthNotConfigured,
+    build_authorize_url,
+    redirect_uri,
+    token_request,
+)
 from forge.auth_providers.resolver import AuthResolver
-from forge.config import settings
 from forge.deps import CurrentUser, current_tenant_id, get_session, require_role
 from forge.models import AuthProvider
 from forge.secrets.store import SecretNotFound, SecretStore
@@ -37,10 +41,6 @@ class OAuthStartIn(BaseModel):
     # (signed) state to the callback, which then stores the bundle under the SAME per-user
     # secret name that resolve/refresh read. Omit for a shared, single-account provider.
     context: dict | None = None
-
-
-def _redirect_uri(cfg: dict) -> str:
-    return cfg.get("redirect_uri") or f"{settings.public_base_url.rstrip('/')}/v1/oauth/callback"
 
 
 async def _load(session, tenant_id: str, project_id: str, ap_id: str) -> AuthProvider:
@@ -107,7 +107,10 @@ async def oauth_callback(
     data = {
         "grant_type": "authorization_code",
         "code": code,
-        "redirect_uri": _redirect_uri(cfg),
+        # The SAME helper build_authorize_url used. OAuth requires the redirect_uri sent at
+        # /authorize and at the exchange to match exactly, so the two legs must never be able to
+        # compute it differently.
+        "redirect_uri": redirect_uri(cfg),
         "client_id": str(client_id) if client_id else None,
         "client_secret": str(client_secret) if client_secret else None,
         # PKCE proof matching the code_challenge sent at /start (finding i).

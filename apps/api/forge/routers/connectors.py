@@ -275,6 +275,33 @@ async def list_installed(project_id: str, session: AsyncSession = Depends(get_se
     return out
 
 
+async def _connection_state(tenant_id: str, project_id: str, row: ConnectorInstall,
+                            ap: AuthProvider, user_id: str) -> dict:
+    """`{connected, expires_at}` for one caller against one connector's auth provider.
+
+    The single source of truth for "is this usable right now", shared by the list route and the
+    per-connector status route. The two answer for different scopes but must agree on the rule -
+    when they drifted, the gallery showed a green tick to someone the detail panel then asked to
+    sign in.
+    """
+    if row.auth_mode == "per_user":
+        # A per-user connector has no project-wide answer: a colleague having connected their
+        # own mailbox says nothing about yours.
+        return await AuthProviderService.get_user_connection(tenant_id, project_id, ap, user_id)
+    try:
+        bundle = await SecretStore().read_ref(
+            tenant_id=tenant_id, project_id=project_id,
+            ref=f"secret://proj/{AuthResolver.bundle_secret_name(ap.id)}",
+        )
+    except SecretNotFound:
+        # Only OAuth stores a token bundle; for a key/bearer connector the credential itself is
+        # the connection, so an absent bundle is not "disconnected".
+        return {"connected": ap.kind != "oauth2_authorization_code", "expires_at": None}
+    if not isinstance(bundle, dict):
+        return {"connected": False, "expires_at": None}
+    return {"connected": bool(bundle.get("access_token")), "expires_at": bundle.get("expires_at")}
+
+
 async def _connected_for(session: AsyncSession, tenant_id: str, project_id: str,
                          row: ConnectorInstall, user_id: str,
                          *, provider: AuthProvider | None = None) -> bool:
@@ -287,19 +314,8 @@ async def _connected_for(session: AsyncSession, tenant_id: str, project_id: str,
     ap = provider or await AuthProviderService.get(session, tenant_id, row.auth_provider_id)
     if ap is None:
         return False
-    if row.auth_mode == "per_user":
-        state = await AuthProviderService.get_user_connection(tenant_id, project_id, ap, user_id)
-        return bool(state.get("connected"))
-    try:
-        bundle = await SecretStore().read_ref(
-            tenant_id=tenant_id, project_id=project_id,
-            ref=f"secret://proj/{AuthResolver.bundle_secret_name(ap.id)}",
-        )
-    except SecretNotFound:
-        # Only OAuth stores a token bundle; for a key/bearer connector the credential itself is
-        # the connection, so an absent bundle is not "disconnected".
-        return ap.kind != "oauth2_authorization_code"
-    return bool(isinstance(bundle, dict) and bundle.get("access_token"))
+    state = await _connection_state(tenant_id, project_id, row, ap, user_id)
+    return bool(state.get("connected"))
 
 
 @router.post("/{slug}/install", status_code=201)
@@ -495,6 +511,13 @@ async def _install_on_demand(request: Request, session: AsyncSession, tenant_id:
             session, tenant_id, project_id, manifest, source="catalog",
         )
     except InstallError as e:
+        # Two people can click Connect on the same connector at the same moment; the loser's
+        # install is rejected as a duplicate. That is the right outcome for the ROW and the wrong
+        # one for the person - the connector they asked for now exists, so join it and carry on
+        # to their sign-in rather than telling them it is "already installed".
+        existing = await ConnectorInstaller.get_install(session, tenant_id, project_id, slug)
+        if existing is not None:
+            return existing
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
 
 
@@ -616,23 +639,9 @@ async def connector_status(project_id: str, slug: str, session: AsyncSession = D
     if ap is None:
         out["connected"] = False
         return out
-    if row.auth_mode == "per_user":
-        state = await AuthProviderService.get_user_connection(tenant_id, project_id, ap, str(user.id))
-        out["connected"] = bool(state.get("connected"))
-        out["expires_at"] = state.get("expires_at")
-        return out
-    try:
-        bundle = await SecretStore().read_ref(
-            tenant_id=tenant_id, project_id=project_id,
-            ref=f"secret://proj/{AuthResolver.bundle_secret_name(ap.id)}",
-        )
-    except SecretNotFound:
-        # Only OAuth stores a token bundle; for a key/bearer connector the credential itself is
-        # the connection, so an absent bundle is not "disconnected".
-        out["connected"] = (ap.kind != "oauth2_authorization_code")
-        return out
-    out["connected"] = bool(isinstance(bundle, dict) and bundle.get("access_token"))
-    out["expires_at"] = bundle.get("expires_at") if isinstance(bundle, dict) else None
+    state = await _connection_state(tenant_id, project_id, row, ap, str(user.id))
+    out["connected"] = bool(state.get("connected"))
+    out["expires_at"] = state.get("expires_at")
     return out
 
 

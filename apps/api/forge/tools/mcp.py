@@ -22,10 +22,12 @@ assembler (not the sync `materialize_tool` path).
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import hashlib
 import logging
 import time
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
@@ -35,29 +37,55 @@ from sqlalchemy import select
 from forge.db.base import SessionLocal
 from forge.models import AuthProvider, McpClient
 from forge.secrets.store import SecretStore
-from forge.util.locks import KeyedLocks
-from forge.util.tasks import spawn
 
 log = logging.getLogger("forge.mcp")
 
+
+@dataclass
+class _Cached:
+    """One pooled MCP connection, plus the lock that serializes (re)building it.
+
+    The lock lives HERE rather than in a side registry keyed by the same string. The cache is
+    capped at `_CACHE_MAX`; a separate registry is not, so keying one by a per-user cache key
+    would grow a lock per (server, person) for the life of the process - reintroducing, in the
+    lock table, exactly the unbounded growth the cap exists to prevent.
+
+    `created` drives expiry (age of the connection); `used` drives eviction (last time anyone
+    asked for it). Keeping them apart is what makes eviction least-RECENTLY-USED: a single
+    timestamp refreshed on use would never expire a hot connection, and one that is not
+    refreshed evicts the busiest connection first.
+    """
+
+    created: float
+    used: float
+    client: Any = None
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+
 # Cache MultiServerMCPClient instances per cache key with a TTL so a dead connection or
 # an edited server config is eventually re-established without a process restart (audit F12).
-# The key is `mcp_client_id` for a shared server, and `mcp_client_id::<user-dims-hash>` when
-# the attached auth provider is per-user - WITHOUT that suffix one end user's authenticated
-# session would be handed to the next caller of the same server.
+# The key is `mcp_client_id` for a shared server, and `mcp_client_id::<auth-dims-hash>` when the
+# attached auth provider resolves a DIFFERENT credential per caller - without that suffix one
+# caller's authenticated session would be handed to the next caller of the same server.
 # `invalidate_client` drops every entry for a server (called when the McpClient row changes);
 # `close_all` is called on shutdown.
-_CLIENT_CACHE: dict[str, tuple[float, Any]] = {}
+_CLIENT_CACHE: dict[str, _Cached] = {}
 _CACHE_TTL = 300.0  # seconds
-# Hard ceiling on live connections. The key carries a per-user suffix and every catalog MCP
+# Hard ceiling on live connections. The key carries a per-caller suffix and every catalog MCP
 # connector is per-user, so the cache grows with DISTINCT PEOPLE, not distinct servers - a
 # project where 500 users each connect Notion would otherwise pin 500 transports for the life
 # of the process. The TTL alone doesn't bound it: it only replaces an entry when that same key
 # is asked for again, so an idle user's connection is never revisited and never released.
 _CACHE_MAX = 64
-#: Serializes building a connection for one cache key, so concurrent misses share one client
-#: instead of racing to replace each other's.
-_build_locks = KeyedLocks()
+# A connection leaving the cache is NOT torn down on the spot. `_client_and_tools` hands the
+# client back to its caller and `load_mcp_tool` binds agent tools to it, so a client can still
+# be in use long after the cache stops tracking it - closing it there aborts a call that is
+# already in flight. Retired clients wait out this grace period and are closed by `_reap` on a
+# later cache operation. Deferring through a background task instead would be worse: `spawn`
+# REJECTS (and closes) the coroutine at its in-flight ceiling, which would strand the transport
+# with nothing holding a reference to it.
+_CLOSE_GRACE = 30.0
+_RETIRED: list[tuple[float, Any]] = []
 
 
 async def _aclose(client: Any) -> None:
@@ -67,50 +95,79 @@ async def _aclose(client: Any) -> None:
             await aclose()
 
 
-async def _drop(key: str) -> None:
-    entry = _CLIENT_CACHE.pop(key, None)
-    if entry is not None:
-        await _aclose(entry[1])
+def _retire(client: Any, now: float) -> None:
+    """Hand a client over for closing once its grace period expires."""
+    if client is not None:
+        _RETIRED.append((now + _CLOSE_GRACE, client))
 
 
-def _evict(now: float) -> None:
-    """Release connections nobody is coming back for: first anything past its TTL, then the
-    least-recently-created entries once the cache is over its ceiling.
+async def _reap(now: float, *, force: bool = False) -> None:
+    """Close retired clients whose grace period has passed (all of them when `force`).
 
-    Removal from the dict is synchronous (so the ceiling is honoured immediately), but each
-    close is a network teardown and is handed to a background task. Awaiting a batch of them
-    here would bill one unlucky agent turn for every connection the cache decided to shed.
+    Bounded by construction: entries are only ever added while evicting, which happens inside a
+    cache build, and every build reaps first - so the list holds at most one shedding round.
     """
-    doomed: list[Any] = []
-    for key in [k for k, (ts, _) in _CLIENT_CACHE.items() if now - ts > _CACHE_TTL]:
-        doomed.append(_CLIENT_CACHE.pop(key)[1])
-    while len(_CLIENT_CACHE) > _CACHE_MAX:
-        oldest = min(_CLIENT_CACHE, key=lambda k: _CLIENT_CACHE[k][0])
-        doomed.append(_CLIENT_CACHE.pop(oldest)[1])
-    if doomed:
-        log.debug("mcp cache: evicting %d idle connection(s)", len(doomed))
-        spawn(_close_many(doomed), name="mcp-cache-evict")
-
-
-async def _close_many(clients: list[Any]) -> None:
-    for client in clients:
+    if not _RETIRED:
+        return
+    due = [c for deadline, c in _RETIRED if force or now >= deadline]
+    _RETIRED[:] = [] if force else [(d, c) for d, c in _RETIRED if now < d]
+    for client in due:
         await _aclose(client)
+
+
+def _evictable() -> list[str]:
+    """Keys eligible for eviction: built, and not currently being rebuilt.
+
+    Skipping a locked entry matters - evicting one mid-build would detach the entry its builder
+    is about to write into, producing a live client that the cache no longer tracks and that
+    nothing will ever close.
+    """
+    return [k for k, e in _CLIENT_CACHE.items() if e.client is not None and not e.lock.locked()]
+
+
+async def _evict(now: float) -> None:
+    """Release connections nobody is coming back for: anything past its TTL, then the
+    least-recently-USED entries once the cache is over its ceiling.
+
+    Removal from the dict is synchronous, so the ceiling is honoured immediately; the closes go
+    through `_retire`/`_reap` so shedding a connection can never abort an in-flight call.
+    """
+    shed = 0
+    for key in [k for k in _evictable() if now - _CLIENT_CACHE[k].created > _CACHE_TTL]:
+        _retire(_CLIENT_CACHE.pop(key).client, now)
+        shed += 1
+    while len(_CLIENT_CACHE) > _CACHE_MAX:
+        candidates = _evictable()
+        if not candidates:
+            break  # everything left is mid-build; the next build will trim instead
+        oldest = min(candidates, key=lambda k: _CLIENT_CACHE[k].used)
+        _retire(_CLIENT_CACHE.pop(oldest).client, now)
+        shed += 1
+    if shed:
+        log.debug("mcp cache: retired %d idle connection(s)", shed)
+    await _reap(now)
 
 
 async def invalidate_client(client_id: str) -> None:
     """Drop every cached connection for a server so the next run reconnects with the latest
-    config - including all per-user variants, which share the `<client_id>::` prefix.
+    config - including all per-caller variants, which share the `<client_id>::` prefix.
 
-    Closes what it drops: a popped-but-open transport is a socket nothing will ever reclaim."""
+    Closes what it drops IMMEDIATELY, without the retirement grace: this runs when the server's
+    row was edited or deleted, so the old connection points at configuration that no longer
+    exists and finishing an in-flight call on it is not something to protect.
+    """
     for key in [k for k in _CLIENT_CACHE if k == client_id or k.startswith(client_id + "::")]:
-        await _drop(key)
+        entry = _CLIENT_CACHE.pop(key, None)
+        if entry is not None:
+            await _aclose(entry.client)
 
 
 async def close_all() -> None:
     """Best-effort close of every cached MCP client (transports/subprocesses) on shutdown."""
-    for _, client in list(_CLIENT_CACHE.values()):
-        await _aclose(client)
+    for entry in list(_CLIENT_CACHE.values()):
+        await _aclose(entry.client)
     _CLIENT_CACHE.clear()
+    await _reap(time.monotonic(), force=True)
 
 
 class McpUnavailable(RuntimeError):
@@ -202,6 +259,30 @@ class _ProviderAuth(httpx.Auth):
             yield request
 
 
+def auth_cache_dims(cfg: dict) -> list[str]:
+    """The run-context keys that make one caller's resolved credential different from another's.
+
+    This MUST stay a superset of what `AuthResolver.resolve` varies its own cache on, because the
+    connection pooled here OUTLIVES the request that built it: the `_ProviderAuth` attached to a
+    pooled client captures the context of whoever opened it, and every later caller sharing the
+    cache key is authenticated through that snapshot. Any dimension the resolver treats as
+    caller-specific and this does not is a credential handed to the wrong person.
+
+    Two such dimensions today:
+      * per_user_context_keys - a stored per-user connection (end_user_id).
+      * token_ctx_key         - an INLINE token forwarded on the run (X-Forge-Context), with a
+                                deployment-wide fallback. The resolver added this to its key for
+                                precisely this reason; omitting it here would defeat that.
+    """
+    from forge.config import settings
+
+    dims = list(cfg.get("per_user_context_keys") or [])
+    ctx_key = cfg.get("token_ctx_key") or settings.default_token_ctx_key
+    if ctx_key and ctx_key not in dims:
+        dims.append(ctx_key)
+    return dims
+
+
 async def _auth_for(client_row: McpClient, tenant_id: str, project_id: str, context: dict | None):
     """(httpx.Auth | None, cache-key suffix) for a server's attached auth provider."""
     if not getattr(client_row, "auth_provider_id", None):
@@ -213,13 +294,14 @@ async def _auth_for(client_row: McpClient, tenant_id: str, project_id: str, cont
     from forge.auth_providers.resolver import AuthResolver
 
     context = context or {}
-    per_user = (provider.config or {}).get("per_user_context_keys") or []
-    # Only a per-user provider needs a per-caller connection; a shared one keeps a single
-    # pooled session for the whole project (which is the overwhelmingly common case).
+    # Only a provider that resolves a DIFFERENT credential per caller needs a per-caller
+    # connection; a genuinely shared one keeps a single pooled session for the whole project
+    # (which is the overwhelmingly common case).
+    dims = auth_cache_dims(provider.config or {})
     suffix = ""
-    if per_user:
-        dims = "|".join(f"{k}={context.get(k)}" for k in sorted(per_user))
-        suffix = "::" + hashlib.sha256(dims.encode()).hexdigest()[:16]
+    if dims:
+        fingerprint = "|".join(f"{k}={context.get(k)}" for k in sorted(dims))
+        suffix = "::" + hashlib.sha256(fingerprint.encode()).hexdigest()[:16]
     auth = _ProviderAuth(
         AuthResolver(), tenant_id=tenant_id, project_id=project_id,
         provider_id=provider.id, context=context,
@@ -283,26 +365,50 @@ async def _client_and_tools(client_row: McpClient, tenant_id: str, project_id: s
     now = time.monotonic()
     auth, suffix = await _auth_for(client_row, tenant_id, project_id, context)
     key = client_row.id + suffix
+    # Claim the slot before any await, so two concurrent misses cannot each create an entry (and
+    # therefore each build a client, one of which is silently replaced and never closed). A plain
+    # get-then-set with no await between them is atomic under asyncio; the lock inside the entry
+    # is then the same object for both.
     entry = _CLIENT_CACHE.get(key)
-    if entry is None or (now - entry[0]) > _CACHE_TTL:
-        # Build under a per-key lock. Without it two concurrent misses both construct a client
-        # and the second assignment silently replaces the first, orphaning a transport nobody
-        # holds a reference to and nothing will ever close.
-        lock = await _build_locks.acquire_cm(key)
-        async with lock:
-            entry = _CLIENT_CACHE.get(key)
-            now = time.monotonic()
-            if entry is None or (now - entry[0]) > _CACHE_TTL:
-                await _drop(key)  # close the expired connection rather than orphaning it
-                # Reuse the provider we just resolved instead of making _connection_for re-read it.
-                conn = await _connection_for(client_row, tenant_id, project_id, context, auth=auth)
-                client = MultiServerMCPClient({client_row.name: conn})
-                _CLIENT_CACHE[key] = (now, client)
-                _evict(now)
-            else:
-                client = entry[1]
+    if entry is None:
+        entry = _CLIENT_CACHE[key] = _Cached(created=0.0, used=now)
+
+    def _fresh() -> bool:
+        return entry.client is not None and (time.monotonic() - entry.created) <= _CACHE_TTL
+
+    if _fresh():
+        entry.used = now
     else:
-        client = entry[1]
+        async with entry.lock:
+            now = time.monotonic()
+            if _fresh():
+                entry.used = now
+            else:
+                # Retire (don't close) the expired connection: a caller from before the TTL
+                # elapsed may still be running against it.
+                _retire(entry.client, now)
+                entry.client = None
+                try:
+                    # Reuse the provider we just resolved instead of making _connection_for
+                    # re-read it.
+                    conn = await _connection_for(client_row, tenant_id, project_id, context, auth=auth)
+                    entry.client = MultiServerMCPClient({client_row.name: conn})
+                except BaseException:
+                    # Don't leave an empty entry parked in the cache: it can never be evicted
+                    # (nothing to retire) yet still counts against the ceiling.
+                    if _CLIENT_CACHE.get(key) is entry:
+                        del _CLIENT_CACHE[key]
+                    raise
+                entry.created = entry.used = now
+                if _CLIENT_CACHE.get(key) is not entry:
+                    # `invalidate_client` ran while we were connecting and dropped this entry
+                    # (it does not wait for a build - the config it was building against is
+                    # already gone). Hand this call the client we just made, but retire it so
+                    # the detached transport is still closed rather than orphaned.
+                    _retire(entry.client, now)
+                else:
+                    await _evict(now)
+    client = entry.client
     tools = await client.get_tools()
     return client, tools
 

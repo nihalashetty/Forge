@@ -242,11 +242,13 @@ class Settings(BaseSettings):
     # the install seeds the project's credentials from this map and the user goes straight to
     # "Connect account" -> vendor consent screen -> done. That is the one-click experience.
     #
-    # Register ONE app per vendor for the whole deployment (or per fleet). For Google this is a
-    # "Desktop app" OAuth client, whose client secret Google explicitly documents as NOT
-    # confidential ("the client secret is obviously not treated as a secret") because it ships
-    # inside distributed software - which is precisely this case. Loopback/localhost redirects
-    # need no per-install registration for that client type.
+    # Register ONE app per vendor for the whole deployment (or per fleet), with
+    # <FORGE_PUBLIC_BASE_URL>/v1/oauth/callback as its redirect URI. For Google that means a
+    # "Web application" OAuth client: only that client type has an Authorized redirect URIs
+    # field, and Forge's callback is a real https path on the API's own origin, not a loopback
+    # address. (A Desktop client cannot register it at all - the sign-in then fails with
+    # redirect_uri_mismatch.) Each connector's `setup_help` says the same thing; keep them
+    # in step.
     #
     # Env: FORGE_CONNECTOR_OAUTH_APPS='{"google":{"client_id":"...","client_secret":"..."}}'
     # Unset = each project registers its own app and pastes the credentials (previous behavior).

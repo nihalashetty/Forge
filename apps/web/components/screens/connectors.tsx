@@ -61,6 +61,17 @@ export function ConnectorsScreen({ project, onOpenToolSet }: { project: any; onO
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
+  // The "you came back from the consent window" listener. Held in a ref so it can be detached on
+  // unmount and replaced (not stacked) if Connect is clicked again - otherwise leaving the screen
+  // mid-sign-in leaves it bound to window forever, firing setState on a gone component.
+  const focusRef = useRef<(() => void) | null>(null);
+  const dropFocusWatch = useCallback(() => {
+    if (focusRef.current) {
+      window.removeEventListener("focus", focusRef.current);
+      focusRef.current = null;
+    }
+  }, []);
+  useEffect(() => dropFocusWatch, [dropFocusWatch]);
 
   const reload = useCallback(async () => {
     if (!project?.id) return;
@@ -89,18 +100,22 @@ export function ConnectorsScreen({ project, onOpenToolSet }: { project: any; onO
       // decide how long a sign-in takes.
       window.open(authorize_url, "_blank", "width=720,height=820");
       setNote("Finish signing in in the new window — this page updates when you come back.");
-      const onFocus = async () => {
-        window.removeEventListener("focus", onFocus);
-        try { await api.syncConnector(project.id, slug); } catch { /* not connected yet, or not an editor */ }
-        reload();
+      dropFocusWatch();  // one pending watch at a time, whichever connector was clicked last
+      const onFocus = () => {
+        dropFocusWatch();
+        (async () => {
+          try { await api.syncConnector(project.id, slug); } catch { /* not connected yet, or not an editor */ }
+          reload();
+        })();
       };
+      focusRef.current = onFocus;
       window.addEventListener("focus", onFocus);
     } catch (e: any) {
       setErr(e?.message || "Could not start sign-in");
     } finally {
       setBusy(null);
     }
-  }, [project.id, reload]);
+  }, [project.id, reload, dropFocusWatch]);
 
   // Custom (non-catalog) installs have no catalog entry, so they are synthesised into rows -
   // otherwise a connector someone installed from their own manifest would be invisible here.

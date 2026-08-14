@@ -127,6 +127,12 @@ async def set_scope(
     be able to reassign it. Making one personal is open to the person it runs as - it is their
     account doing the work - but not to a bystander, because hiding a trigger others rely on
     would look exactly like it disappearing.
+
+    Making one personal is deliberately NOT an ordinary editor power. "Personal" means "listed
+    only for the person it runs as", so an editor doing it to a trigger that runs as someone else
+    - or as nobody - removes it from their own screen the instant they click, with no control
+    left to put it back. Only the person it runs as, or an admin (who keeps oversight visibility
+    either way), can take that step.
     """
     if body.scope not in SCOPES:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"scope must be one of {list(SCOPES)}")
@@ -138,15 +144,24 @@ async def set_scope(
     if trigger is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "trigger not found")
 
-    is_editor = role_at_least(await effective_role(user, request), "editor")
+    role = await effective_role(user, request)
+    is_editor = role_at_least(role, "editor")
+    is_admin = role_at_least(role, "admin")
     owns_it = bool(trigger.run_as_user_id) and trigger.run_as_user_id == str(user.id)
     if body.scope == "project" and not is_editor:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "sharing a trigger with the project requires role 'editor'")
-    if body.scope == "user" and not (owns_it or is_editor):
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN,
-            "only the person a trigger runs as (or an editor) can make it personal",
-        )
+    if body.scope == "user":
+        if not trigger.run_as_user_id:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "this trigger doesn't run as anyone yet - set 'Runs as' first, or it would be "
+                "personal to nobody and listed for nobody",
+            )
+        if not (owns_it or is_admin):
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                "only the person a trigger runs as (or an admin) can make it personal",
+            )
     trigger.scope = body.scope
     await session.commit()
     return {"scope": trigger.scope}

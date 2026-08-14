@@ -207,13 +207,22 @@ export function TriggersScreen({ project }: { project: any }) {
                 </button>
               )}
               <span style={{ flex: 1 }} />
-              <button className="btn btn-ghost btn-sm" disabled={busy === t.id}
-                title={t.scope === "user"
-                  ? "Make this a team automation: everyone in the project sees and can manage it."
-                  : "Make this yours: it disappears from your colleagues' Triggers list."}
-                onClick={() => move(t.id, t.scope === "user" ? "project" : "user")}>
-                {t.scope === "user" ? "Share with project" : "Make personal"}
-              </button>
+              {/* "Make personal" means "listed only for the person it runs as", so offering it
+                  on someone else's trigger offers to hide it from yourself with no way back.
+                  It is only ever shown for a trigger that already runs as you. */}
+              {t.scope === "user" ? (
+                <button className="btn btn-ghost btn-sm" disabled={busy === t.id}
+                  title="Make this a team automation: everyone in the project sees and can manage it."
+                  onClick={() => move(t.id, "project")}>
+                  Share with project
+                </button>
+              ) : t.run_as_is_me ? (
+                <button className="btn btn-ghost btn-sm" disabled={busy === t.id}
+                  title="Make this yours: it disappears from your colleagues' Triggers list."
+                  onClick={() => move(t.id, "user")}>
+                  Make personal
+                </button>
+              ) : null}
             </div>
           </div>
         ))}
