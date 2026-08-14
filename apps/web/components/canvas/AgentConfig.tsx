@@ -18,6 +18,9 @@ export function AgentConfig({ config, onChange, tools = [], toolSets = [], agent
   const selectedTools: string[] = config.tools || [];
   const selectedComponents: string[] = config.components || [];
   const mwCount = (config.middleware || []).filter((m: MW) => m.enabled !== false).length;
+  // Servers a person registered by hand. A connector's server is excluded because its actions
+  // are already grantable above as that connector's tool set.
+  const rawMcpServers = mcpServers.filter((m) => !m.connector_slug);
 
   const toggleTool = (id: string) =>
     set({ tools: selectedTools.includes(id) ? selectedTools.filter((t) => t !== id) : [...selectedTools, id] });
@@ -130,6 +133,9 @@ export function AgentConfig({ config, onChange, tools = [], toolSets = [], agent
                 <div className="row spread" style={{ padding: "8px 10px", cursor: "pointer" }} onClick={() => toggleOpen(s.id)}>
                   <div className="row gap2" style={{ alignItems: "center", minWidth: 0 }}>
                     <Icon name={open ? "chevdown" : "chevright"} size={14} style={{ color: "var(--fg-2)", flex: "none" }} />
+                    {/* A connector's set carries its icon, so Slack/Gmail/… are recognizable
+                        at a glance rather than reading as anonymous folders. */}
+                    {s.icon && <Icon name={s.icon} size={14} style={{ color: "var(--fg-1)", flex: "none" }} />}
                     <span className="mono-sm truncate">{s.name}</span>
                     <span className="t-caption fg-2">{sel}/{members.length}</span>
                   </div>
@@ -174,7 +180,7 @@ export function AgentConfig({ config, onChange, tools = [], toolSets = [], agent
             </div>
           )}
           {toolSets.length === 0 && ungrouped.length === 0 && (
-            <div className="t-caption fg-2">No tools yet — create some on the Tools screen.</div>
+            <div className="t-caption fg-2">No tools yet — install a connector (Slack, Gmail, …) on the Connectors screen, or build one on the Tools screen.</div>
           )}
         </div>
       </CollapsibleSection>
@@ -260,10 +266,14 @@ export function AgentConfig({ config, onChange, tools = [], toolSets = [], agent
         </div>
       </CollapsibleSection>
 
-      {mcpServers.length > 0 && (
-        <Section label="MCP servers" hint="Grant this agent the enabled tools from these MCP servers. Manage servers + per-tool toggles in Build → External MCP.">
+      {/* Connector-owned servers are deliberately absent: their actions are already offered
+          above as a tool set, and listing the same integration twice - once as "Notion" the set
+          and again as "Notion" the server - makes one connection look like two choices that do
+          the same thing. Only hand-registered servers need a grant here. */}
+      {rawMcpServers.length > 0 && (
+        <Section label="MCP servers" hint="Grant this agent the enabled tools from these hand-registered MCP servers. Connector servers are granted above, as tool sets.">
           <div className="row gap2 wrap">
-            {mcpServers.map((m) => {
+            {rawMcpServers.map((m) => {
               const on = (config.mcp_servers || []).includes(m.id);
               return (
                 <button key={m.id} className="chip" onClick={() => {

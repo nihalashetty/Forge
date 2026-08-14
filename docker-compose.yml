@@ -87,6 +87,14 @@ services:
       # (default-deny, explicit-allow). JSON array. From inside the container "localhost" is the
       # container itself - use ["host.docker.internal"] to reach a service on the Docker host.
       FORGE_EGRESS_ALLOW_PRIVATE_HOSTS: ${FORGE_EGRESS_ALLOW_PRIVATE_HOSTS:-}
+      # Vendor OAuth apps for CONNECTORS, keyed by credential group (google, microsoft, github,
+      # hubspot, airtable). This is the ONLY place a bundled connector's credentials come from -
+      # register each vendor app once, and every user connects their own account in one click.
+      # Unset just means those connectors report themselves unavailable; Slack/Notion/Linear/
+      # Atlassian register a client dynamically and need no entry. See .env.example.
+      FORGE_CONNECTOR_OAUTH_APPS: ${FORGE_CONNECTOR_OAUTH_APPS:-}
+      # Per-environment values exposed to REST/GraphQL tool + auth templates as {{env.*}}.
+      FORGE_TOOL_VARS: ${FORGE_TOOL_VARS:-}
       # Suppress IPv6 (AAAA) DNS lookups at the glibc resolver. Docker's embedded resolver
       # (127.0.0.11) STALLS ~4-5s on the AAAA query for hosts with no IPv6 address (api.openai.com,
       # ...), and glibc waits for it before falling back to the A record - so the FIRST (cold)
@@ -154,6 +162,10 @@ services:
       # Same egress allowances as the api, so worker-executed tool runs (webhook/schedule
       # triggers) can reach the same internal targets (default-deny, explicit-allow).
       FORGE_EGRESS_ALLOW_PRIVATE_HOSTS: ${FORGE_EGRESS_ALLOW_PRIVATE_HOSTS:-}
+      # Same connector apps and tool vars as the api, so a worker-executed run resolves the same
+      # credentials and renders the same {{env.*}} endpoints as an api-executed one.
+      FORGE_CONNECTOR_OAUTH_APPS: ${FORGE_CONNECTOR_OAUTH_APPS:-}
+      FORGE_TOOL_VARS: ${FORGE_TOOL_VARS:-}
       # Suppress the slow IPv6/AAAA DNS lookup on cold outbound connections - same fix and rationale
       # as the api service (see the comment there); the worker makes the same LLM/tool calls.
       RES_OPTIONS: ${RES_OPTIONS:-no-aaaa}

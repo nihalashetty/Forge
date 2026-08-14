@@ -1,0 +1,51 @@
+{
+  "format": "forge.connector/1",
+  "slug": "sendgrid",
+  "name": "SendGrid",
+  "version": "1.0.0",
+  "publisher": "forge",
+  "summary": "Send transactional email through SendGrid.",
+  "categories": ["email"],
+  "roles": ["Marketing", "Operations", "Software Engineer"],
+  "icon": "mail",
+  "docs_url": "https://www.twilio.com/docs/sendgrid/api-reference",
+  "setup_url": "https://app.sendgrid.com/settings/api_keys",
+  "auth": {
+    "kind": "bearer",
+    "prefix": "Bearer ",
+    "per_user": "never",
+    "setup_help": "Create a restricted API key with only Mail Send permission. The sender address must already be verified in SendGrid.",
+    "setup": [
+      { "key": "token", "label": "API key", "secret": true, "required": true, "placeholder": "SG.…" },
+      { "key": "from_email", "label": "Default sender address", "secret": false, "required": true, "placeholder": "noreply@acme.com", "help": "Must be a verified sender in SendGrid." }
+    ]
+  },
+  "egress_hosts": ["api.sendgrid.com"],
+  "backend": {
+    "type": "rest",
+    "base_url": "https://api.sendgrid.com/v3",
+    "actions": [
+      {
+        "name": "sendgrid_send_email",
+        "display_name": "Send email",
+        "description": "Send a plain-text email to one recipient from the configured sender address.",
+        "request": {
+          "method": "POST",
+          "url_template": "/mail/send",
+          "fields": [
+            { "path": "to", "in": "body", "type": "string", "required": true, "llm_visible": true, "description": "Recipient email address." },
+            { "path": "subject", "in": "body", "type": "string", "required": true, "llm_visible": true, "description": "Subject line." },
+            { "path": "body", "in": "body", "type": "string", "required": true, "llm_visible": true, "description": "Message body (plain text)." },
+            { "path": "from_email", "in": "body", "type": "string", "required": false, "llm_visible": false, "default": "{setup.from_email}" }
+          ],
+          "body_template": "{\"personalizations\":[{\"to\":[{\"email\":\"{{input.to}}\"}]}],\"from\":{\"email\":\"{{input.from_email}}\"},\"subject\":\"{{input.subject}}\",\"content\":[{\"type\":\"text/plain\",\"value\":\"{{input.body}}\"}]}",
+          "headers": [{ "name": "Content-Type", "value": "application/json" }]
+        },
+        "response": { "projection_jmespath": "{sent: `true`}" }
+      }
+    ]
+  },
+  "toolset": {
+    "description": "SendGrid: send transactional email."
+  }
+}

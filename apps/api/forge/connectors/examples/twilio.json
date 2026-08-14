@@ -1,0 +1,64 @@
+{
+  "format": "forge.connector/1",
+  "slug": "twilio",
+  "name": "Twilio",
+  "version": "1.0.0",
+  "publisher": "forge",
+  "summary": "Send SMS messages and read message history.",
+  "categories": ["messaging"],
+  "roles": ["Support", "Operations", "Marketing"],
+  "icon": "message-square",
+  "docs_url": "https://www.twilio.com/docs/messaging/api",
+  "setup_url": "https://console.twilio.com",
+  "auth": {
+    "kind": "basic",
+    "per_user": "never",
+    "setup_help": "Username is your Account SID, password is the Auth Token (or an API Key SID/Secret pair). Both are on the Twilio console dashboard.",
+    "setup": [
+      { "key": "account_sid", "label": "Account SID", "secret": false, "required": true, "placeholder": "AC…", "help": "Also used in the request URL." },
+      { "key": "username", "label": "Account SID or API Key SID", "secret": true, "required": true },
+      { "key": "password", "label": "Auth token or API key secret", "secret": true, "required": true },
+      { "key": "from_number", "label": "Default sending number", "secret": false, "required": true, "placeholder": "+15551234567" }
+    ]
+  },
+  "egress_hosts": ["api.twilio.com"],
+  "backend": {
+    "type": "rest",
+    "base_url": "https://api.twilio.com/2010-04-01/Accounts/{setup.account_sid}",
+    "actions": [
+      {
+        "name": "twilio_send_sms",
+        "display_name": "Send SMS",
+        "description": "Send an SMS message. `to` must be in E.164 format, e.g. +15551234567.",
+        "request": {
+          "method": "POST",
+          "url_template": "/Messages.json",
+          "fields": [
+            { "path": "To", "in": "body", "type": "string", "required": true, "llm_visible": true, "description": "Recipient number in E.164 format." },
+            { "path": "Body", "in": "body", "type": "string", "required": true, "llm_visible": true, "description": "Message text." },
+            { "path": "From", "in": "body", "type": "string", "required": false, "llm_visible": false, "default": "{setup.from_number}" }
+          ]
+        },
+        "response": { "projection_jmespath": "{sid: sid, status: status, to: to}" }
+      },
+      {
+        "name": "twilio_list_messages",
+        "display_name": "List messages",
+        "description": "List recent SMS messages, optionally filtered by the other party's number.",
+        "request": {
+          "method": "GET",
+          "url_template": "/Messages.json",
+          "fields": [
+            { "path": "To", "in": "query", "type": "string", "required": false, "llm_visible": true, "description": "Filter by recipient number." },
+            { "path": "From", "in": "query", "type": "string", "required": false, "llm_visible": true, "description": "Filter by sender number." },
+            { "path": "PageSize", "in": "query", "type": "integer", "required": false, "llm_visible": true, "default": 20 }
+          ]
+        },
+        "response": { "projection_jmespath": "messages[].{sid: sid, from: from, to: to, body: body, status: status, sent: date_sent}" }
+      }
+    ]
+  },
+  "toolset": {
+    "description": "Twilio: send SMS and list message history."
+  }
+}

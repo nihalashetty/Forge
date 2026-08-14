@@ -236,6 +236,12 @@ class McpClient(PkTimestamp, Base):
     headers_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     disabled_tools: Mapped[list] = mapped_column(JSON, default=list)  # remote tool names toggled off in the External MCP tab
+    # An Auth Provider whose resolved headers are attached to every request to this server.
+    # This is what lets Forge talk to an OAuth-protected remote MCP server (mcp.slack.com,
+    # the Google Workspace / Microsoft servers, Notion, Linear, …) instead of only servers
+    # that accept a static header secret. Nullable: existing rows and open servers are
+    # unaffected, and `headers_ref` still works (both are merged, provider wins on conflict).
+    auth_provider_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
 
 class Thread(PkTimestamp, Base):
@@ -315,6 +321,29 @@ class Trigger(PkTimestamp, Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     last_fired_at: Mapped[datetime | None] = mapped_column(nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="active")
+    # Two INDEPENDENT axes, deliberately - conflating them is what makes automation ownership
+    # confusing in most tools:
+    #
+    #   run_as_user_id - WHOSE connected accounts the run uses.
+    #   scope          - WHO the trigger belongs to, and therefore who sees it.
+    #
+    # A salesperson's own lead-chaser is `user` scope running as them. A platform team's
+    # prod-monitor is `project` scope, still running as whoever's accounts it needs. The two vary
+    # separately: a shared team automation can legitimately act through one person's Slack.
+    #
+    # WHOSE connected accounts an unattended run uses. A webhook or a schedule has no signed-in
+    # person, so without this a per-user connector (every catalog connector is one) has no
+    # identity to resolve a token for and the run fails at the first tool call. Stamped with the
+    # editor who saved the workflow the trigger came from, and preserved when a colleague later
+    # edits that workflow - the automation belongs to whoever connected the account behind it,
+    # not to whoever last fixed a typo. Reassignable from the Triggers screen.
+    run_as_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    # "project" (a team automation everyone sees) | "user" (someone's own, listed only for them).
+    # Defaults to "project" so a pre-existing trigger keeps behaving exactly as it did; new ones
+    # take their default from the role of whoever saved the workflow (see TriggerService).
+    # NOTE: this is ownership and visibility, NOT access control on the event itself. A webhook
+    # URL is a credential - anyone holding it fires the trigger regardless of scope.
+    scope: Mapped[str] = mapped_column(String(10), default="project")
     # Runtime state (e.g. app_event dedupe cursor / seen ids); NOT synced from the node.
     meta: Mapped[dict] = mapped_column("metadata", JSON, default=dict)
 
@@ -521,3 +550,40 @@ class UserSecurity(PkTimestamp, Base):
     email_verified_at: Mapped[datetime | None] = mapped_column(nullable=True)
     totp_secret: Mapped[str | None] = mapped_column(String(64), nullable=True)
     totp_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class ConnectorInstall(PkTimestamp, Base):
+    """One installed connector - the receipt for a manifest that was expanded into real rows.
+
+    A connector is NOT a runtime concept: installing one creates an `AuthProvider`, a `ToolSet`,
+    N `Tool` rows (and an `McpClient` for MCP-backed connectors), and from then on agents,
+    workflow tool nodes, the MCP server and traces treat them like any other hand-built tool.
+    Delete `forge/connectors/` and every installed connector keeps working.
+
+    This row exists so the install is REVERSIBLE and UPGRADABLE: it records exactly which rows
+    the install created (so uninstall removes those and nothing else) and freezes the manifest
+    that produced them (so a catalog update can be diffed against what's actually deployed
+    rather than assumed).
+    """
+
+    __tablename__ = "connector_installs"
+    __table_args__ = (UniqueConstraint("tenant_id", "project_id", "slug", name="uq_connector_install_slug"),)
+    tenant_id: Mapped[str] = mapped_column(String(36), index=True)
+    project_id: Mapped[str] = mapped_column(String(36), index=True)
+    slug: Mapped[str] = mapped_column(String(120), index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    version: Mapped[str] = mapped_column(String(40), default="1.0.0")
+    source: Mapped[str] = mapped_column(String(20), default="catalog")  # catalog | custom | url
+    # Frozen copy of the manifest that produced this install. Survives catalog edits/upgrades,
+    # so uninstall and "what changed?" stay correct even if the bundled file moved on.
+    manifest: Mapped[dict] = mapped_column(JSON, default=dict)
+    auth_provider_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    tool_set_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    mcp_client_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_tool_ids: Mapped[list] = mapped_column(JSON, default=list)
+    created_secret_names: Mapped[list] = mapped_column(JSON, default=list)
+    # needs_setup (credentials missing) | needs_auth (connect flow not run) | connected | error
+    status: Mapped[str] = mapped_column(String(20), default="needs_setup")
+    status_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # "shared" (one project-wide account) | "per_user" (each end user connects their own).
+    auth_mode: Mapped[str] = mapped_column(String(20), default="shared")

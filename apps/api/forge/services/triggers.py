@@ -16,11 +16,39 @@ from sqlalchemy import select
 from forge.models import Trigger
 from forge.nodes.triggers import TRIGGER_TYPES
 
+#: Scopes a trigger can have. "project" is a team automation everyone sees; "user" is someone's
+#: own, listed only for them.
+SCOPES = ("project", "user")
+
+
+def default_scope_for(role: str | None) -> str:
+    """Whether a NEW trigger this person creates belongs to the project or to them.
+
+    Admins and owners are configuring the project - a build pipeline, a prod monitor - so what
+    they add is the team's. Everyone else is building for themselves (a salesperson's own
+    lead-chaser), so theirs stays theirs until they deliberately share it. Either way the choice
+    is only a default: both directions are one click on the Triggers screen.
+    """
+    return "project" if role in ("owner", "admin") else "user"
+
 
 class TriggerService:
     @staticmethod
-    async def sync_from_workflow(session, workflow) -> list[Trigger]:
-        """Upsert one Trigger per trigger node in the workflow; drop removed ones."""
+    async def sync_from_workflow(session, workflow, *, owner: str | None = None,
+                                 scope: str | None = None) -> list[Trigger]:
+        """Upsert one Trigger per trigger node in the workflow; drop removed ones.
+
+        `owner` is the editor doing the save. It becomes the trigger's `run_as_user_id` - the
+        identity an unattended run acts as - and is only ever stamped on a trigger that doesn't
+        have one yet. A colleague editing the workflow must NOT silently take ownership: the
+        automation runs on whoever's Gmail/Slack account is connected behind it, and quietly
+        repointing that at the last person to touch the canvas would change what the workflow
+        can see without anyone deciding to. Reassignment is explicit (Triggers screen).
+
+        `scope` is the same story for ownership: applied only when the trigger is NEW. Editing a
+        workflow must never move a team automation into someone's private list, nor publish
+        someone's private one to the whole project.
+        """
         ex = workflow.executable or {}
         nodes = [n for n in ex.get("nodes", []) if isinstance(n, dict) and n.get("type") in TRIGGER_TYPES]
         existing = list((await session.execute(
@@ -39,7 +67,8 @@ class TriggerService:
                     tenant_id=workflow.tenant_id, project_id=workflow.project_id,
                     workflow_id=workflow.id, node_id=node_id, kind=n["type"],
                     key=uuid.uuid4().hex if n["type"] == "webhook_in" else None,
-                    config=cfg, enabled=True,
+                    config=cfg, enabled=True, run_as_user_id=owner,
+                    scope=(scope if scope in SCOPES else "project"),
                 )
                 session.add(trig)
             else:
@@ -47,6 +76,10 @@ class TriggerService:
                 trig.config = cfg
                 if n["type"] == "webhook_in" and not trig.key:
                     trig.key = uuid.uuid4().hex
+                # Adopt an owner for a trigger created before this column existed, but never
+                # replace one that is already set (see the docstring).
+                if not trig.run_as_user_id and owner:
+                    trig.run_as_user_id = owner
             out.append(trig)
         # Remove triggers whose node no longer exists.
         for t in existing:

@@ -31,6 +31,7 @@ class ProjectCountsOut(BaseModel):
     knowledge: int
     auth: int
     handoffs: int
+    connectors: int = 0
 
 
 class ProjectCreate(BaseModel):

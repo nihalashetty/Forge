@@ -1,0 +1,253 @@
+{
+  "format": "forge.connector/1",
+  "slug": "outlook",
+  "name": "Outlook",
+  "version": "1.0.0",
+  "publisher": "forge",
+  "summary": "Read, search, and send mail from an Outlook / Microsoft 365 mailbox.",
+  "categories": [
+    "email"
+  ],
+  "roles": [
+    "Support",
+    "Sales",
+    "Operations",
+    "Executive Assistant"
+  ],
+  "icon": "mail",
+  "docs_url": "https://learn.microsoft.com/graph/api/resources/mail-api-overview",
+  "setup_url": "https://entra.microsoft.com",
+  "auth": {
+    "kind": "oauth2_authorization_code",
+    "authorize_url": "https://login.microsoftonline.com/{setup.tenant}/oauth2/v2.0/authorize",
+    "token_url": "https://login.microsoftonline.com/{setup.tenant}/oauth2/v2.0/token",
+    "scopes": [
+      "offline_access",
+      "Mail.ReadWrite",
+      "Mail.Send",
+      "User.Read"
+    ],
+    "per_user": "required",
+    "setup_help": "Register an application in Microsoft Entra ID, add the redirect URI shown above as a Web platform, and grant the delegated Mail.ReadWrite / Mail.Send permissions. Use tenant 'common' for multi-tenant, or your directory (tenant) ID to restrict it to your organisation.",
+    "setup": [
+      {
+        "key": "tenant",
+        "label": "Directory (tenant) ID",
+        "secret": false,
+        "required": false,
+        "default": "common",
+        "help": "'common' works for most setups; use your tenant GUID to lock sign-in to your org."
+      },
+      {
+        "key": "client_id",
+        "label": "Application (client) ID",
+        "secret": true,
+        "required": true
+      },
+      {
+        "key": "client_secret",
+        "label": "Client secret",
+        "secret": true,
+        "required": true
+      }
+    ],
+    "credential_group": "microsoft"
+  },
+  "egress_hosts": [
+    "graph.microsoft.com",
+    "login.microsoftonline.com"
+  ],
+  "backend": {
+    "type": "rest",
+    "base_url": "https://graph.microsoft.com/v1.0/me",
+    "actions": [
+      {
+        "name": "outlook_search_messages",
+        "display_name": "Search email",
+        "description": "Search the mailbox. Use `search` for free-text (e.g. 'invoice overdue') or `filter` for OData filters (e.g. \"isRead eq false\").",
+        "request": {
+          "method": "GET",
+          "url_template": "/messages",
+          "fields": [
+            {
+              "path": "$search",
+              "in": "query",
+              "type": "string",
+              "required": false,
+              "llm_visible": true,
+              "description": "Free-text search across the mailbox. Quote the phrase, e.g. \"invoice\"."
+            },
+            {
+              "path": "$filter",
+              "in": "query",
+              "type": "string",
+              "required": false,
+              "llm_visible": true,
+              "description": "OData filter, e.g. isRead eq false."
+            },
+            {
+              "path": "$top",
+              "in": "query",
+              "type": "integer",
+              "required": false,
+              "llm_visible": true,
+              "default": 10,
+              "description": "How many messages to return."
+            },
+            {
+              "path": "$select",
+              "in": "query",
+              "type": "string",
+              "required": false,
+              "llm_visible": false,
+              "default": "id,subject,from,receivedDateTime,isRead,bodyPreview"
+            }
+          ]
+        },
+        "response": {
+          "projection_jmespath": "value[].{id: id, subject: subject, from: from.emailAddress.address, received: receivedDateTime, unread: isRead, preview: bodyPreview}"
+        }
+      },
+      {
+        "name": "outlook_get_message",
+        "display_name": "Read email",
+        "description": "Fetch one message by id, including its plain-text body.",
+        "request": {
+          "method": "GET",
+          "url_template": "/messages/{message_id}",
+          "fields": [
+            {
+              "path": "message_id",
+              "in": "path",
+              "type": "string",
+              "required": true,
+              "llm_visible": true,
+              "description": "Message id from outlook_search_messages."
+            },
+            {
+              "path": "$select",
+              "in": "query",
+              "type": "string",
+              "required": false,
+              "llm_visible": false,
+              "default": "id,subject,from,toRecipients,receivedDateTime,body"
+            }
+          ]
+        },
+        "response": {
+          "projection_jmespath": "{id: id, subject: subject, from: from.emailAddress.address, to: toRecipients[].emailAddress.address, received: receivedDateTime, body: body.content}"
+        }
+      },
+      {
+        "name": "outlook_send_message",
+        "display_name": "Send email",
+        "description": "Send an email immediately from the connected mailbox.",
+        "request": {
+          "method": "POST",
+          "url_template": "/sendMail",
+          "fields": [
+            {
+              "path": "to",
+              "in": "body",
+              "type": "string",
+              "required": true,
+              "llm_visible": true,
+              "description": "Recipient email address."
+            },
+            {
+              "path": "subject",
+              "in": "body",
+              "type": "string",
+              "required": true,
+              "llm_visible": true,
+              "description": "Subject line."
+            },
+            {
+              "path": "body",
+              "in": "body",
+              "type": "string",
+              "required": true,
+              "llm_visible": true,
+              "description": "Message body (plain text)."
+            }
+          ],
+          "body_template": "{\"message\":{\"subject\":\"{{input.subject}}\",\"body\":{\"contentType\":\"Text\",\"content\":\"{{input.body}}\"},\"toRecipients\":[{\"emailAddress\":{\"address\":\"{{input.to}}\"}}]},\"saveToSentItems\":true}"
+        },
+        "response": {
+          "projection_jmespath": "{sent: `true`}"
+        }
+      },
+      {
+        "name": "outlook_reply_to_message",
+        "display_name": "Reply to email",
+        "description": "Reply to an existing message, keeping it on the same thread.",
+        "request": {
+          "method": "POST",
+          "url_template": "/messages/{message_id}/reply",
+          "fields": [
+            {
+              "path": "message_id",
+              "in": "path",
+              "type": "string",
+              "required": true,
+              "llm_visible": true,
+              "description": "Message id to reply to."
+            },
+            {
+              "path": "comment",
+              "in": "body",
+              "type": "string",
+              "required": true,
+              "llm_visible": true,
+              "description": "Reply text."
+            }
+          ]
+        },
+        "response": {
+          "projection_jmespath": "{sent: `true`}"
+        }
+      },
+      {
+        "name": "outlook_list_events",
+        "display_name": "List calendar events",
+        "description": "List upcoming calendar events between two ISO-8601 timestamps.",
+        "request": {
+          "method": "GET",
+          "url_template": "/calendarView",
+          "fields": [
+            {
+              "path": "startDateTime",
+              "in": "query",
+              "type": "string",
+              "required": true,
+              "llm_visible": true,
+              "description": "Window start, ISO-8601 (e.g. 2026-08-13T00:00:00Z)."
+            },
+            {
+              "path": "endDateTime",
+              "in": "query",
+              "type": "string",
+              "required": true,
+              "llm_visible": true,
+              "description": "Window end, ISO-8601."
+            },
+            {
+              "path": "$top",
+              "in": "query",
+              "type": "integer",
+              "required": false,
+              "llm_visible": true,
+              "default": 20
+            }
+          ]
+        },
+        "response": {
+          "projection_jmespath": "value[].{id: id, subject: subject, start: start.dateTime, end: end.dateTime, organizer: organizer.emailAddress.address}"
+        }
+      }
+    ]
+  },
+  "toolset": {
+    "description": "Outlook / Microsoft 365 mail and calendar: search, read, send, reply, and list events."
+  }
+}

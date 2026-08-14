@@ -220,6 +220,7 @@ export function CommandPalette({ open, onClose, onGo, projects }: { open: boolea
       { sec: "Go to", label: "Playground", icon: "playground", go: { name: "project", project: first, screen: "playground" } },
       { sec: "Go to", label: "Traces", icon: "traces", go: { name: "project", project: first, screen: "traces" } },
       { sec: "Go to", label: "Knowledge", icon: "knowledge", go: { name: "project", project: first, screen: "knowledge" } },
+      { sec: "Go to", label: "Connectors", icon: "plug", go: { name: "project", project: first, screen: "connectors" } },
       { sec: "Go to", label: "Settings & Secrets", icon: "secret", go: { name: "project", project: first, screen: "settings" } },
       { sec: "Actions", label: "New project…", icon: "plus", go: { name: "onboarding" } },
     ];

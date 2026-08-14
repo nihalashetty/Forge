@@ -1,0 +1,36 @@
+{
+  "format": "forge.connector/1",
+  "slug": "slack",
+  "name": "Slack",
+  "version": "1.0.0",
+  "publisher": "forge",
+  "summary": "Post messages, search history, and manage channels in a Slack workspace.",
+  "categories": ["messaging"],
+  "roles": ["Software Engineer", "Support", "Sales", "Marketing", "Product Manager"],
+  "icon": "message-square",
+  "docs_url": "https://api.slack.com/docs",
+  "setup_url": "https://api.slack.com/apps",
+  "auth": {
+    "kind": "oauth2_authorization_code",
+    "discover": true,
+    "authorize_url": "https://slack.com/oauth/v2/authorize",
+    "token_url": "https://slack.com/api/oauth.v2.access",
+    "scopes": ["chat:write", "channels:read", "channels:history", "search:read", "users:read"],
+    "per_user": "required",
+    "setup_help": "Slack hosts an official remote MCP server. Forge tries to register itself automatically; if your workspace requires a pre-created app, make one at api.slack.com/apps, add the redirect URI shown above, and paste its credentials here.",
+    "setup": [
+      { "key": "client_id", "label": "Client ID", "secret": true, "required": false, "help": "Leave blank to let Forge register automatically." },
+      { "key": "client_secret", "label": "Client secret", "secret": true, "required": false }
+    ]
+  },
+  "egress_hosts": ["slack.com", "mcp.slack.com", "api.slack.com"],
+  "backend": {
+    "type": "mcp",
+    "url": "https://mcp.slack.com/mcp",
+    "transport": "streamable_http",
+    "deny": ["admin_*"]
+  },
+  "toolset": {
+    "description": "Slack workspace actions: send and search messages, read channels and users."
+  }
+}

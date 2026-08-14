@@ -366,11 +366,11 @@ export const PROJECT_NAV: NavEntry[] = [
     { id: "playground", label: "Playground", icon: "playground", help: "Chat with a workflow to test it live, with token + cost metering." },
     { id: "workflows", label: "Workflows", icon: "workflow", countKey: "workflows", help: "The visual canvas - wire nodes (agents, tools, routers, triggers) into a graph." },
     { id: "agents", label: "Agents", icon: "bot", countKey: "agents", help: "Reusable agent presets (model + prompt + tools + middleware) to drop into workflows." },
+    { id: "connectors", label: "Connectors", icon: "plug", countKey: "connectors", help: "Pre-built integrations (Slack, Gmail, Outlook, …). Connect an account and their actions become tools you can wire into workflows." },
     { id: "tools", label: "Tools", icon: "tools", countKey: "tools", help: "Capabilities an agent can call: REST, GraphQL, Code, SQL, or built-ins." },
     { id: "components", label: "Components", icon: "grid", countKey: "components", help: "User-defined UI widgets (HTML/CSS) an agent can render in chat - tables, cards, forms, actions." },
     { id: "knowledge", label: "Knowledge", icon: "book-open", countKey: "knowledge", help: "Documents + Q&A pairs that ground answers (RAG). Add text, URLs, files, or crawl a site." },
     { id: "auth", label: "Auth Providers", icon: "shield-check", countKey: "auth", help: "Reusable credential strategies (Bearer, API key, OAuth, CSRF) that tools attach to." },
-    { id: "mcp", label: "External MCP", icon: "server", help: "Connect external MCP servers (GitHub, Slack, …) and toggle which of their tools agents and workflows can use." },
   ] },
   { section: "Deploy", items: [
     { id: "channels", label: "Channels", icon: "mail", help: "Deploy a workflow to an email surface." },

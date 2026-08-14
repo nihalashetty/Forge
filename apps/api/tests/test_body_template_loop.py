@@ -1,19 +1,22 @@
-"""`$each` loop support in JSON body templates (batch many rows in one call).
+"""Structural directives in JSON body templates - `$each` (batch rows) and `$mime` (email).
 
-Before this, one REST tool call could only build a fixed-shape body, so an agent editing N rows
-made N calls (slow, context-heavy, and prone to blowing the graph recursion limit). A body
-template can now carry a `{"$each": "{{input.rows}}", "$as": "row", "$do": {...}}` directive that
-expands one list-valued arg into a variable-length JSON array - so N edits go out in ONE request.
+Both exist for the same reason: a value the model cannot be asked to produce as text.
+
+* `{"$each": "{{input.rows}}", "$as": "row", "$do": {...}}` expands one list-valued arg into a
+  variable-length JSON array, so an agent editing N rows makes ONE call instead of N (slow,
+  context-heavy, and prone to blowing the graph recursion limit).
+* `{"$mime": {"to": …, "subject": …, "text": …}}` builds an RFC 2822 message and base64url-encodes
+  it, because Gmail's send endpoint accepts nothing else and a model cannot base64-encode by hand.
 
 Rendering is structural (parse JSON, then walk with render_value): the output is always valid
 JSON with native types preserved, unlike string-concatenating an array. The path is opt-in on the
-"$each" marker, so existing string-substitution templates are untouched.
+directive marker, so existing string-substitution templates are untouched.
 """
 from __future__ import annotations
 
 import json
 
-from forge.auth_providers.templates import has_each_directive, render_template, render_value
+from forge.auth_providers.templates import has_structural_directive, render_template, render_value
 from forge.tools.rest import _build_body
 
 
@@ -62,10 +65,10 @@ def test_render_value_each_is_opt_in_only():
     assert out == {"$each": [{"x": "a"}], "$as": "row", "$do": {"x": None}}
 
 
-def test_has_each_directive_ignores_literal_string_value():
+def test_structural_directive_detection_ignores_literal_string_values():
     # A directive is a "$each" KEY; the literal text "$each" inside a string value is not one.
-    assert has_each_directive({"note": "use $each to loop", "qty": "{{input.qty}}"}) is False
-    assert has_each_directive({"rows": {"$each": "{{x}}", "$do": {}}}) is True
+    assert has_structural_directive({"note": "use $each to loop", "qty": "{{input.qty}}"}) is False
+    assert has_structural_directive({"rows": {"$each": "{{x}}", "$do": {}}}) is True
 
 
 def test_build_body_literal_dollar_each_in_string_keeps_string_substitution():
@@ -157,3 +160,73 @@ def test_build_body_without_each_is_unchanged():
     body_template = '{ "orderId": "{{input.orderId}}", "lineNums": [ {{input.lineNum}} ] }'
     body = _build_body({"body_template": body_template}, [], {"orderId": "Q", "lineNum": 7}, {})
     assert body == {"orderId": "Q", "lineNums": [7]}
+
+
+# --- $mime: build an RFC 2822 message server-side --------------------------------------------
+#
+# Gmail's send endpoint accepts ONLY a base64url-encoded MIME message. Declaring that as a tool
+# argument means asking a model to base64-encode by hand; it can't, and the malformed result
+# comes back as an opaque HTTP 400. So the model supplies to/subject/body and this does the rest.
+
+def _decoded(body: dict):
+    import base64
+    import email
+
+    raw = body["raw"]
+    blob = base64.urlsafe_b64decode(raw)
+    return blob, email.message_from_bytes(blob)
+
+
+def test_mime_directive_builds_a_decodable_message():
+    tmpl = ('{"raw": {"$mime": {"to": "{{input.to}}", "subject": "{{input.subject}}", '
+            '"text": "{{input.body}}"}}}')
+    body = _build_body({"body_template": tmpl}, [],
+                       {"to": "a@example.com", "subject": "Hello", "body": "Line one\nLine two"}, {})
+    assert list(body) == ["raw"]
+    blob, msg = _decoded(body)
+    assert msg["To"] == "a@example.com"
+    assert msg["Subject"] == "Hello"
+    # RFC 2822 wants CRLF everywhere, headers and body alike, and the SMTP policy normalises the
+    # body's newlines to match. Mail clients render that as ordinary line breaks.
+    assert msg.get_payload(decode=True).decode().replace("\r\n", "\n").strip() == "Line one\nLine two"
+    assert b"\r\n" in blob
+
+
+def test_mime_omits_empty_headers_rather_than_sending_them_blank():
+    """A model that leaves cc out sends "" - and `Cc: ` on the wire is what makes Gmail answer
+    400 rather than simply having no Cc."""
+    tmpl = ('{"raw": {"$mime": {"to": "{{input.to}}", "cc": "{{input.cc}}", '
+            '"subject": "{{input.subject}}", "text": "{{input.body}}"}}}')
+    body = _build_body({"body_template": tmpl}, [],
+                       {"to": "a@example.com", "cc": "", "subject": "S", "body": "B"}, {})
+    _blob, msg = _decoded(body)
+    assert msg["Cc"] is None
+    assert msg["To"] == "a@example.com"
+
+
+def test_mime_handles_address_lists_and_non_ascii_subjects():
+    tmpl = ('{"raw": {"$mime": {"to": "{{input.to}}", "subject": "{{input.subject}}", '
+            '"text": "{{input.body}}"}}}')
+    body = _build_body({"body_template": tmpl}, [],
+                       {"to": ["a@example.com", "b@example.com"], "subject": "Update ✅", "body": "x"}, {})
+    _blob, msg = _decoded(body)
+    assert msg["To"] == "a@example.com, b@example.com"
+    # Non-ASCII must be RFC 2047 encoded, and must decode back to what was asked for.
+    from email.header import decode_header, make_header
+    assert str(make_header(decode_header(msg["Subject"]))) == "Update ✅"
+
+
+def test_mime_is_inert_without_the_structural_opt_in():
+    """Every other caller (auth token_fetch rules, data-node payloads) must keep treating a
+    literal "$mime" key as an ordinary key rather than executing it."""
+    from forge.auth_providers.templates import render_value
+
+    tmpl = {"raw": {"$mime": {"to": "{{input.to}}"}}}
+    out = render_value(tmpl, {"input": {"to": "a@example.com"}})
+    assert out == {"raw": {"$mime": {"to": "a@example.com"}}}
+
+
+def test_a_literal_dollar_mime_string_does_not_trigger_structural_rendering():
+    body_template = '{ "note": "use $mime for email", "qty": {{input.qty}} }'
+    body = _build_body({"body_template": body_template}, [], {"qty": 3}, {})
+    assert body == {"note": "use $mime for email", "qty": 3}

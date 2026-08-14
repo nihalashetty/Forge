@@ -199,6 +199,17 @@ export function PlaygroundScreen({ project }: { project: any }) {
 
   const samples = ["How do I reset my password?", "What can you help me with?"];
 
+  const switchWf = (id: string) => {
+    const next = wfs.find((w) => w.id === id) || null;
+    threadRef.current = null;
+    setWf(next); setMsgs([]); setSteps([]); setMeter(null); setStreaming("");
+  };
+  // Before the first message the workflow picker lives in the middle of the page, where someone
+  // arriving here actually looks - a 24px dropdown tucked under the title got missed, and the
+  // first question then ran against whichever workflow happened to be first. Once a conversation
+  // exists the empty state is gone, so the header carries the picker for switching.
+  const started = msgs.length > 0 || running;
+
   return (
     <div className="col" style={{ flex: 1, minHeight: 0 }}>
       {/* header */}
@@ -206,16 +217,12 @@ export function PlaygroundScreen({ project }: { project: any }) {
         <div className="row gap2">
           <div>
             <div className="t-display">Playground</div>
-            {wfs.length > 1 ? (
+            {wfs.length > 1 && started ? (
               <select
                 className="select" disabled={running}
                 value={wf?.id || ""}
                 style={{ marginTop: 2, height: 24, fontSize: 12, padding: "0 6px", maxWidth: 280 }}
-                onChange={(e) => {
-                  const next = wfs.find((w) => w.id === e.target.value) || null;
-                  threadRef.current = null;
-                  setWf(next); setMsgs([]); setSteps([]); setMeter(null); setStreaming("");
-                }}>
+                onChange={(e) => switchWf(e.target.value)}>
                 {wfs.map((w) => (
                   <option key={w.id} value={w.id}>{w.name}{w.status === "active" ? " · active" : " · draft"}</option>
                 ))}
@@ -249,7 +256,20 @@ export function PlaygroundScreen({ project }: { project: any }) {
               {msgs.length === 0 && !running && !loadErr && (
                 <div className="col center" style={{ minHeight: 300, gap: 10, color: "var(--fg-2)", textAlign: "center", margin: "auto 0" }}>
                   <Tile icon="sparkles" color="var(--accent)" size={44} glow />
-                  <div className="t-h2" style={{ color: "var(--fg-1)" }}>Run “{wf?.name || "your workflow"}” live</div>
+                  <div className="t-h2" style={{ color: "var(--fg-1)" }}>
+                    {wfs.length > 1 ? "Pick a workflow to run" : `Run “${wf?.name || "your workflow"}” live`}
+                  </div>
+                  {/* The choice that decides what the first question actually runs against, put
+                      where the eye already is instead of in the header chrome. */}
+                  {wfs.length > 1 ? (
+                    <select className="select" disabled={running} value={wf?.id || ""}
+                      style={{ maxWidth: 340, textAlign: "center" }}
+                      onChange={(e) => switchWf(e.target.value)}>
+                      {wfs.map((w) => (
+                        <option key={w.id} value={w.id}>{w.name}{w.status === "active" ? " · active" : " · draft"}</option>
+                      ))}
+                    </select>
+                  ) : null}
                   <div className="t-caption">Answers are grounded in this project’s knowledge base & Q&A - it streams token by token.</div>
                   <div className="row gap2 wrap center" style={{ maxWidth: 460, marginTop: 6 }}>
                     {samples.map((s) => (

@@ -36,7 +36,15 @@ export function McpClientsScreen({ project }: { project: any }) {
             const on = selId === m.id;
             return (
               <button key={m.id} onClick={() => setSelId(m.id)} className="col" style={{ width: "100%", textAlign: "left", padding: "11px 12px", borderRadius: 9, marginBottom: 4, border: "1px solid " + (on ? "var(--accent)" : "transparent"), background: on ? "var(--accent-glow)" : "transparent", cursor: "pointer", gap: 4 }}>
-                <div className="row spread"><span className="mono-sm" style={{ fontWeight: 700, color: "var(--fg-0)" }}>{m.name}</span><span className="typechip">{m.transport}</span></div>
+                <div className="row spread">
+                  <span className="mono-sm" style={{ fontWeight: 700, color: "var(--fg-0)" }}>{m.name}</span>
+                  <span className="row gap1">
+                    {/* Managed by a connector: editing or deleting it here breaks that connector,
+                        which is not obvious from a row that looks like any other server. */}
+                    {m.connector_slug && <span className="typechip" title="Registered by a connector — manage it on the Connectors screen">connector</span>}
+                    <span className="typechip">{m.transport}</span>
+                  </span>
+                </div>
                 <div className="row spread">
                   <span className="truncate" style={{ fontSize: 11, color: "var(--fg-2)" }}>{m.url}</span>
                   <span

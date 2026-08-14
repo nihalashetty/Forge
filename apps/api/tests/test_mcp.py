@@ -35,7 +35,7 @@ async def test_adapters_import_available():
 async def test_load_mcp_tool_finds_remote_tool(monkeypatch):
     cid = await _make_client()
 
-    async def fake_client_and_tools(row, tenant_id, project_id):
+    async def fake_client_and_tools(row, tenant_id, project_id, context=None):
         return object(), [_fake_remote_tool("search")]
 
     monkeypatch.setattr(mcp_mod, "_client_and_tools", fake_client_and_tools)

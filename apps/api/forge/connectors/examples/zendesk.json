@@ -1,0 +1,104 @@
+{
+  "format": "forge.connector/1",
+  "slug": "zendesk",
+  "name": "Zendesk",
+  "version": "1.0.0",
+  "publisher": "forge",
+  "summary": "Search, read, comment on, and update Zendesk support tickets.",
+  "categories": ["support"],
+  "roles": ["Support", "Operations"],
+  "icon": "inbox",
+  "docs_url": "https://developer.zendesk.com/api-reference/ticketing/introduction/",
+  "auth": {
+    "kind": "basic",
+    "per_user": "never",
+    "setup_help": "Enable token access in Zendesk (Admin → Apps and integrations → APIs → Zendesk API). The username is your agent email with '/token' appended, e.g. agent@acme.com/token, and the password is the API token.",
+    "setup": [
+      { "key": "subdomain", "label": "Zendesk subdomain", "secret": false, "required": true, "placeholder": "acme", "help": "The 'acme' in acme.zendesk.com." },
+      { "key": "username", "label": "Agent email + /token", "secret": true, "required": true, "placeholder": "agent@acme.com/token" },
+      { "key": "password", "label": "API token", "secret": true, "required": true }
+    ]
+  },
+  "egress_hosts": ["zendesk.com"],
+  "backend": {
+    "type": "rest",
+    "base_url": "https://{setup.subdomain}.zendesk.com/api/v2",
+    "actions": [
+      {
+        "name": "zendesk_search_tickets",
+        "display_name": "Search tickets",
+        "description": "Search tickets with Zendesk search syntax, e.g. 'type:ticket status:open requester:jane@acme.com'.",
+        "request": {
+          "method": "GET",
+          "url_template": "/search.json",
+          "fields": [
+            { "path": "query", "in": "query", "type": "string", "required": true, "llm_visible": true, "description": "Zendesk search query." },
+            { "path": "per_page", "in": "query", "type": "integer", "required": false, "llm_visible": true, "default": 10 }
+          ]
+        },
+        "response": { "projection_jmespath": "results[].{id: id, subject: subject, status: status, priority: priority, requester_id: requester_id, updated: updated_at}" }
+      },
+      {
+        "name": "zendesk_get_ticket",
+        "display_name": "Read ticket",
+        "description": "Fetch one ticket by id, including its description.",
+        "request": {
+          "method": "GET",
+          "url_template": "/tickets/{ticket_id}.json",
+          "fields": [
+            { "path": "ticket_id", "in": "path", "type": "integer", "required": true, "llm_visible": true, "description": "Ticket id." }
+          ]
+        },
+        "response": { "projection_jmespath": "ticket.{id: id, subject: subject, description: description, status: status, priority: priority, tags: tags}" }
+      },
+      {
+        "name": "zendesk_list_comments",
+        "display_name": "Read ticket conversation",
+        "description": "List the comments on a ticket, oldest first - the full back-and-forth with the customer.",
+        "request": {
+          "method": "GET",
+          "url_template": "/tickets/{ticket_id}/comments.json",
+          "fields": [
+            { "path": "ticket_id", "in": "path", "type": "integer", "required": true, "llm_visible": true }
+          ]
+        },
+        "response": { "projection_jmespath": "comments[].{author_id: author_id, public: public, created: created_at, body: plain_body}" }
+      },
+      {
+        "name": "zendesk_add_comment",
+        "display_name": "Reply to ticket",
+        "description": "Add a comment to a ticket. Set public=false for an internal note the customer will not see.",
+        "request": {
+          "method": "PUT",
+          "url_template": "/tickets/{ticket_id}.json",
+          "fields": [
+            { "path": "ticket_id", "in": "path", "type": "integer", "required": true, "llm_visible": true },
+            { "path": "body", "in": "body", "type": "string", "required": true, "llm_visible": true, "description": "Comment text." },
+            { "path": "public", "in": "body", "type": "boolean", "required": false, "llm_visible": true, "default": true, "description": "false = internal note." }
+          ],
+          "body_template": "{\"ticket\":{\"comment\":{\"body\":\"{{input.body}}\",\"public\":{{input.public}}}}}"
+        },
+        "response": { "projection_jmespath": "ticket.{id: id, status: status, updated: updated_at}" }
+      },
+      {
+        "name": "zendesk_update_ticket",
+        "display_name": "Update ticket",
+        "description": "Change a ticket's status or priority.",
+        "request": {
+          "method": "PUT",
+          "url_template": "/tickets/{ticket_id}.json",
+          "fields": [
+            { "path": "ticket_id", "in": "path", "type": "integer", "required": true, "llm_visible": true },
+            { "path": "status", "in": "body", "type": "string", "required": false, "llm_visible": true, "description": "new | open | pending | hold | solved | closed." },
+            { "path": "priority", "in": "body", "type": "string", "required": false, "llm_visible": true, "description": "low | normal | high | urgent." }
+          ],
+          "body_template": "{\"ticket\":{\"status\":\"{{input.status}}\",\"priority\":\"{{input.priority}}\"}}"
+        },
+        "response": { "projection_jmespath": "ticket.{id: id, status: status, priority: priority}" }
+      }
+    ]
+  },
+  "toolset": {
+    "description": "Zendesk support: search and read tickets, read conversations, reply, and update status."
+  }
+}

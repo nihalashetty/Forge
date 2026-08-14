@@ -1,0 +1,31 @@
+{
+  "format": "forge.connector/1",
+  "slug": "atlassian",
+  "name": "Atlassian (Jira & Confluence)",
+  "version": "1.0.0",
+  "publisher": "forge",
+  "summary": "Search and update Jira issues and Confluence pages in Atlassian Cloud.",
+  "categories": ["project-management", "docs"],
+  "roles": ["Software Engineer", "Product Manager", "Engineering Manager", "Support"],
+  "icon": "layout-dashboard",
+  "docs_url": "https://developer.atlassian.com/cloud/jira/platform/rest/v3/",
+  "auth": {
+    "kind": "oauth2_authorization_code",
+    "discover": true,
+    "per_user": "required",
+    "setup_help": "Atlassian hosts an official remote MCP server for Jira and Confluence Cloud. Connect with your Atlassian account; site access follows your own permissions.",
+    "setup": [
+      { "key": "client_id", "label": "OAuth client ID", "secret": true, "required": false, "help": "Leave blank to let Forge register automatically." },
+      { "key": "client_secret", "label": "OAuth client secret", "secret": true, "required": false }
+    ]
+  },
+  "egress_hosts": ["mcp.atlassian.com", "api.atlassian.com", "auth.atlassian.com"],
+  "backend": {
+    "type": "mcp",
+    "url": "https://mcp.atlassian.com/v1/sse",
+    "transport": "sse"
+  },
+  "toolset": {
+    "description": "Atlassian Cloud: Jira issue search and updates, Confluence page search and creation."
+  }
+}

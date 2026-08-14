@@ -94,19 +94,21 @@ class WorkflowService:
 
     @staticmethod
     async def update_executable(
-        session: AsyncSession, wf: Workflow, executable: dict, *, require_valid: bool = True
+        session: AsyncSession, wf: Workflow, executable: dict, *, require_valid: bool = True,
+        owner: str | None = None, scope: str | None = None,
     ) -> ValidationResult:
         result = validate_workflow(executable)
         if result.valid or not require_valid:
             wf.executable = executable
             await session.commit()
             await session.refresh(wf)
-            await WorkflowService._sync_triggers(session, wf)
+            await WorkflowService._sync_triggers(session, wf, owner=owner, scope=scope)
         return result
 
     @staticmethod
     async def save_canvas(
-        session: AsyncSession, wf: Workflow, canvas: dict, executable: dict
+        session: AsyncSession, wf: Workflow, canvas: dict, executable: dict,
+        *, owner: str | None = None, scope: str | None = None,
     ) -> ValidationResult:
         """Persist the canvas (UI-owned) + compiled executable, and validate.
 
@@ -118,15 +120,22 @@ class WorkflowService:
         wf.executable = executable
         await session.commit()
         await session.refresh(wf)
-        await WorkflowService._sync_triggers(session, wf)
+        await WorkflowService._sync_triggers(session, wf, owner=owner, scope=scope)
         return result
 
     @staticmethod
-    async def _sync_triggers(session: AsyncSession, wf: Workflow) -> None:
-        """Mirror the workflow's trigger nodes into Trigger rows (best-effort)."""
+    async def _sync_triggers(session: AsyncSession, wf: Workflow, *, owner: str | None = None,
+                             scope: str | None = None) -> None:
+        """Mirror the workflow's trigger nodes into Trigger rows (best-effort).
+
+        `owner` (the editor saving) is stamped on triggers that don't have one yet - it is the
+        identity an unattended run acts as, so a scheduled workflow can use the connected
+        accounts of the person who built it. `scope` decides whether a NEW trigger belongs to
+        the project or to that person. Neither ever overwrites an existing trigger's values.
+        """
         try:
             from forge.services.triggers import TriggerService
 
-            await TriggerService.sync_from_workflow(session, wf)
+            await TriggerService.sync_from_workflow(session, wf, owner=owner, scope=scope)
         except Exception:  # noqa: BLE001 - trigger sync must not block saving a workflow
             pass

@@ -760,6 +760,11 @@ function CanvasInner({ project, workflowId, onWorkflowChange, onBack, onRun, onR
               </div>
             );
           })}
+
+          {/* Connector actions are deliberately NOT listed here. They are ordinary tools, and
+              the palette's job is NODE TYPES - one Tool Call node reaches any of them through
+              its picker. Enumerating every installed action turned a fixed list into one that
+              grew with each connector, pushing the actual node types off the screen. */}
         </div>
 
         {/* palette hover help card */}
@@ -968,11 +973,8 @@ function NodeInspector({
 
       {type === "tool_call" && (
         <div className="col gap3">
-          <Field label="Tool" help={tools.length ? "Which project tool to invoke." : "No tools in this project yet - add them on the Tools screen."}>
-            <select className="select" value={c.tool_id || ""} onChange={(e) => set({ tool_id: e.target.value || undefined })}>
-              <option value="">Select a tool…</option>
-              {tools.map((t) => <option key={t.id} value={t.id}>{t.name} · {t.kind}</option>)}
-            </select>
+          <Field label="Tool" help={tools.length ? "Which project tool to invoke." : "No tools in this project yet - add them on the Tools or Connectors screen."}>
+            <ToolPicker tools={tools} toolSets={toolSets} value={c.tool_id || ""} onChange={(v) => set({ tool_id: v || undefined })} />
           </Field>
           <Field label="Output state key" help="Where the tool's result is written in state."><input className="input mono" value={c.output_key ?? ""} placeholder="result" onChange={(e) => set({ output_key: e.target.value || undefined })} /></Field>
         </div>
@@ -988,6 +990,75 @@ function NodeInspector({
           <textarea className="textarea mono" rows={8} style={{ fontSize: 12 }} defaultValue={JSON.stringify(c, null, 2)}
             onChange={(e) => { try { onChange(JSON.parse(e.target.value || "{}")); } catch { /* keep */ } }} />
         </>
+      )}
+    </div>
+  );
+}
+
+/* Tool picker for the Tool Call node, grouped by tool set.
+
+   Every installed connector owns a tool set, so its actions arrive here as their own group
+   ("Slack", "Gmail", …) rather than being scattered through one flat alphabetical list of every
+   tool in the project. With a couple of connectors installed that flat list runs to dozens of
+   entries and picking the right one becomes guesswork; the group label is the only context that
+   tells you which system an action actually talks to. A search box filters across both the tool
+   name and its group, so typing "slack" finds the actions even when their names don't say so. */
+function ToolPicker({ tools, toolSets, value, onChange }: {
+  tools: Tool[]; toolSets: ToolSet[]; value: string; onChange: (v: string) => void;
+}) {
+  const [q, setQ] = useState("");
+  const byId = useMemo(() => new Map(tools.map((t) => [t.id, t])), [tools]);
+
+  // Group by tool set, preserving set order; anything in no set falls into "Other tools".
+  // A tool in several sets is listed under each (membership is labels, not folders).
+  const groups = useMemo(() => {
+    const out: { label: string; icon?: string | null; tools: Tool[] }[] = [];
+    const grouped = new Set<string>();
+    for (const ts of toolSets) {
+      const members = (ts.tool_ids || []).map((id) => byId.get(id)).filter(Boolean) as Tool[];
+      if (!members.length) continue;
+      members.forEach((t) => grouped.add(t.id));
+      out.push({ label: ts.name, icon: ts.icon, tools: members });
+    }
+    const loose = tools.filter((t) => !grouped.has(t.id));
+    if (loose.length) out.push({ label: "Other tools", tools: loose });
+    return out;
+  }, [tools, toolSets, byId]);
+
+  const needle = q.trim().toLowerCase();
+  const filtered = needle
+    ? groups
+        .map((g) => ({ ...g, tools: g.tools.filter((t) => (t.name + " " + g.label).toLowerCase().includes(needle)) }))
+        .filter((g) => g.tools.length)
+    : groups;
+
+  const selected = value ? byId.get(value) : undefined;
+  const selectedGroup = value ? groups.find((g) => g.tools.some((t) => t.id === value)) : undefined;
+
+  return (
+    <div className="col" style={{ gap: 6 }}>
+      {tools.length > 8 && (
+        <input className="input" style={{ height: 28, fontSize: 12 }} value={q} placeholder="Filter tools…"
+          onChange={(e) => setQ(e.target.value)} />
+      )}
+      <select className="select" value={value} onChange={(e) => onChange(e.target.value)}>
+        <option value="">Select a tool…</option>
+        {/* Keep the current selection selectable even when the filter hides it, or typing in
+            the filter box would silently blank the node's configured tool. */}
+        {selected && needle && !filtered.some((g) => g.tools.some((t) => t.id === selected.id)) && (
+          <option value={selected.id}>{selected.name} · current</option>
+        )}
+        {filtered.map((g) => (
+          <optgroup key={g.label} label={g.label}>
+            {g.tools.map((t) => <option key={g.label + t.id} value={t.id}>{t.name} · {t.kind}</option>)}
+          </optgroup>
+        ))}
+      </select>
+      {selectedGroup && (
+        <div className="row gap2" style={{ fontSize: 11.5, color: "var(--fg-2)" }}>
+          <Icon name={selectedGroup.icon || "tools"} size={12} />
+          <span>from <strong style={{ color: "var(--fg-1)" }}>{selectedGroup.label}</strong></span>
+        </div>
       )}
     </div>
   );

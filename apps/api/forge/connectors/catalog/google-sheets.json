@@ -1,0 +1,182 @@
+{
+  "format": "forge.connector/1",
+  "slug": "google-sheets",
+  "name": "Google Sheets",
+  "version": "1.0.0",
+  "publisher": "forge",
+  "summary": "Read and append rows in a Google Sheets spreadsheet.",
+  "categories": [
+    "database",
+    "productivity"
+  ],
+  "roles": [
+    "Operations",
+    "Finance",
+    "Marketing",
+    "Product Manager"
+  ],
+  "icon": "grid",
+  "docs_url": "https://developers.google.com/sheets/api/reference/rest",
+  "setup_url": "https://console.cloud.google.com/apis/credentials",
+  "auth": {
+    "kind": "oauth2_authorization_code",
+    "authorize_url": "https://accounts.google.com/o/oauth2/v2/auth",
+    "token_url": "https://oauth2.googleapis.com/token",
+    "scopes": [
+      "https://www.googleapis.com/auth/spreadsheets"
+    ],
+    "per_user": "required",
+    "setup_help": "Create an OAuth client (Web application) in Google Cloud Console, enable the Google Sheets API, and add the redirect URI shown above.",
+    "setup": [
+      {
+        "key": "client_id",
+        "label": "Client ID",
+        "secret": true,
+        "required": true,
+        "placeholder": "....apps.googleusercontent.com"
+      },
+      {
+        "key": "client_secret",
+        "label": "Client secret",
+        "secret": true,
+        "required": true
+      }
+    ],
+    "credential_group": "google"
+  },
+  "egress_hosts": [
+    "sheets.googleapis.com",
+    "oauth2.googleapis.com",
+    "accounts.google.com"
+  ],
+  "backend": {
+    "type": "rest",
+    "base_url": "https://sheets.googleapis.com/v4/spreadsheets",
+    "actions": [
+      {
+        "name": "sheets_read_range",
+        "display_name": "Read rows",
+        "description": "Read a range in A1 notation, e.g. 'Sheet1!A1:D50'. Returns a list of rows.",
+        "request": {
+          "method": "GET",
+          "url_template": "/{spreadsheet_id}/values/{range}",
+          "fields": [
+            {
+              "path": "spreadsheet_id",
+              "in": "path",
+              "type": "string",
+              "required": true,
+              "llm_visible": true,
+              "description": "Spreadsheet id from its URL."
+            },
+            {
+              "path": "range",
+              "in": "path",
+              "type": "string",
+              "required": true,
+              "llm_visible": true,
+              "description": "A1 range, e.g. Sheet1!A1:D50."
+            }
+          ]
+        },
+        "response": {
+          "projection_jmespath": "{range: range, rows: values}"
+        }
+      },
+      {
+        "name": "sheets_append_row",
+        "display_name": "Append row",
+        "description": "Append one row to the end of a range. `values` is a list of cell values, left to right.",
+        "request": {
+          "method": "POST",
+          "url_template": "/{spreadsheet_id}/values/{range}:append",
+          "fields": [
+            {
+              "path": "spreadsheet_id",
+              "in": "path",
+              "type": "string",
+              "required": true,
+              "llm_visible": true
+            },
+            {
+              "path": "range",
+              "in": "path",
+              "type": "string",
+              "required": true,
+              "llm_visible": true,
+              "description": "A1 range to append into, e.g. Sheet1!A:D."
+            },
+            {
+              "path": "values",
+              "in": "body",
+              "type": "array",
+              "required": true,
+              "llm_visible": true,
+              "description": "Cell values for the new row, left to right."
+            },
+            {
+              "path": "valueInputOption",
+              "in": "query",
+              "type": "string",
+              "required": false,
+              "llm_visible": false,
+              "default": "USER_ENTERED"
+            }
+          ],
+          "body_template": "{\"values\":[{{input.values}}]}"
+        },
+        "response": {
+          "projection_jmespath": "updates.{range: updatedRange, rows: updatedRows}"
+        }
+      },
+      {
+        "name": "sheets_update_range",
+        "display_name": "Update cells",
+        "description": "Overwrite a range with new values. `rows` is a list of rows, each a list of cell values.",
+        "request": {
+          "method": "PUT",
+          "url_template": "/{spreadsheet_id}/values/{range}",
+          "fields": [
+            {
+              "path": "spreadsheet_id",
+              "in": "path",
+              "type": "string",
+              "required": true,
+              "llm_visible": true
+            },
+            {
+              "path": "range",
+              "in": "path",
+              "type": "string",
+              "required": true,
+              "llm_visible": true
+            },
+            {
+              "path": "rows",
+              "in": "body",
+              "type": "array",
+              "required": true,
+              "llm_visible": true,
+              "description": "List of rows; each row is a list of cell values."
+            },
+            {
+              "path": "valueInputOption",
+              "in": "query",
+              "type": "string",
+              "required": false,
+              "llm_visible": false,
+              "default": "USER_ENTERED"
+            }
+          ],
+          "body_template": "{\"values\":{{input.rows}}}"
+        },
+        "response": {
+          "projection_jmespath": "{range: updatedRange, cells: updatedCells}"
+        }
+      }
+    ]
+  },
+  "toolset": {
+    "description": "Google Sheets: read ranges, append rows, and update cells."
+  }
+}

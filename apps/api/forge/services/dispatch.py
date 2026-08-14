@@ -49,10 +49,16 @@ async def dispatch_trigger(run_service: RunService, trigger: Trigger, payload, *
     schedule (re-check + stamp in one txn) before calling this, so it passes stamp=False to
     avoid a redundant second write; the webhook/inbound paths keep the default True."""
     run_input = TriggerService.build_input(trigger, payload)
+    # Whose accounts this unattended run acts as. A webhook or a schedule has nobody signed in,
+    # so without an identity here every per-user connector (which is every catalog connector)
+    # would fail at its first tool call with "the acting user has not connected their credential".
+    # The trigger carries the editor who set it up, so a scheduled workflow reads THEIR mailbox -
+    # the same account they connected when building it.
+    end_user = {"id": trigger.run_as_user_id} if trigger.run_as_user_id else None
     async with SessionLocal() as s:
         run = await run_service.create_run(
             s, tenant_id=trigger.tenant_id, project_id=trigger.project_id,
-            workflow_id=trigger.workflow_id, input=run_input,
+            workflow_id=trigger.workflow_id, input=run_input, end_user=end_user,
             source=_TRIGGER_SOURCE.get(trigger.kind, trigger.kind or "webhook"),
         )
         run_id = run.id

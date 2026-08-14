@@ -144,24 +144,88 @@ export function ChannelsScreen({ project }: { project: any }) {
 /* ============ TRIGGERS ============ */
 export function TriggersScreen({ project }: { project: any }) {
   const [triggers, setTriggers] = useState<Trigger[]>([]);
-  useEffect(() => { if (project?.id) api.listTriggers(project.id).then(setTriggers).catch(() => setTriggers([])); }, [project?.id]);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const load = useCallback(() => {
+    if (project?.id) api.listTriggers(project.id).then(setTriggers).catch(() => setTriggers([]));
+  }, [project?.id]);
+  useEffect(load, [load]);
+
+  const claim = async (id: string) => {
+    setBusy(id); setErr(null);
+    try { await api.setTriggerRunAs(project.id, id); load(); }
+    catch (e: any) { setErr(e?.message || "Could not claim this trigger"); }
+    finally { setBusy(null); }
+  };
+
+  const move = async (id: string, scope: "project" | "user") => {
+    setBusy(id); setErr(null);
+    try { await api.setTriggerScope(project.id, id, scope); load(); }
+    catch (e: any) { setErr(e?.message || "Could not change who this trigger belongs to"); }
+    finally { setBusy(null); }
+  };
+
   return (
     <Shell>
       <Header title="Triggers" subtitle="Event entry points, synced from your workflows' trigger nodes (Webhook / Schedule / Email / Chat / App Event)." />
+      {err && <div className="pill pill-err" style={{ marginBottom: 10 }}><span className="dot" />{err}</div>}
       <div className="col gap2">
         {triggers.map((t) => (
           <div key={t.id} className="card" style={{ padding: 14 }}>
             <div className="row spread">
-              <div className="row gap2"><Icon name="bolt" size={15} /><span className="t-h3" style={{ textTransform: "capitalize" }}>{t.kind.replace("_", " ")}</span><span className="typechip">{t.node_id}</span>{!t.enabled && <span className="pill pill-muted">disabled</span>}</div>
+              <div className="row gap2">
+                <Icon name="bolt" size={15} />
+                <span className="t-h3" style={{ textTransform: "capitalize" }}>{t.kind.replace("_", " ")}</span>
+                <span className="typechip">{t.node_id}</span>
+                {/* Whose automation this is - separate from whose accounts it uses. */}
+                <span className="typechip" title={t.scope === "user"
+                  ? "Personal: listed only for the person it runs as."
+                  : "Shared with the project: everyone here sees and can manage it."}>
+                  {t.scope === "user" ? "Personal" : "Project"}
+                </span>
+                {t.visible_via_oversight && <span className="pill pill-muted" title="Someone else's personal trigger, shown because you administer this project">someone else&apos;s</span>}
+                {!t.enabled && <span className="pill pill-muted">disabled</span>}
+              </div>
               {t.last_fired_at && <span className="fg-2 t-caption">last fired {new Date(t.last_fired_at).toLocaleString()}</span>}
             </div>
             {t.webhook_url && <div className="mono-sm fg-2" style={{ marginTop: 8, wordBreak: "break-all" }}>POST {t.webhook_url}</div>}
             {t.config?.cron && <div className="mono-sm fg-2" style={{ marginTop: 8 }}>cron: {t.config.cron}</div>}
             {t.config?.every_minutes && <div className="mono-sm fg-2" style={{ marginTop: 8 }}>every {t.config.every_minutes} min</div>}
             {t.config?.poll_url && <div className="mono-sm fg-2" style={{ marginTop: 8, wordBreak: "break-all" }}>polls {t.config.poll_url}</div>}
+            {/* Nobody is signed in when this fires, so it borrows a person's connected accounts.
+                Without one, any connector-backed tool in the workflow has no token to use. */}
+            <div className="row gap2 wrap" style={{ marginTop: 10, alignItems: "center" }}>
+              <span className="fg-2 t-caption">Runs as</span>
+              {t.run_as_email ? (
+                <span className="chip">{t.run_as_email}{t.run_as_is_me ? " (you)" : ""}</span>
+              ) : (
+                <span className="pill pill-warn"><span className="dot" />nobody — connector actions will fail</span>
+              )}
+              {!t.run_as_is_me && (
+                <button className="btn btn-ghost btn-sm" disabled={busy === t.id} onClick={() => claim(t.id)}>
+                  {busy === t.id ? "Claiming…" : "Use my accounts"}
+                </button>
+              )}
+              <span style={{ flex: 1 }} />
+              <button className="btn btn-ghost btn-sm" disabled={busy === t.id}
+                title={t.scope === "user"
+                  ? "Make this a team automation: everyone in the project sees and can manage it."
+                  : "Make this yours: it disappears from your colleagues' Triggers list."}
+                onClick={() => move(t.id, t.scope === "user" ? "project" : "user")}>
+                {t.scope === "user" ? "Share with project" : "Make personal"}
+              </button>
+            </div>
           </div>
         ))}
         {triggers.length === 0 && <div className="fg-2 t-caption">No triggers. Add a trigger node (Webhook / Schedule / …) to a workflow and publish it.</div>}
+        {triggers.length > 0 && (
+          <div className="fg-2 t-caption" style={{ marginTop: 6, lineHeight: 1.6 }}>
+            <strong>Project</strong> triggers are the team&apos;s — everyone here sees them.{" "}
+            <strong>Personal</strong> ones are listed only for the person they run as (project admins
+            can see them too, since their runs already appear in Traces). Either way the webhook URL
+            is itself the credential: anyone holding it can fire the trigger.
+          </div>
+        )}
       </div>
     </Shell>
   );

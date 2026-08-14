@@ -1,0 +1,32 @@
+{
+  "format": "forge.connector/1",
+  "slug": "notion",
+  "name": "Notion",
+  "version": "1.0.0",
+  "publisher": "forge",
+  "summary": "Search the workspace, read pages, and create or update database entries.",
+  "categories": ["docs", "productivity"],
+  "roles": ["Product Manager", "Marketing", "Operations", "Software Engineer"],
+  "icon": "book-open",
+  "docs_url": "https://developers.notion.com/reference/intro",
+  "setup_url": "https://www.notion.so/my-integrations",
+  "auth": {
+    "kind": "oauth2_authorization_code",
+    "discover": true,
+    "per_user": "required",
+    "setup_help": "Notion hosts an official remote MCP server. Forge registers itself automatically where the server allows it; otherwise create an integration at notion.so/my-integrations and paste its credentials.",
+    "setup": [
+      { "key": "client_id", "label": "OAuth client ID", "secret": true, "required": false, "help": "Leave blank to let Forge register automatically." },
+      { "key": "client_secret", "label": "OAuth client secret", "secret": true, "required": false }
+    ]
+  },
+  "egress_hosts": ["mcp.notion.com", "api.notion.com"],
+  "backend": {
+    "type": "mcp",
+    "url": "https://mcp.notion.com/mcp",
+    "transport": "streamable_http"
+  },
+  "toolset": {
+    "description": "Notion workspace: search, read pages and databases, create and update entries."
+  }
+}

@@ -1,0 +1,101 @@
+{
+  "format": "forge.connector/1",
+  "slug": "hubspot",
+  "name": "HubSpot",
+  "version": "1.0.0",
+  "publisher": "forge",
+  "summary": "Search contacts and companies, read deals, and log CRM notes.",
+  "categories": ["crm"],
+  "roles": ["Sales", "Marketing", "Support", "Operations"],
+  "icon": "users",
+  "docs_url": "https://developers.hubspot.com/docs/api/crm/contacts",
+  "setup_url": "https://developers.hubspot.com/docs/api/working-with-oauth",
+  "auth": {
+    "kind": "oauth2_authorization_code",
+    "authorize_url": "https://app.hubspot.com/oauth/authorize",
+    "token_url": "https://api.hubapi.com/oauth/v1/token",
+    "scopes": [
+      "oauth",
+      "crm.objects.contacts.read",
+      "crm.objects.contacts.write",
+      "crm.objects.companies.read",
+      "crm.objects.deals.read"
+    ],
+    "per_user": "required",
+    "credential_group": "hubspot",
+    "setup_help": "Create a HubSpot public app, list the scopes below on it, add the callback URL, then put its Client ID and Client secret in FORGE_CONNECTOR_OAUTH_APPS under \"hubspot\". Each person picks their own HubSpot account when they connect.",
+    "setup": [
+      { "key": "client_id", "label": "Client ID", "secret": true, "required": true },
+      { "key": "client_secret", "label": "Client secret", "secret": true, "required": true }
+    ]
+  },
+  "egress_hosts": ["api.hubapi.com"],
+  "backend": {
+    "type": "rest",
+    "base_url": "https://api.hubapi.com/crm/v3",
+    "actions": [
+      {
+        "name": "hubspot_search_contacts",
+        "display_name": "Search contacts",
+        "description": "Search contacts by free text - an email address, name, or company.",
+        "request": {
+          "method": "POST",
+          "url_template": "/objects/contacts/search",
+          "fields": [
+            { "path": "query", "in": "body", "type": "string", "required": true, "llm_visible": true, "description": "Search text, e.g. an email address." },
+            { "path": "limit", "in": "body", "type": "integer", "required": false, "llm_visible": true, "default": 10 }
+          ],
+          "body_template": "{\"query\":\"{{input.query}}\",\"limit\":{{input.limit}},\"properties\":[\"email\",\"firstname\",\"lastname\",\"company\",\"phone\",\"lifecyclestage\"]}"
+        },
+        "response": { "projection_jmespath": "results[].{id: id, email: properties.email, name: join(' ', [properties.firstname, properties.lastname]), company: properties.company, stage: properties.lifecyclestage}" }
+      },
+      {
+        "name": "hubspot_get_contact",
+        "display_name": "Read contact",
+        "description": "Fetch one contact by id, with its standard properties.",
+        "request": {
+          "method": "GET",
+          "url_template": "/objects/contacts/{contact_id}",
+          "fields": [
+            { "path": "contact_id", "in": "path", "type": "string", "required": true, "llm_visible": true, "description": "HubSpot contact id." },
+            { "path": "properties", "in": "query", "type": "string", "required": false, "llm_visible": false, "default": "email,firstname,lastname,company,phone,lifecyclestage,hs_lead_status" }
+          ]
+        },
+        "response": { "projection_jmespath": "{id: id, properties: properties}" }
+      },
+      {
+        "name": "hubspot_search_deals",
+        "display_name": "Search deals",
+        "description": "Search deals by name or associated company.",
+        "request": {
+          "method": "POST",
+          "url_template": "/objects/deals/search",
+          "fields": [
+            { "path": "query", "in": "body", "type": "string", "required": true, "llm_visible": true, "description": "Search text." },
+            { "path": "limit", "in": "body", "type": "integer", "required": false, "llm_visible": true, "default": 10 }
+          ],
+          "body_template": "{\"query\":\"{{input.query}}\",\"limit\":{{input.limit}},\"properties\":[\"dealname\",\"amount\",\"dealstage\",\"closedate\",\"pipeline\"]}"
+        },
+        "response": { "projection_jmespath": "results[].{id: id, name: properties.dealname, amount: properties.amount, stage: properties.dealstage, close_date: properties.closedate}" }
+      },
+      {
+        "name": "hubspot_create_note",
+        "display_name": "Log a note",
+        "description": "Create a timeline note. `timestamp` is epoch milliseconds - use the current time unless logging something historical.",
+        "request": {
+          "method": "POST",
+          "url_template": "/objects/notes",
+          "fields": [
+            { "path": "body", "in": "body", "type": "string", "required": true, "llm_visible": true, "description": "Note text." },
+            { "path": "timestamp", "in": "body", "type": "integer", "required": true, "llm_visible": true, "description": "Epoch milliseconds." }
+          ],
+          "body_template": "{\"properties\":{\"hs_note_body\":\"{{input.body}}\",\"hs_timestamp\":{{input.timestamp}}}}"
+        },
+        "response": { "projection_jmespath": "{id: id, created: createdAt}" }
+      }
+    ]
+  },
+  "toolset": {
+    "description": "HubSpot CRM: search contacts and deals, read a contact, and log notes."
+  }
+}

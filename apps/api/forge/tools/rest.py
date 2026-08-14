@@ -26,7 +26,12 @@ import httpx
 from langchain.tools import ToolRuntime
 from pydantic import Field, create_model
 
-from forge.auth_providers.templates import has_each_directive, render_template, render_value
+from forge.auth_providers.templates import (
+    DIRECTIVES,
+    has_structural_directive,
+    render_template,
+    render_value,
+)
 from forge.config import settings
 from forge.tools.projection import cap_payload, project_response
 from forge.tracing import tool_io
@@ -234,18 +239,19 @@ def _build_body(req: dict, fields: list[dict], values: dict, context: dict | Non
     tmpl = req.get("body_template")
     if tmpl:
         tvars = {"input": values, "ctx": context or {}, "env": settings.tool_vars}
-        # A `$each` loop directive needs STRUCTURAL rendering (parse the JSON, then walk it with
-        # render_value) so the produced array is always valid JSON with native types - plain string
-        # substitution can't build a variable-length array without trailing-comma/quoting bugs.
-        # Gate on an ACTUAL parsed `$each` directive (a dict key), NOT a substring of the raw text:
-        # a template that merely mentions "$each" inside a string value must keep the exact
+        # A `$each` loop (or a `$mime` message) needs STRUCTURAL rendering (parse the JSON, then
+        # walk it with render_value) so the produced value is always valid JSON with native types
+        # - plain string substitution can't build a variable-length array without trailing-comma/
+        # quoting bugs, nor base64-encode a MIME message.
+        # Gate on an ACTUAL parsed directive (a dict key), NOT a substring of the raw text: a
+        # template that merely mentions "$each" inside a string value must keep the exact
         # string-substitution behavior (structural rendering coerces token types differently).
-        if "$each" in tmpl:
+        if any(d in tmpl for d in DIRECTIVES):
             try:
                 parsed = _json.loads(tmpl)
             except ValueError:
                 parsed = None
-            if parsed is not None and has_each_directive(parsed):
+            if parsed is not None and has_structural_directive(parsed):
                 return render_value(parsed, tvars, allow_each=True, strict_ns=_STRICT_NS)
         rendered = render_template(tmpl, tvars, strict_ns=_STRICT_NS)
         if isinstance(rendered, (dict, list)):

@@ -42,8 +42,8 @@ and **Settings** pinned at the bottom.
 | | **Tools** | Capabilities an agent can call: REST, GraphQL, Code, SQL, MCP, built‑ins - organized into **tool sets**. |
 | | **Components** | Generative‑UI components an agent can render (tables, cards, forms). |
 | | **Knowledge** | Documents + Q&A that ground answers (RAG). Add text, URLs, files, or crawl a site. |
+| | **Connectors** | Gmail, Slack, GitHub, Notion… - connect your own account in one click; each one adds a tool set you can build workflows on. |
 | | **Auth Providers** | Reusable credential strategies (Bearer, API key, OAuth…) tools attach to. |
-| | **External MCP** | Register outside MCP servers so their tools can be consumed here. |
 | **Deploy** | **Channels** | Deploy a workflow to an email surface. |
 | | **Triggers** | Event entry points - webhook URLs, schedules, pollers. |
 | | **Connect** | Expose this project - as an MCP server, the run API, or an embeddable web widget. |
@@ -156,6 +156,81 @@ organize the Tools screen (filter chips + a "Manage toolsets" drawer), can be gr
 in one click (instead of picking tools one by one), and can be published over the project's MCP
 server as a *toolset* (§10).
 
+### Connectors (the fast way to get tools)
+
+**Connectors** is the front door for Gmail, Google Calendar/Drive/Sheets, Outlook, Slack, Notion,
+Linear, Atlassian, GitHub, HubSpot and Airtable. Click **Connect**, sign in on the vendor's own
+page, approve - and the connector adds an auth provider, a **tool set**, and one tool per action.
+Those tools then behave like any hand‑built tool: drop them on the canvas, grant the set to an
+agent, publish it over MCP.
+
+Two things are worth knowing:
+
+* **Your account is yours.** Every catalog connector is per‑user. The tools are the project's
+  (anyone can build a workflow on them), but the *account behind them* is personal: the green
+  tick means **you** are connected, disconnecting affects only you, and nobody can act as you.
+  Everyone who will run the workflow connects themselves.
+* **Nobody types a client secret.** The vendor OAuth apps are registered once by whoever runs
+  the deployment (see below). Forge's UI never asks an end user for a client id, secret, or API
+  token. A connector whose vendor isn't registered yet shows as **Unavailable** and tells you
+  which env key to set.
+
+**Add > Custom connector** is the escape hatch, and it is where a typed credential belongs: paste
+a `forge.connector/1` manifest (or start from a bundled example - Stripe, Twilio, Zendesk, Jira,
+SendGrid, PagerDuty, Shopify, Discord, a Slack bot token, a generic REST API), fill in its key,
+and choose **one shared account for the project** instead of per‑user - a genuine service account,
+used by everyone.
+
+**What about triggers?** A webhook or a schedule fires with nobody signed in, so each trigger
+carries the person it **runs as**: the editor who saved the workflow it came from. A scheduled
+workflow therefore reads *their* mailbox - the same account they connected while building it.
+Triggers are also either **Project** (a team automation) or **Personal** (yours alone) - see §7.
+**Use my accounts** claims one, which is what you want when you inherit an automation or its
+original owner has left. A trigger showing *runs as nobody* still fires, but any connector‑backed
+tool in it will fail - claim it, or give that workflow a shared‑account custom connector instead.
+
+**Add > MCP server** registers a raw MCP server by URL (the old *External MCP* screen).
+
+**Keeping a connector current.** An installed connector keeps a copy of its manifest, so a fix
+shipped in a later Forge release doesn't reach it automatically. Open it and click **Refresh
+actions**: MCP connectors re-ask the vendor what they expose, REST connectors re-apply the
+bundled manifest. Tool ids are preserved (workflow nodes and agent grants keep working), an
+action the new manifest no longer declares is kept rather than deleted, and nobody's sign-in is
+disturbed — unlike removing and re-adding, which deletes the auth provider and makes everyone
+reconnect.
+
+#### Setting up connectors (for whoever runs Forge)
+
+Register **one** OAuth app per vendor, add it to `FORGE_CONNECTOR_OAUTH_APPS` in your `.env`, and
+restart the API. Everyone in every project then connects with a single click.
+
+```
+FORGE_CONNECTOR_OAUTH_APPS={"google":{"client_id":"…","client_secret":"…"},"github":{…}}
+```
+
+The key is the **credential group** - the vendor, not the connector: one `google` entry covers
+Gmail, Calendar, Drive and Sheets.
+
+| Group | Covers |
+|---|---|
+| `google` | Gmail · Google Calendar · Google Drive · Google Sheets |
+| `microsoft` | Outlook |
+| `github` | GitHub |
+| `hubspot` | HubSpot |
+| `airtable` | Airtable |
+
+Slack, Notion, Linear and Atlassian need **no entry at all** - they publish OAuth metadata, so
+Forge discovers their endpoints and registers a client automatically the first time someone
+connects. They work on a deployment that has configured nothing.
+
+Every vendor needs this exact **redirect URI** whitelisted on the app you register:
+
+```
+<FORGE_PUBLIC_BASE_URL>/v1/oauth/callback     # dev: http://localhost:8000/v1/oauth/callback
+```
+
+Rotating a credential is an env change plus a restart - people's own sign‑ins survive it.
+
 ---
 
 ## 5. Auth Providers & OAuth
@@ -207,6 +282,42 @@ credential when acting on their behalf over MCP or the run API - no token is eve
 
 **Triggers** lists each workflow's event entry points (webhook URLs, schedules) after you
 publish a workflow containing a trigger node.
+
+Every trigger answers **two separate questions**, and they vary independently:
+
+| | Question | Values |
+|---|---|---|
+| **Runs as** | *Whose connected accounts does it use?* | a person |
+| **Belongs to** | *Whose automation is it, and who sees it?* | **Project** or **Personal** |
+
+A team automation can legitimately act through one person's Slack; a personal one can be handed
+to a colleague without becoming everybody's. Keeping them apart is what lets both work.
+
+**Runs as.** A trigger fires with nobody signed in, so each one names the person whose connected
+accounts it uses - stamped with the editor who saved the workflow, and shown on every card. This
+is what lets a scheduled workflow send mail from a connected Gmail (§4 → *Connectors*): it acts
+as that person. Editing someone else's workflow does **not** take it over; ownership only moves
+when someone explicitly clicks **Use my accounts**, or an editor assigns it. A trigger showing
+*runs as nobody* (one created before this existed, or by the AI assistant) still fires - it just
+has no credential for connector‑backed tools until someone claims it.
+
+**Project or Personal.** A platform team's prod monitor or nightly build belongs to the project:
+everyone sees it, everyone can manage it. A salesperson's own lead‑chaser is theirs, listed only
+for them. New triggers pick a sensible default from the role of whoever saved the workflow -
+**owners and admins create Project triggers, everyone else creates Personal ones** - and either
+can be moved with one click (**Share with project** / **Make personal**). Sharing requires
+*editor*; making one personal is open to the person it runs as, since it's their account doing
+the work. An edit to a workflow never changes an existing trigger's scope in either direction.
+
+Project **admins do see** everyone's personal triggers, flagged as someone else's. Every run a
+trigger produces already appears in **Traces**, so hiding the trigger that explains *why* those
+runs happen would be privacy in appearance only - and would cost the person accountable for the
+project the ability to answer for it.
+
+> A webhook URL is unguessable but public: anyone holding it can fire the workflow, and it will
+> act as the trigger's owner. **Scope is ownership, not a lock** - marking a trigger Personal
+> changes whose list it appears in, not who can fire it. That is the same trust boundary a
+> shared API key already has: the URL *is* the credential, so treat it as one.
 
 ---
 

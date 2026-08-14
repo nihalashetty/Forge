@@ -6,6 +6,16 @@ row describes the server (http/sse/stdio transport); a tool's config names the
 `remote_tool_name` to expose and any `inject_context` keys to fill from the per-user
 runtime context (so the model never sets secrets like user_id/api_key).
 
+A server may be authenticated two ways, and they compose:
+
+* `headers_ref`      - a static header secret (an API key / PAT). Simple, shared, no refresh.
+* `auth_provider_id` - a full Auth Provider. This is what reaches an OAuth-protected remote
+  MCP server: tokens refresh automatically, and a PER-USER provider resolves a different
+  credential for each end user, so an agent acts as the calling user rather than through one
+  shared workspace token. Provider headers are applied per REQUEST (via httpx.Auth) rather
+  than baked into the connection, so a token that rotates mid-session is picked up without
+  reconnecting.
+
 MCP discovery is async, so MCP tools are loaded by `load_mcp_tools` from the runtime
 assembler (not the sync `materialize_tool` path).
 """
@@ -13,30 +23,37 @@ assembler (not the sync `materialize_tool` path).
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import logging
 import time
 from typing import Any
 
+import httpx
 from langchain.tools import ToolRuntime
 from sqlalchemy import select
 
 from forge.db.base import SessionLocal
-from forge.models import McpClient
+from forge.models import AuthProvider, McpClient
 from forge.secrets.store import SecretStore
 
 log = logging.getLogger("forge.mcp")
 
-# Cache MultiServerMCPClient instances per mcp_client_id with a TTL so a dead connection or
+# Cache MultiServerMCPClient instances per cache key with a TTL so a dead connection or
 # an edited server config is eventually re-established without a process restart (audit F12).
-# `invalidate_client` drops one entry immediately (called when the McpClient row changes);
+# The key is `mcp_client_id` for a shared server, and `mcp_client_id::<user-dims-hash>` when
+# the attached auth provider is per-user - WITHOUT that suffix one end user's authenticated
+# session would be handed to the next caller of the same server.
+# `invalidate_client` drops every entry for a server (called when the McpClient row changes);
 # `close_all` is called on shutdown.
 _CLIENT_CACHE: dict[str, tuple[float, Any]] = {}
 _CACHE_TTL = 300.0  # seconds
 
 
 def invalidate_client(client_id: str) -> None:
-    """Drop a cached MCP client so the next run reconnects with the latest config."""
-    _CLIENT_CACHE.pop(client_id, None)
+    """Drop every cached connection for a server so the next run reconnects with the latest
+    config - including all per-user variants, which share the `<client_id>::` prefix."""
+    for key in [k for k in _CLIENT_CACHE if k == client_id or k.startswith(client_id + "::")]:
+        _CLIENT_CACHE.pop(key, None)
 
 
 async def close_all() -> None:
@@ -75,7 +92,85 @@ async def _validate_mcp_url(url: str | None) -> None:
     await validate_url(url, EgressPolicy.from_settings())
 
 
-async def _connection_for(client_row: McpClient, tenant_id: str, project_id: str) -> dict:
+async def _load_provider(tenant_id: str, provider_id: str) -> AuthProvider | None:
+    async with SessionLocal() as session:
+        return (await session.execute(
+            select(AuthProvider).where(AuthProvider.tenant_id == tenant_id, AuthProvider.id == provider_id)
+        )).scalar_one_or_none()
+
+
+class _ProviderAuth(httpx.Auth):
+    """Attach an Auth Provider's resolved headers to every request to an MCP server.
+
+    Resolution happens per REQUEST (the resolver has its own TTL cache, so this is a dict
+    lookup in the common case). That is what lets a rotated OAuth token take effect without
+    tearing down the MCP session, and what makes a per-user provider resolve the CALLER's
+    credential rather than whichever one happened to be live when the session opened.
+
+    On a 401/403 the cached auth is invalidated and the request is retried exactly once - the
+    same invalidate-on-401 contract the REST tool follows. One retry, not a loop: if a freshly
+    minted token is also rejected, the credential is wrong and retrying would only amplify a
+    failing call into several.
+    """
+
+    requires_response_body = False
+
+    def __init__(self, resolver, *, tenant_id: str, project_id: str, provider_id: str, context: dict) -> None:
+        self._resolver = resolver
+        self._tenant_id = tenant_id
+        self._project_id = project_id
+        self._provider_id = provider_id
+        self._context = context or {}
+
+    async def _apply(self, request: httpx.Request, *, force: bool) -> None:
+        resolved = await self._resolver.resolve(
+            tenant_id=self._tenant_id, project_id=self._project_id,
+            provider_id=self._provider_id, context=self._context, force=force,
+        )
+        for k, v in resolved.headers.items():
+            request.headers[k] = v
+        if resolved.cookies:
+            jar = "; ".join(f"{k}={v}" for k, v in resolved.cookies.items())
+            existing = request.headers.get("Cookie")
+            request.headers["Cookie"] = f"{existing}; {jar}" if existing else jar
+        if resolved.params:
+            request.url = request.url.copy_merge_params(resolved.params)
+
+    async def async_auth_flow(self, request: httpx.Request):
+        await self._apply(request, force=False)
+        response = yield request
+        if response.status_code in (401, 403):
+            await self._apply(request, force=True)
+            yield request
+
+
+async def _auth_for(client_row: McpClient, tenant_id: str, project_id: str, context: dict | None):
+    """(httpx.Auth | None, cache-key suffix) for a server's attached auth provider."""
+    if not getattr(client_row, "auth_provider_id", None):
+        return None, ""
+    provider = await _load_provider(tenant_id, client_row.auth_provider_id)
+    if provider is None:
+        log.warning("MCP server %s references missing auth provider %s", client_row.name, client_row.auth_provider_id)
+        return None, ""
+    from forge.auth_providers.resolver import AuthResolver
+
+    context = context or {}
+    per_user = (provider.config or {}).get("per_user_context_keys") or []
+    # Only a per-user provider needs a per-caller connection; a shared one keeps a single
+    # pooled session for the whole project (which is the overwhelmingly common case).
+    suffix = ""
+    if per_user:
+        dims = "|".join(f"{k}={context.get(k)}" for k in sorted(per_user))
+        suffix = "::" + hashlib.sha256(dims.encode()).hexdigest()[:16]
+    auth = _ProviderAuth(
+        AuthResolver(), tenant_id=tenant_id, project_id=project_id,
+        provider_id=provider.id, context=context,
+    )
+    return auth, suffix
+
+
+async def _connection_for(client_row: McpClient, tenant_id: str, project_id: str,
+                          context: dict | None = None) -> dict:
     from forge.config import settings
 
     transport = client_row.transport or "streamable_http"
@@ -108,44 +203,97 @@ async def _connection_for(client_row: McpClient, tenant_id: str, project_id: str
                 conn["headers"] = headers
         except Exception:  # noqa: BLE001 - missing headers secret => connect without
             pass
+    # stdio has no HTTP layer to attach auth to; a provider on a stdio server is a config
+    # mistake rather than something to silently half-apply.
+    if transport != "stdio":
+        auth, _suffix = await _auth_for(client_row, tenant_id, project_id, context)
+        if auth is not None:
+            conn["auth"] = auth
     return conn
 
 
-async def _client_and_tools(client_row: McpClient, tenant_id: str, project_id: str):
+async def _client_and_tools(client_row: McpClient, tenant_id: str, project_id: str,
+                            context: dict | None = None):
     MultiServerMCPClient = _require_adapters()
     now = time.monotonic()
-    entry = _CLIENT_CACHE.get(client_row.id)
+    _auth, suffix = await _auth_for(client_row, tenant_id, project_id, context)
+    key = client_row.id + suffix
+    entry = _CLIENT_CACHE.get(key)
     if entry is None or (now - entry[0]) > _CACHE_TTL:
-        conn = await _connection_for(client_row, tenant_id, project_id)
+        conn = await _connection_for(client_row, tenant_id, project_id, context)
         client = MultiServerMCPClient({client_row.name: conn})
-        _CLIENT_CACHE[client_row.id] = (now, client)
+        _CLIENT_CACHE[key] = (now, client)
     else:
         client = entry[1]
     tools = await client.get_tools()
     return client, tools
 
 
-async def discover_tools(client_row: McpClient, tenant_id: str, project_id: str) -> list[dict]:
+async def discover_tools(client_row: McpClient, tenant_id: str, project_id: str,
+                         context: dict | None = None) -> list[dict]:
     """List the tools an MCP server exposes - [{name, description}].
 
     Connects fresh (not via the execution cache) so the result always reflects the
     current McpClient config, and drops any stale cached client so the next run
     reconnects with the latest settings. Raises McpUnavailable / connection errors.
     """
-    _CLIENT_CACHE.pop(client_row.id, None)
+    invalidate_client(client_row.id)
     MultiServerMCPClient = _require_adapters()
-    conn = await _connection_for(client_row, tenant_id, project_id)
+    conn = await _connection_for(client_row, tenant_id, project_id, context)
     client = MultiServerMCPClient({client_row.name: conn})
     tools = await client.get_tools()
     return [{"name": t.name, "description": (getattr(t, "description", "") or "").strip()} for t in tools]
 
 
-async def server_tools(client_row: McpClient, tenant_id: str, project_id: str) -> list:
+def describe_mcp_error(e: BaseException) -> str:
+    """A message that names what actually failed.
+
+    The MCP client runs its transport inside an anyio task group, so EVERY failure - a 401 from
+    the server, a DNS miss, a TLS error - reaches the caller wrapped in an ExceptionGroup whose
+    str() is the famously uninformative "unhandled errors in a TaskGroup (1 sub-exception)".
+    Printing that in the UI tells a user nothing and tells us nothing either, so unwrap to the
+    leaf exceptions and name them.
+    """
+    leaves: list[str] = []
+
+    def _walk(err: BaseException, depth: int = 0) -> None:
+        inner = getattr(err, "exceptions", None)
+        if inner and depth < 5:
+            for sub in inner:
+                _walk(sub, depth + 1)
+            return
+        text = str(err).strip()
+        leaves.append(f"{type(err).__name__}: {text}" if text else type(err).__name__)
+
+    _walk(e)
+    # Deduplicate: a task group commonly reports the same underlying error from several tasks.
+    unique = list(dict.fromkeys(leaves))
+    return "; ".join(unique[:3]) or str(e) or type(e).__name__
+
+
+async def server_tools(client_row: McpClient, tenant_id: str, project_id: str,
+                       context: dict | None = None) -> list:
     """Native LangChain tools a server exposes, minus the ones toggled off (disabled_tools).
-    Used to attach a whole MCP server's tools to an agent."""
-    _client, tools = await _client_and_tools(client_row, tenant_id, project_id)
+    Used to attach a whole MCP server's tools to an agent. `context` carries the run's per-user
+    dims so a per-user auth provider resolves THIS caller's credential."""
+    _client, tools = await _client_and_tools(client_row, tenant_id, project_id, context)
     disabled = set(getattr(client_row, "disabled_tools", None) or [])
     return [t for t in tools if t.name not in disabled]
+
+
+def auth_context_from(ctx) -> dict:
+    """The per-user dims an MCP auth provider keys on, read off a CompileContext.
+
+    Mirrors the lane order the REST tool uses (tools/rest.py): injected run context first, then
+    the run's end_user identity last so it is authoritative and can't be shadowed by a value a
+    caller injected."""
+    eu = getattr(ctx, "end_user", None)
+    return {
+        **(getattr(ctx, "run_context", None) or {}),
+        "end_user": eu,
+        "end_user_id": eu.get("id") if isinstance(eu, dict) else None,
+        "end_user_email": eu.get("email") if isinstance(eu, dict) else None,
+    }
 
 
 def _wrap_with_context_injection(tool, inject_keys: list[str]):
@@ -180,7 +328,7 @@ async def load_mcp_tool(cfg: dict, ctx) -> Any:
         ).scalar_one_or_none()
     if row is None:
         raise McpUnavailable(f"MCP client {cfg.get('mcp_client_id')!r} not found")
-    _client, tools = await _client_and_tools(row, ctx.tenant_id, ctx.project_id)
+    _client, tools = await _client_and_tools(row, ctx.tenant_id, ctx.project_id, auth_context_from(ctx))
     name = cfg["remote_tool_name"]
     match = next((t for t in tools if t.name == name), None)
     if match is None:

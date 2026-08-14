@@ -1,0 +1,89 @@
+{
+  "format": "forge.connector/1",
+  "slug": "stripe",
+  "name": "Stripe",
+  "version": "1.0.0",
+  "publisher": "forge",
+  "summary": "Look up customers, payments, subscriptions, and issue refunds.",
+  "categories": ["payments"],
+  "roles": ["Support", "Finance", "Operations"],
+  "icon": "credit-card",
+  "docs_url": "https://docs.stripe.com/api",
+  "setup_url": "https://dashboard.stripe.com/apikeys",
+  "auth": {
+    "kind": "bearer",
+    "prefix": "Bearer ",
+    "per_user": "never",
+    "setup_help": "Use a restricted API key with only the read (and, if you want refunds, write) permissions the agent needs. A full secret key gives an agent your whole account.",
+    "setup": [
+      { "key": "token", "label": "Secret / restricted API key", "secret": true, "required": true, "placeholder": "rk_live_… or sk_test_…" }
+    ]
+  },
+  "egress_hosts": ["api.stripe.com"],
+  "backend": {
+    "type": "rest",
+    "base_url": "https://api.stripe.com/v1",
+    "actions": [
+      {
+        "name": "stripe_search_customers",
+        "display_name": "Find customer",
+        "description": "Find a customer by email or name using Stripe search syntax, e.g. \"email:'jane@acme.com'\".",
+        "request": {
+          "method": "GET",
+          "url_template": "/customers/search",
+          "fields": [
+            { "path": "query", "in": "query", "type": "string", "required": true, "llm_visible": true, "description": "Stripe search query, e.g. email:'jane@acme.com'." },
+            { "path": "limit", "in": "query", "type": "integer", "required": false, "llm_visible": true, "default": 5 }
+          ]
+        },
+        "response": { "projection_jmespath": "data[].{id: id, email: email, name: name, created: created, delinquent: delinquent}" }
+      },
+      {
+        "name": "stripe_list_charges",
+        "display_name": "List payments",
+        "description": "List recent charges, optionally for one customer. Amounts are in the smallest currency unit (cents).",
+        "request": {
+          "method": "GET",
+          "url_template": "/charges",
+          "fields": [
+            { "path": "customer", "in": "query", "type": "string", "required": false, "llm_visible": true, "description": "Customer id (cus_…) to filter by." },
+            { "path": "limit", "in": "query", "type": "integer", "required": false, "llm_visible": true, "default": 10 }
+          ]
+        },
+        "response": { "projection_jmespath": "data[].{id: id, amount: amount, currency: currency, status: status, paid: paid, refunded: refunded, created: created, description: description}" }
+      },
+      {
+        "name": "stripe_list_subscriptions",
+        "display_name": "List subscriptions",
+        "description": "List a customer's subscriptions and their current status.",
+        "request": {
+          "method": "GET",
+          "url_template": "/subscriptions",
+          "fields": [
+            { "path": "customer", "in": "query", "type": "string", "required": true, "llm_visible": true, "description": "Customer id (cus_…)." },
+            { "path": "status", "in": "query", "type": "string", "required": false, "llm_visible": true, "default": "all", "description": "active | past_due | canceled | all." }
+          ]
+        },
+        "response": { "projection_jmespath": "data[].{id: id, status: status, current_period_end: current_period_end, cancel_at_period_end: cancel_at_period_end, plan: items.data[0].price.nickname}" }
+      },
+      {
+        "name": "stripe_create_refund",
+        "display_name": "Refund a payment",
+        "description": "Refund a charge, fully or partially. Amount is in the smallest currency unit; omit it to refund in full.",
+        "request": {
+          "method": "POST",
+          "url_template": "/refunds",
+          "fields": [
+            { "path": "charge", "in": "body", "type": "string", "required": true, "llm_visible": true, "description": "Charge id (ch_…) to refund." },
+            { "path": "amount", "in": "body", "type": "integer", "required": false, "llm_visible": true, "description": "Partial amount in cents; omit for a full refund." },
+            { "path": "reason", "in": "body", "type": "string", "required": false, "llm_visible": true, "description": "duplicate | fraudulent | requested_by_customer." }
+          ]
+        },
+        "response": { "projection_jmespath": "{id: id, status: status, amount: amount, currency: currency}" }
+      }
+    ]
+  },
+  "toolset": {
+    "description": "Stripe: look up customers, payments and subscriptions, and issue refunds."
+  }
+}
