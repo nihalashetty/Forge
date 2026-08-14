@@ -253,17 +253,24 @@ def _build_body(req: dict, fields: list[dict], values: dict, context: dict | Non
                 parsed = None
             if parsed is not None and has_structural_directive(parsed):
                 return render_value(parsed, tvars, allow_each=True, strict_ns=_STRICT_NS)
-        rendered = render_template(tmpl, tvars, strict_ns=_STRICT_NS)
+        # Two passes, because a template is either a JSON document or it isn't and we can't know
+        # which without trying. The first JSON-escapes substituted strings so that model-written
+        # text containing a newline or a quote can't terminate a JSON string early - which is what
+        # silently turned a note body into an unparseable body, and then into raw text the API
+        # rejected. If that parses, it was JSON. If it doesn't, re-render literally so a
+        # form-encoded or plain-text template still gets its values verbatim.
+        rendered = render_template(tmpl, tvars, strict_ns=_STRICT_NS, escape_json=True)
         if isinstance(rendered, (dict, list)):
             return rendered
         if isinstance(rendered, str):
-            s = rendered.strip()
-            if not s:
+            if not rendered.strip():
                 return None
             try:
-                return _json.loads(s)
+                return _json.loads(rendered.strip())
             except ValueError:
-                return s  # non-JSON body (e.g. application/x-www-form-urlencoded) -> raw content
+                pass
+            literal = render_template(tmpl, tvars, strict_ns=_STRICT_NS)
+            return literal if not isinstance(literal, str) else literal.strip()
         return rendered
     return _collect(fields, values, "body") or None
 

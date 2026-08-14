@@ -43,13 +43,20 @@ def _lookup(path: str, vars: dict, strict_ns: Collection[str] = ()) -> Any:
     return cur
 
 
-def _sub_one(mm: re.Match, vars: dict, strict_ns: Collection[str] = ()) -> str:
+def _sub_one(mm: re.Match, vars: dict, strict_ns: Collection[str] = (),
+             escape_json: bool = False) -> str:
     # Embedded token (not a whole-string match): stringify the resolved value. Only a missing
     # value (None) becomes empty - a falsy-but-real value like 0 or False must render as "0"/
     # "False", not "" (an `x or ""` here would silently drop legitimate zeros/booleans).
     v = _lookup(mm.group(1), vars, strict_ns)
     if v is None:
         return ""
+    # Inside a JSON body template the token sits between quotes, so the CONTENT has to be
+    # JSON-escaped: a newline, a double quote or a backslash in model-written text (a note, an
+    # email body, a search string) otherwise terminates the string early and the whole body stops
+    # being JSON. dumps()[1:-1] escapes the content without adding a second pair of quotes.
+    if escape_json and isinstance(v, str):
+        return json.dumps(v, ensure_ascii=False)[1:-1]
     # A list/dict interpolated into a body template is being placed into JSON - `str()` there
     # yields Python's repr (single quotes, True/None), which is not JSON, so the body fails to
     # parse and gets sent as raw text. `[[1, 2]]` happens to be valid JSON and `[['a', 'b']]` is
@@ -60,14 +67,17 @@ def _sub_one(mm: re.Match, vars: dict, strict_ns: Collection[str] = ()) -> str:
     return str(v)
 
 
-def render_template(s: str, vars: dict, *, strict_ns: Collection[str] = ()) -> Any:
+def render_template(s: str, vars: dict, *, strict_ns: Collection[str] = (),
+                    escape_json: bool = False) -> Any:
     # `strict_ns` names namespaces whose missing keys raise MissingTemplateVar instead of
     # rendering empty (used for {{env.*}}). Defaults to lenient for all namespaces.
-    # Whole-string single token -> preserve native type (numbers, objects).
+    # `escape_json` JSON-escapes substituted strings, for a template that is a JSON document
+    # (the REST body path opts in). Whole-string single token -> preserve native type (numbers,
+    # objects), which needs no escaping because the value is never re-parsed from text.
     m = _TOKEN.fullmatch(s.strip())
     if m:
         return _lookup(m.group(1), vars, strict_ns)
-    return _TOKEN.sub(lambda mm: _sub_one(mm, vars, strict_ns), s)
+    return _TOKEN.sub(lambda mm: _sub_one(mm, vars, strict_ns, escape_json), s)
 
 
 #: Directives that need STRUCTURAL rendering (parse the JSON, then walk it) rather than plain

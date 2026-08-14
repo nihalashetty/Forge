@@ -2,7 +2,7 @@
   "format": "forge.connector/1",
   "slug": "google-calendar",
   "name": "Google Calendar",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "publisher": "forge",
   "summary": "List, create, and update events on a Google Calendar.",
   "categories": [
@@ -154,7 +154,7 @@
               "type": "string",
               "required": true,
               "llm_visible": true,
-              "description": "Start time, RFC 3339."
+              "description": "Start time, RFC3339 WITH a UTC offset, e.g. 2026-08-20T14:00:00+05:30 or 2026-08-20T08:30:00Z. A naive local time without an offset is rejected."
             },
             {
               "path": "end",
@@ -162,7 +162,7 @@
               "type": "string",
               "required": true,
               "llm_visible": true,
-              "description": "End time, RFC 3339."
+              "description": "End time, RFC3339 WITH a UTC offset, e.g. 2026-08-20T14:00:00+05:30 or 2026-08-20T08:30:00Z. A naive local time without an offset is rejected."
             },
             {
               "path": "attendees",

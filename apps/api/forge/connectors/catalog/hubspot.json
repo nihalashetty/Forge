@@ -2,11 +2,18 @@
   "format": "forge.connector/1",
   "slug": "hubspot",
   "name": "HubSpot",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "publisher": "forge",
   "summary": "Search contacts and companies, read deals, and log CRM notes.",
-  "categories": ["crm"],
-  "roles": ["Sales", "Marketing", "Support", "Operations"],
+  "categories": [
+    "crm"
+  ],
+  "roles": [
+    "Sales",
+    "Marketing",
+    "Support",
+    "Operations"
+  ],
   "icon": "users",
   "docs_url": "https://developers.hubspot.com/docs/api/crm/contacts",
   "setup_url": "https://developers.hubspot.com/docs/api/working-with-oauth",
@@ -25,11 +32,23 @@
     "credential_group": "hubspot",
     "setup_help": "Create a HubSpot public app, list the scopes below on it, add the callback URL, then put its Client ID and Client secret in FORGE_CONNECTOR_OAUTH_APPS under \"hubspot\". Each person picks their own HubSpot account when they connect.",
     "setup": [
-      { "key": "client_id", "label": "Client ID", "secret": true, "required": true },
-      { "key": "client_secret", "label": "Client secret", "secret": true, "required": true }
+      {
+        "key": "client_id",
+        "label": "Client ID",
+        "secret": true,
+        "required": true
+      },
+      {
+        "key": "client_secret",
+        "label": "Client secret",
+        "secret": true,
+        "required": true
+      }
     ]
   },
-  "egress_hosts": ["api.hubapi.com"],
+  "egress_hosts": [
+    "api.hubapi.com"
+  ],
   "backend": {
     "type": "rest",
     "base_url": "https://api.hubapi.com/crm/v3",
@@ -42,12 +61,28 @@
           "method": "POST",
           "url_template": "/objects/contacts/search",
           "fields": [
-            { "path": "query", "in": "body", "type": "string", "required": true, "llm_visible": true, "description": "Search text, e.g. an email address." },
-            { "path": "limit", "in": "body", "type": "integer", "required": false, "llm_visible": true, "default": 10 }
+            {
+              "path": "query",
+              "in": "body",
+              "type": "string",
+              "required": true,
+              "llm_visible": true,
+              "description": "Search text, e.g. an email address."
+            },
+            {
+              "path": "limit",
+              "in": "body",
+              "type": "integer",
+              "required": false,
+              "llm_visible": true,
+              "default": 10
+            }
           ],
           "body_template": "{\"query\":\"{{input.query}}\",\"limit\":{{input.limit}},\"properties\":[\"email\",\"firstname\",\"lastname\",\"company\",\"phone\",\"lifecyclestage\"]}"
         },
-        "response": { "projection_jmespath": "results[].{id: id, email: properties.email, name: join(' ', [properties.firstname, properties.lastname]), company: properties.company, stage: properties.lifecyclestage}" }
+        "response": {
+          "projection_jmespath": "results[].{id: id, email: properties.email, name: join(' ', [properties.firstname, properties.lastname]), company: properties.company, stage: properties.lifecyclestage}"
+        }
       },
       {
         "name": "hubspot_get_contact",
@@ -57,11 +92,27 @@
           "method": "GET",
           "url_template": "/objects/contacts/{contact_id}",
           "fields": [
-            { "path": "contact_id", "in": "path", "type": "string", "required": true, "llm_visible": true, "description": "HubSpot contact id." },
-            { "path": "properties", "in": "query", "type": "string", "required": false, "llm_visible": false, "default": "email,firstname,lastname,company,phone,lifecyclestage,hs_lead_status" }
+            {
+              "path": "contact_id",
+              "in": "path",
+              "type": "string",
+              "required": true,
+              "llm_visible": true,
+              "description": "HubSpot contact id."
+            },
+            {
+              "path": "properties",
+              "in": "query",
+              "type": "string",
+              "required": false,
+              "llm_visible": false,
+              "default": "email,firstname,lastname,company,phone,lifecyclestage,hs_lead_status"
+            }
           ]
         },
-        "response": { "projection_jmespath": "{id: id, properties: properties}" }
+        "response": {
+          "projection_jmespath": "{id: id, properties: properties}"
+        }
       },
       {
         "name": "hubspot_search_deals",
@@ -71,27 +122,59 @@
           "method": "POST",
           "url_template": "/objects/deals/search",
           "fields": [
-            { "path": "query", "in": "body", "type": "string", "required": true, "llm_visible": true, "description": "Search text." },
-            { "path": "limit", "in": "body", "type": "integer", "required": false, "llm_visible": true, "default": 10 }
+            {
+              "path": "query",
+              "in": "body",
+              "type": "string",
+              "required": true,
+              "llm_visible": true,
+              "description": "Search text."
+            },
+            {
+              "path": "limit",
+              "in": "body",
+              "type": "integer",
+              "required": false,
+              "llm_visible": true,
+              "default": 10
+            }
           ],
           "body_template": "{\"query\":\"{{input.query}}\",\"limit\":{{input.limit}},\"properties\":[\"dealname\",\"amount\",\"dealstage\",\"closedate\",\"pipeline\"]}"
         },
-        "response": { "projection_jmespath": "results[].{id: id, name: properties.dealname, amount: properties.amount, stage: properties.dealstage, close_date: properties.closedate}" }
+        "response": {
+          "projection_jmespath": "results[].{id: id, name: properties.dealname, amount: properties.amount, stage: properties.dealstage, close_date: properties.closedate}"
+        }
       },
       {
         "name": "hubspot_create_note",
         "display_name": "Log a note",
-        "description": "Create a timeline note. `timestamp` is epoch milliseconds - use the current time unless logging something historical.",
+        "description": "Create a timeline note. `timestamp` is when the note happened, ISO 8601 - use the current time unless logging something historical.",
         "request": {
           "method": "POST",
           "url_template": "/objects/notes",
           "fields": [
-            { "path": "body", "in": "body", "type": "string", "required": true, "llm_visible": true, "description": "Note text." },
-            { "path": "timestamp", "in": "body", "type": "integer", "required": true, "llm_visible": true, "description": "Epoch milliseconds." }
+            {
+              "path": "body",
+              "in": "body",
+              "type": "string",
+              "required": true,
+              "llm_visible": true,
+              "description": "Note text."
+            },
+            {
+              "path": "timestamp",
+              "in": "body",
+              "type": "string",
+              "required": true,
+              "llm_visible": true,
+              "description": "When the note happened, ISO 8601 (e.g. 2026-08-14T10:00:00Z). Epoch milliseconds also work."
+            }
           ],
-          "body_template": "{\"properties\":{\"hs_note_body\":\"{{input.body}}\",\"hs_timestamp\":{{input.timestamp}}}}"
+          "body_template": "{\"properties\":{\"hs_note_body\":\"{{input.body}}\",\"hs_timestamp\":\"{{input.timestamp}}\"}}"
         },
-        "response": { "projection_jmespath": "{id: id, created: createdAt}" }
+        "response": {
+          "projection_jmespath": "{id: id, created: createdAt}"
+        }
       }
     ]
   },

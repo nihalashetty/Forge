@@ -2,7 +2,7 @@
   "format": "forge.connector/1",
   "slug": "outlook",
   "name": "Outlook",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "publisher": "forge",
   "summary": "Read, search, and send mail from an Outlook / Microsoft 365 mailbox.",
   "categories": [
@@ -141,7 +141,7 @@
       {
         "name": "outlook_send_message",
         "display_name": "Send email",
-        "description": "Send an email immediately from the connected mailbox.",
+        "description": "Send an email as the connected account. `to`, `cc` and `bcc` are lists of addresses - pass every recipient in one call.",
         "request": {
           "method": "POST",
           "url_template": "/sendMail",
@@ -149,10 +149,10 @@
             {
               "path": "to",
               "in": "body",
-              "type": "string",
+              "type": "array",
               "required": true,
               "llm_visible": true,
-              "description": "Recipient email address."
+              "description": "Recipient addresses, e.g. [\"a@x.com\",\"b@x.com\"]."
             },
             {
               "path": "subject",
@@ -168,10 +168,26 @@
               "type": "string",
               "required": true,
               "llm_visible": true,
-              "description": "Message body (plain text)."
+              "description": "Message text."
+            },
+            {
+              "path": "cc",
+              "in": "body",
+              "type": "array",
+              "required": false,
+              "llm_visible": true,
+              "description": "Optional Cc addresses."
+            },
+            {
+              "path": "bcc",
+              "in": "body",
+              "type": "array",
+              "required": false,
+              "llm_visible": true,
+              "description": "Optional Bcc addresses."
             }
           ],
-          "body_template": "{\"message\":{\"subject\":\"{{input.subject}}\",\"body\":{\"contentType\":\"Text\",\"content\":\"{{input.body}}\"},\"toRecipients\":[{\"emailAddress\":{\"address\":\"{{input.to}}\"}}]},\"saveToSentItems\":true}"
+          "body_template": "{\"message\": {\"subject\": \"{{input.subject}}\", \"body\": {\"contentType\": \"Text\", \"content\": \"{{input.body}}\"}, \"toRecipients\": {\"$each\": \"{{input.to}}\", \"$as\": \"addr\", \"$do\": {\"emailAddress\": {\"address\": \"{{addr}}\"}}}, \"ccRecipients\": {\"$each\": \"{{input.cc}}\", \"$as\": \"addr\", \"$do\": {\"emailAddress\": {\"address\": \"{{addr}}\"}}}, \"bccRecipients\": {\"$each\": \"{{input.bcc}}\", \"$as\": \"addr\", \"$do\": {\"emailAddress\": {\"address\": \"{{addr}}\"}}}}, \"saveToSentItems\": true}"
         },
         "response": {
           "projection_jmespath": "{sent: `true`}"
