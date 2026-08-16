@@ -3,8 +3,10 @@
 **Status:** shipped, with amendments · **Date:** 2026-08-13 · **Scope:** new `Connectors` tab +
 connector catalog + custom connectors
 
-> **What actually shipped differs from this document in three ways.** The research and the
-> manifest/install design below are accurate; the credential model was tightened after review:
+> **What actually shipped differs from this document in five ways.** The research and the
+> manifest/install design below are accurate; the credential model was tightened after review.
+> The decisions table in §7 records what was *proposed* — D4 and D6 were overruled and are struck
+> there:
 >
 > 1. **Catalog credentials come only from `FORGE_CONNECTOR_OAUTH_APPS`.** No route accepts a
 >    pasted client id/secret for a bundled connector, and the UI has no form for one. A vendor
@@ -377,14 +379,17 @@ Concrete, testable statements — each should become an actual test:
 
 ## 7. Open decisions
 
-| # | Question | Recommendation |
-|---|---|---|
-| D1 | Connectors project-scoped or tenant-scoped? | **Project-scoped**, matching every other entity. Tenant-level sharing can come later via bundle export. |
-| D2 | Does "Connectors" replace "External MCP" in the nav? | **Yes** — fold it in as a tab. Two nav items for "connect an outside system" is a usability trap. |
-| D3 | Who can install? | `editor`. Per-user *connecting* stays open to `connector` role (already the case). |
-| D4 | Ship OAuth client credentials for the catalog? | **No.** Forge is self-hosted; each install registers its own app. Manifest carries the setup instructions + shows the exact redirect URI. |
-| D5 | Bundled catalog vs downloadable index? | **Bundled** for v1. A signed remote index is a v2 conversation once there's a release cadence. |
-| D6 | Per-user auth for MCP-backed connectors (G3)? | Phase 1 covers shared-account. Per-user MCP is a Phase 1.5 follow-on — it needs a per-user MCP client cache keyed the way `AuthResolver` keys bundles. |
+These were the decisions **as proposed**. Two of them were overruled by what shipped — the
+`~~struck~~` rows below are historical, not current. See the amendments at the top of this file.
+
+| # | Question | Recommendation | Shipped? |
+|---|---|---|---|
+| D1 | Connectors project-scoped or tenant-scoped? | **Project-scoped**, matching every other entity. Tenant-level sharing can come later via bundle export. | as proposed |
+| D2 | Does "Connectors" replace "External MCP" in the nav? | **Yes** — fold it in as a tab. Two nav items for "connect an outside system" is a usability trap. | as proposed |
+| D3 | Who can install? | `editor`. Per-user *connecting* stays open to `connector` role (already the case). | as proposed |
+| D4 | Ship OAuth client credentials for the catalog? | ~~**No.** Forge is self-hosted; each install registers its own app. Manifest carries the setup instructions + shows the exact redirect URI.~~ | **superseded.** The vendor app belongs to the DEPLOYMENT: it is registered once in `FORGE_CONNECTOR_OAUTH_APPS` and every user then signs in against it. Asking each project to register its own app put a client secret in front of the person who just wanted to click Connect. |
+| D5 | Bundled catalog vs downloadable index? | **Bundled** for v1. A signed remote index is a v2 conversation once there's a release cadence. | as proposed |
+| D6 | Per-user auth for MCP-backed connectors (G3)? | ~~Phase 1 covers shared-account. Per-user MCP is a Phase 1.5 follow-on — it needs a per-user MCP client cache keyed the way `AuthResolver` keys bundles.~~ | **shipped in Phase 1.** The per-user MCP client cache exists (`forge/tools/mcp.py`), keyed on the same auth dims the resolver varies on, with a TTL, an LRU ceiling and a retirement queue. It was not deferrable: catalog connectors are per-user always, so a shared-account-only MCP path would have had no callers. |
 
 ---
 
