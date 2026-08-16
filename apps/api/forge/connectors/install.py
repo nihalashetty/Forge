@@ -375,8 +375,14 @@ class ConnectorInstaller:
             # it and the loser hits `uq_connector_install_slug` here. That is the same condition
             # the read detected, so report it the same way rather than letting a raw DB error
             # surface as a 500 on the one-click path.
+            #
+            # NO secrets are cleared on this path, deliberately. Both racers found the group's
+            # credentials absent and both wrote them, so they are in this install's `new_secrets`
+            # - but the WINNER's install now owns them. Clearing them here would blank the
+            # credential the surviving install needs, turning a harmless race into "client_id
+            # secret is not set" for everybody.
             await self._rollback(session, tenant_id, project_id, tool_ids, tool_set_id,
-                                 auth_provider_id, mcp_client_id, new_secrets)
+                                 auth_provider_id, mcp_client_id, [])
             raise InstallError(f"{manifest.name} is already installed in this project") from e
         except Exception:
             # A half-installed connector is worse than none: it leaves orphan tools pointing at

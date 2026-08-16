@@ -471,12 +471,21 @@ async def test_a_concurrent_duplicate_install_is_reported_not_raised_raw():
     async def _blind(*a, **kw):
         return None  # both callers "see" no existing install
 
+    async def _group_looks_empty(*a, **kw):
+        # The real interleaving: BOTH racers check for the group's credentials before either has
+        # written them, so both count the write as one they created. The loser's rollback then
+        # holds a list naming the credential the winner is about to depend on.
+        return False
+
     installer.get_install = _blind  # type: ignore[method-assign]
+    installer._secret_exists = _group_looks_empty  # type: ignore[method-assign]
     await _install(tenant, project, {**REST_MANIFEST, "slug": "acme-race"})
 
     async with SessionLocal() as s:
+        # The same credential both times: two racers on the one-click path both read the vendor
+        # app out of the same environment, so they write identical values.
         with pytest.raises(InstallError, match="already installed"):
-            await installer.install(s, tenant, project, manifest, values={"token": "x"}, source="custom")
+            await installer.install(s, tenant, project, manifest, values={"token": "sekrit"}, source="custom")
 
     # ...and the loser's half-built rows are gone, so the winner's install is the only one.
     async with SessionLocal() as s:
@@ -486,6 +495,15 @@ async def test_a_concurrent_duplicate_install_is_reported_not_raised_raw():
         )).scalars().all()
         sets = (await s.execute(select(ToolSet).where(ToolSet.project_id == project))).scalars().all()
         assert len(installs) == 1 and len(sets) == 1
+
+    # ...and crucially the WINNER's credentials survive. Both racers found the group empty and
+    # both wrote it, so the loser's "secrets I created" list names the very credential the
+    # surviving install now depends on. Clearing it would turn a harmless race into a connector
+    # that reports "client_id secret is not set" to everyone.
+    token = await SecretStore().read_ref(
+        tenant_id=tenant, project_id=project, ref=f"secret://proj/{secret_name('acme-race', 'token')}",
+    )
+    assert token == "sekrit", "the loser's rollback must not blank the winner's credential"
 
 
 async def test_install_adds_connector_hosts_to_the_project_egress_allow_list():
