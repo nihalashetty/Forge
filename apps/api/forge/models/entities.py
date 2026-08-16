@@ -582,6 +582,10 @@ class ConnectorInstall(PkTimestamp, Base):
     mcp_client_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     created_tool_ids: Mapped[list] = mapped_column(JSON, default=list)
     created_secret_names: Mapped[list] = mapped_column(JSON, default=list)
+    # Hosts this install ADDED to the project's egress allow-list - not every host its manifest
+    # names. A host somebody allow-listed by hand before the connector existed is not this
+    # install's to take away on uninstall, and the two are indistinguishable after the fact.
+    created_egress_hosts: Mapped[list] = mapped_column(JSON, default=list)
     # needs_setup (credentials missing) | needs_auth (connect flow not run) | connected | error
     status: Mapped[str] = mapped_column(String(20), default="needs_setup")
     status_detail: Mapped[str | None] = mapped_column(Text, nullable=True)

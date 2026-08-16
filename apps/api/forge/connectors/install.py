@@ -286,6 +286,8 @@ class ConnectorInstaller:
         # credential a sibling connector in the same group is already using (install Gmail, then
         # a failed Calendar install) would break the sibling on the way out.
         new_secrets: list[str] = []
+        # Same idea for the egress allow-list: only entries this install ADDED may be taken back.
+        new_hosts: list[str] = []
         auth_provider_id: str | None = None
         tool_set_id: str | None = None
         mcp_client_id: str | None = None
@@ -354,14 +356,16 @@ class ConnectorInstaller:
                 )
 
             # 5. Egress allow-list. A no-op unless the deployment runs a strict allow-list; it
-            #    only ever ADDS the connector's own hosts and never relaxes block_private.
-            await self._allow_egress(session, tenant_id, project_id, manifest.hosts())
+            #    only ever ADDS the connector's own hosts and never relaxes block_private. The
+            #    hosts it genuinely added are recorded so uninstall can take back exactly those.
+            new_hosts += await self._allow_egress(session, tenant_id, project_id, manifest.hosts())
 
             row = ConnectorInstall(
                 tenant_id=tenant_id, project_id=project_id, slug=manifest.slug, name=manifest.name,
                 version=manifest.version, source=source, manifest=manifest.model_dump(mode="json"),
                 auth_provider_id=auth_provider_id, tool_set_id=tool_set_id, mcp_client_id=mcp_client_id,
                 created_tool_ids=tool_ids, created_secret_names=created_secrets,
+                created_egress_hosts=new_hosts,
                 auth_mode="per_user" if per_user else "shared",
                 status=self._initial_status(manifest, per_user=per_user),
             )
@@ -381,14 +385,17 @@ class ConnectorInstaller:
             # - but the WINNER's install now owns them. Clearing them here would blank the
             # credential the surviving install needs, turning a harmless race into "client_id
             # secret is not set" for everybody.
+            #
+            # Allow-list entries ARE taken back, because `_revoke_egress` asks which hosts a
+            # surviving install still needs - and the winner's committed row answers for its own.
             await self._rollback(session, tenant_id, project_id, tool_ids, tool_set_id,
-                                 auth_provider_id, mcp_client_id, [])
+                                 auth_provider_id, mcp_client_id, [], new_hosts)
             raise InstallError(f"{manifest.name} is already installed in this project") from e
         except Exception:
             # A half-installed connector is worse than none: it leaves orphan tools pointing at
             # an auth provider the user can't see the origin of. Roll the created rows back.
             await self._rollback(session, tenant_id, project_id, tool_ids, tool_set_id,
-                                 auth_provider_id, mcp_client_id, new_secrets)
+                                 auth_provider_id, mcp_client_id, new_secrets, new_hosts)
             raise
 
     async def _secret_exists(self, tenant_id: str, project_id: str, name: str) -> bool:
@@ -728,7 +735,54 @@ class ConnectorInstaller:
     # --- egress ----------------------------------------------------------------------------
 
     @staticmethod
-    async def _allow_egress(session: AsyncSession, tenant_id: str, project_id: str, hosts: list[str]) -> None:
+    async def _allow_egress(session: AsyncSession, tenant_id: str, project_id: str,
+                            hosts: list[str]) -> list[str]:
+        """Add this connector's hosts to the project's allow-list, and report which ones were
+        genuinely NEW.
+
+        The return value is the receipt uninstall needs. A host already on the list was put there
+        by a person or by a sibling connector, so it is not this install's to remove later.
+        """
+        if not hosts:
+            return []
+        project = (await session.execute(
+            select(Project).where(Project.tenant_id == tenant_id, Project.id == project_id)
+        )).scalar_one_or_none()
+        if project is None:
+            return []
+        cfg = dict(project.config or {})
+        egress = dict(cfg.get("egress") or {})
+        allow = list(egress.get("allow_hosts") or [])
+        added = [h for h in hosts if h not in allow]
+        if not added:
+            return []
+        egress["allow_hosts"] = [*allow, *added]
+        cfg["egress"] = egress
+        project.config = cfg
+        await session.commit()
+        return added
+
+    @staticmethod
+    async def _revoke_egress(session: AsyncSession, tenant_id: str, project_id: str,
+                             hosts: list[str], *, exclude_install_id: str | None = None) -> None:
+        """Take back allow-list entries a connector added, minus anything a SURVIVING install
+        still needs.
+
+        Two things this must not do. It must not remove a host that was on the list before any
+        connector existed - hence `hosts` is the install's recorded receipt, never
+        `manifest.hosts()`. And it must not strand a sibling: Gmail and Sheets both reach
+        `oauth2.googleapis.com`, so uninstalling one while the other remains has to leave it.
+
+        Survivors are compared on their MANIFEST hosts rather than their own receipts, which
+        deliberately over-approximates: the first Google connector installed recorded
+        `oauth2.googleapis.com` and the second recorded nothing (it was already allowed), so
+        reading receipts would let uninstalling the first one revoke a host the second is using.
+
+        A host that IS still needed has its receipt handed to the survivor that needs it. Without
+        that hand-over the record dies with the first install - uninstall Gmail (correctly keeping
+        `oauth2.googleapis.com` for Calendar) and then Calendar, and the host is orphaned on the
+        allow-list forever, because the only install that ever claimed to have added it is gone.
+        """
         if not hosts:
             return
         project = (await session.execute(
@@ -739,13 +793,45 @@ class ConnectorInstaller:
         cfg = dict(project.config or {})
         egress = dict(cfg.get("egress") or {})
         allow = list(egress.get("allow_hosts") or [])
-        added = [h for h in hosts if h not in allow]
-        if not added:
+        if not allow:
             return
-        egress["allow_hosts"] = [*allow, *added]
-        cfg["egress"] = egress
-        project.config = cfg
-        await session.commit()
+
+        from forge.connectors.manifest import parse_manifest
+
+        stmt = select(ConnectorInstall).where(
+            ConnectorInstall.tenant_id == tenant_id, ConnectorInstall.project_id == project_id,
+        )
+        if exclude_install_id:
+            stmt = stmt.where(ConnectorInstall.id != exclude_install_id)
+        # host -> the surviving install that will inherit responsibility for it.
+        keeper_of: dict[str, ConnectorInstall] = {}
+        for other in (await session.execute(stmt)).scalars():
+            try:
+                needed = parse_manifest(other.manifest or {}).hosts()
+            except Exception:  # noqa: BLE001 - an unparseable sibling keeps everything it might need
+                needed = list(other.created_egress_hosts or [])
+            for host in needed:
+                keeper_of.setdefault(host, other)
+
+        drop = [h for h in hosts if h not in keeper_of]
+        changed = False
+        for host in hosts:
+            keeper = keeper_of.get(host)
+            if keeper is None:
+                continue
+            receipt = list(keeper.created_egress_hosts or [])
+            if host not in receipt:
+                keeper.created_egress_hosts = [*receipt, host]
+                changed = True
+
+        remaining = [h for h in allow if h not in set(drop)]
+        if remaining != allow:
+            egress["allow_hosts"] = remaining
+            cfg["egress"] = egress
+            project.config = cfg
+            changed = True
+        if changed:
+            await session.commit()
 
     # --- uninstall -------------------------------------------------------------------------
 
@@ -810,6 +896,19 @@ class ConnectorInstaller:
                 except Exception as e:  # noqa: BLE001 - a missing secret is already the goal state
                     log.debug("connector uninstall: could not clear secret %s (%s)", name, e)
 
+        # Give back the allow-list entries this install added. Without this, a deployment running
+        # a strict allow-list only ever grows one: install Gmail, Sheets, HubSpot and Stripe to
+        # evaluate them, uninstall all four, and their API hosts stay permanently reachable with
+        # nothing referencing them - which is the thing default-deny exists to prevent.
+        #
+        # An install from before `created_egress_hosts` existed has an empty receipt, and that
+        # means "unknown", not "added nothing". Leaving its hosts alone is the safe reading: the
+        # alternative is guessing from the manifest and revoking a host a person allow-listed.
+        await self._revoke_egress(
+            session, tenant_id, install.project_id,
+            list(install.created_egress_hosts or []), exclude_install_id=install.id,
+        )
+
         await session.delete(install)
         await session.commit()
 
@@ -864,7 +963,7 @@ class ConnectorInstaller:
     async def _rollback(
         self, session: AsyncSession, tenant_id: str, project_id: str, tool_ids: list[str],
         tool_set_id: str | None, auth_provider_id: str | None, mcp_client_id: str | None,
-        secret_names: list[str],
+        secret_names: list[str], egress_hosts: list[str] | None = None,
     ) -> None:
         """Best-effort teardown of a failed partial install. Each step is independently guarded:
         the reason we're here is that something already went wrong, so a second failure must not
@@ -914,3 +1013,10 @@ class ConnectorInstaller:
                 )
             except Exception as e:  # noqa: BLE001 - an unwritable secret is not worth masking
                 log.warning("connector install rollback could not clear secret %s: %s", name, e)
+        try:
+            # The install may have widened the egress allow-list before it failed. There is no
+            # install row to point at those hosts now, so leaving them behind is the same
+            # permanent widening uninstall exists to prevent.
+            await self._revoke_egress(session, tenant_id, project_id, list(egress_hosts or []))
+        except Exception as e:  # noqa: BLE001
+            log.warning("connector install rollback could not revoke egress hosts: %s", e)

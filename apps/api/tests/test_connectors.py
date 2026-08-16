@@ -579,6 +579,128 @@ async def test_install_adds_connector_hosts_to_the_project_egress_allow_list():
         assert "api.acme.test" in (proj.config.get("egress") or {}).get("allow_hosts", [])
 
 
+async def _allow_hosts(project: str) -> list[str]:
+    from forge.models import Project
+
+    async with SessionLocal() as s:
+        proj = await s.get(Project, project)
+        return list((proj.config.get("egress") or {}).get("allow_hosts") or [])
+
+
+async def _new_project(tenant: str, project: str, *, allow_hosts: list[str] | None = None) -> None:
+    from forge.models import Project
+
+    cfg = {"egress": {"allow_hosts": list(allow_hosts)}} if allow_hosts is not None else {}
+    async with SessionLocal() as s:
+        s.add(Project(id=project, tenant_id=tenant, name="P", slug="p", config=cfg))
+        await s.commit()
+
+
+async def test_uninstall_takes_back_the_egress_hosts_it_added():
+    """Install only ever ADDED to the allow-list, and uninstall had no matching removal - so on a
+    deployment running a strict allow-list the list only ever grew.
+
+    Evaluate four connectors and remove them, and their API hosts stay permanently reachable with
+    nothing referencing them: any hand-written tool a project editor adds later can call them,
+    which is precisely what default-deny exists to prevent.
+    """
+    tenant, project = "t_conn_eu", "p_conn_eu"
+    await _new_project(tenant, project)
+
+    install = await _install(tenant, project)
+    assert "api.acme.test" in await _allow_hosts(project)
+    assert install.created_egress_hosts == ["api.acme.test"], (
+        "the install must record what it added, so uninstall can take back exactly that"
+    )
+
+    async with SessionLocal() as s:
+        row = await s.get(ConnectorInstall, install.id)
+        await ConnectorInstaller().uninstall(s, row)
+
+    assert "api.acme.test" not in await _allow_hosts(project)
+
+
+async def test_uninstall_leaves_a_host_a_person_allow_listed_by_hand():
+    """A host already on the list when the connector arrived was put there by somebody, for
+    something else. Uninstalling the connector is not consent to remove it - and after the fact
+    the two are indistinguishable unless the install records what it actually added."""
+    tenant, project = "t_conn_ep", "p_conn_ep"
+    await _new_project(tenant, project, allow_hosts=["api.acme.test", "unrelated.test"])
+
+    install = await _install(tenant, project)
+    assert install.created_egress_hosts == [], "the host was already allowed; nothing was added"
+
+    async with SessionLocal() as s:
+        row = await s.get(ConnectorInstall, install.id)
+        await ConnectorInstaller().uninstall(s, row)
+
+    hosts = await _allow_hosts(project)
+    assert "api.acme.test" in hosts, "a hand-allow-listed host is not the connector's to remove"
+    assert "unrelated.test" in hosts
+
+
+async def test_uninstall_keeps_a_host_a_surviving_connector_still_needs():
+    """Gmail and Sheets both reach oauth2.googleapis.com. The first one installed records it; the
+    second records nothing, because it was already allowed. So uninstalling the FIRST must still
+    leave the host behind - reading receipts alone would revoke it out from under the sibling."""
+    tenant, project = "t_conn_es", "p_conn_es"
+    await _new_project(tenant, project)
+
+    first = {**REST_MANIFEST, "slug": "acme-one", "egress_hosts": ["api.acme.test", "shared.test"]}
+    # A DIFFERENT backend host, or `hosts()` would report api.acme.test for this one too (it
+    # always includes the base_url's host) and the sibling would legitimately still need it.
+    sibling = {
+        **REST_MANIFEST,
+        "slug": "acme-two",
+        "egress_hosts": ["shared.test"],
+        "backend": {**REST_MANIFEST["backend"], "base_url": "https://api.other.test/v1"},
+    }
+    one = await _install(tenant, project, first)
+    two = await _install(tenant, project, sibling)
+
+    assert set(one.created_egress_hosts) == {"api.acme.test", "shared.test"}
+    assert set(two.created_egress_hosts) == {"api.other.test"}, "shared.test was already allowed"
+
+    async with SessionLocal() as s:
+        row = await s.get(ConnectorInstall, one.id)
+        await ConnectorInstaller().uninstall(s, row)
+
+    hosts = await _allow_hosts(project)
+    assert "shared.test" in hosts, "the surviving connector still needs this host"
+    assert "api.other.test" in hosts
+    assert "api.acme.test" not in hosts, "the host only the removed connector used should go"
+
+    # ...and the receipt for shared.test moved to the survivor, so removing that one cleans up
+    # rather than orphaning a host no install remembers adding.
+    async with SessionLocal() as s:
+        row = await s.get(ConnectorInstall, two.id)
+        assert "shared.test" in (row.created_egress_hosts or []), "the receipt must be handed over"
+        await ConnectorInstaller().uninstall(s, row)
+    assert await _allow_hosts(project) == []
+
+
+async def test_a_failed_install_does_not_leave_its_egress_hosts_behind():
+    """The allow-list is widened before the install row is written. A failure after that point
+    leaves hosts allowed with no install pointing at them - the same permanent widening, minus
+    even a connector to blame it on."""
+    tenant, project = "t_conn_ef", "p_conn_ef"
+    await _new_project(tenant, project)
+    installer = ConnectorInstaller()
+
+    def _explode(*a, **kw):
+        raise RuntimeError("boom")
+
+    # Fail AFTER the allow-list is widened - `_initial_status` is read while building the
+    # ConnectorInstall row, which is the first thing that happens once the hosts are in.
+    installer._initial_status = _explode  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError):
+        async with SessionLocal() as s:
+            await installer.install(s, tenant, project, parse_manifest(REST_MANIFEST),
+                                    values={"token": "x"}, source="custom")
+
+    assert "api.acme.test" not in await _allow_hosts(project)
+
+
 async def test_setup_placeholders_are_substituted_into_urls():
     manifest = {
         **REST_MANIFEST,
