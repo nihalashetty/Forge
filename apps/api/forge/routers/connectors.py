@@ -259,6 +259,8 @@ async def list_installed(project_id: str, session: AsyncSession = Depends(get_se
             )
         )
         providers = {ap.id: ap for ap in found_aps.scalars()}
+    # ...and one read for every token bundle, for the same reason.
+    bundles = await _bundles_for(tenant_id, project_id, rows, providers, str(user.id))
 
     out = []
     for r in rows:
@@ -269,31 +271,55 @@ async def list_installed(project_id: str, session: AsyncSession = Depends(get_se
         # they were already done.
         item["connected"] = await _connected_for(
             session, tenant_id, project_id, r, str(user.id),
-            provider=providers.get(r.auth_provider_id or ""),
+            provider=providers.get(r.auth_provider_id or ""), bundles=bundles,
         )
         out.append(item)
     return out
 
 
+#: Distinguishes "the bundle secret does not exist" from "it exists and is unusable". Only the
+#: first means a key/bearer connector is still connected via its own credential.
+_MISSING = object()
+
+
+def _bundle_name_for(row: ConnectorInstall, ap: AuthProvider, user_id: str) -> str:
+    """The secret holding the OAuth bundle that decides whether this connector is usable by
+    `user_id` right now - the caller's own for a per-user connector, the project's otherwise."""
+    if row.auth_mode == "per_user":
+        return AuthResolver.bundle_secret_name(ap.id, {"end_user_id": user_id}, ["end_user_id"])
+    return AuthResolver.bundle_secret_name(ap.id)
+
+
 async def _connection_state(tenant_id: str, project_id: str, row: ConnectorInstall,
-                            ap: AuthProvider, user_id: str) -> dict:
+                            ap: AuthProvider, user_id: str, *, bundle: Any = _MISSING,
+                            prefetched: bool = False) -> dict:
     """`{connected, expires_at}` for one caller against one connector's auth provider.
 
     The single source of truth for "is this usable right now", shared by the list route and the
     per-connector status route. The two answer for different scopes but must agree on the rule -
     when they drifted, the gallery showed a green tick to someone the detail panel then asked to
     sign in.
+
+    `prefetched` says the caller already read the bundle (see `_bundles_for`), so this does no
+    I/O at all; `bundle` is then the value, or `_MISSING` if that secret does not exist.
     """
+    if not prefetched:
+        try:
+            bundle = await SecretStore().read_ref(
+                tenant_id=tenant_id, project_id=project_id,
+                ref=f"secret://proj/{_bundle_name_for(row, ap, user_id)}",
+            )
+        except SecretNotFound:
+            bundle = _MISSING
+        except Exception:  # noqa: BLE001 - an undecodable bundle is not a usable connection
+            bundle = None
     if row.auth_mode == "per_user":
         # A per-user connector has no project-wide answer: a colleague having connected their
-        # own mailbox says nothing about yours.
-        return await AuthProviderService.get_user_connection(tenant_id, project_id, ap, user_id)
-    try:
-        bundle = await SecretStore().read_ref(
-            tenant_id=tenant_id, project_id=project_id,
-            ref=f"secret://proj/{AuthResolver.bundle_secret_name(ap.id)}",
-        )
-    except SecretNotFound:
+        # own mailbox says nothing about yours. And no bundle means not connected, full stop -
+        # there is no per-user equivalent of a shared key sitting in the provider config.
+        connected = isinstance(bundle, dict) and bool(bundle.get("access_token"))
+        return {"connected": connected, "expires_at": bundle.get("expires_at") if connected else None}
+    if bundle is _MISSING:
         # Only OAuth stores a token bundle; for a key/bearer connector the credential itself is
         # the connection, so an absent bundle is not "disconnected".
         return {"connected": ap.kind != "oauth2_authorization_code", "expires_at": None}
@@ -302,19 +328,48 @@ async def _connection_state(tenant_id: str, project_id: str, row: ConnectorInsta
     return {"connected": bool(bundle.get("access_token")), "expires_at": bundle.get("expires_at")}
 
 
+async def _bundles_for(tenant_id: str, project_id: str, rows: list[ConnectorInstall],
+                       providers: dict[str, AuthProvider], user_id: str) -> dict[str, Any]:
+    """Every token bundle the installed list needs, in one read.
+
+    A project with the full catalog installed painted this screen with a dozen SEQUENTIAL secret
+    reads - a round trip, a decrypt and an audit write each - and the connect flow calls reload()
+    on window focus, so it repeated every time someone came back from a consent window.
+    """
+    names = [
+        _bundle_name_for(r, ap, user_id)
+        for r in rows
+        if (ap := providers.get(r.auth_provider_id or "")) is not None
+    ]
+    if not names:
+        return {}
+    return await SecretStore().read_refs(
+        tenant_id=tenant_id, project_id=project_id,
+        refs=[f"secret://proj/{n}" for n in names],
+    )
+
+
 async def _connected_for(session: AsyncSession, tenant_id: str, project_id: str,
                          row: ConnectorInstall, user_id: str,
-                         *, provider: AuthProvider | None = None) -> bool:
+                         *, provider: AuthProvider | None = None,
+                         bundles: dict[str, Any] | None = None) -> bool:
     """Whether THIS user can currently act through this connector.
 
-    `provider` lets a caller that already batched the lookup pass the row in; without it this
-    reads the provider itself, which is what the single-connector status route wants."""
+    `provider` and `bundles` let a caller that already batched those reads pass them in; without
+    them this reads both itself, which is what the single-connector status route wants."""
     if not row.auth_provider_id:
         return True
     ap = provider or await AuthProviderService.get(session, tenant_id, row.auth_provider_id)
     if ap is None:
         return False
-    state = await _connection_state(tenant_id, project_id, row, ap, user_id)
+    if bundles is None:
+        state = await _connection_state(tenant_id, project_id, row, ap, user_id)
+    else:
+        name = _bundle_name_for(row, ap, user_id)
+        state = await _connection_state(
+            tenant_id, project_id, row, ap, user_id,
+            bundle=bundles.get(name, _MISSING), prefetched=True,
+        )
     return bool(state.get("connected"))
 
 

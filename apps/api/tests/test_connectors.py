@@ -963,6 +963,75 @@ async def test_connect_adds_the_connector_on_the_first_click(google_app):
         assert installed[0]["connected"] is False
 
 
+async def test_the_installed_list_reads_every_bundle_in_one_go(google_app, monkeypatch):
+    """One secret read for the whole screen, not one per connector.
+
+    `_connected_for` resolved a bundle per install, sequentially - a DB round trip, a decrypt and
+    an audit write each, all at the store's choke point. A project with the four Google
+    connectors installed paid that four times on every paint, and the connect flow calls
+    `reload()` on window focus, so it repeated every time someone came back from a consent
+    window. The count must not scale with the number of installed connectors.
+    """
+    from forge.secrets.store import SecretStore
+
+    c, pid = await _editor_client()
+    async with aclosing(c):
+        slugs = ("gmail", "google-calendar", "google-drive", "google-sheets")
+        for slug in slugs:
+            r = await c.post(f"/v1/projects/{pid}/connectors/{slug}/connect", json={})
+            assert r.status_code == 200, r.text
+
+        singles, batches = [], []
+        real_one, real_many = SecretStore.read_ref, SecretStore.read_refs
+
+        async def _count_one(self, **kw):
+            singles.append(kw.get("ref"))
+            return await real_one(self, **kw)
+
+        async def _count_many(self, **kw):
+            batches.append(list(kw.get("refs") or []))
+            return await real_many(self, **kw)
+
+        monkeypatch.setattr(SecretStore, "read_ref", _count_one)
+        monkeypatch.setattr(SecretStore, "read_refs", _count_many)
+
+        installed = (await c.get(f"/v1/projects/{pid}/connectors")).json()
+
+    assert len(installed) == 4
+    assert len(batches) == 1, "the whole list should resolve in a single batched read"
+    assert len(batches[0]) == 4, "and that read should cover every install"
+    assert singles == [], f"one-at-a-time bundle reads are back: {singles}"
+
+
+async def test_a_batched_secret_read_still_audits_every_secret():
+    """The batch goes through the same choke point. Auditing is not a side effect of reading one
+    at a time - a read that skipped the trail because it was batched would be a hole in it."""
+    from sqlalchemy import select
+
+    from forge.models import AuditLog
+    from forge.secrets.store import SecretStore
+
+    tenant, project = "t_sec_batch", "p_sec_batch"
+    store = SecretStore()
+    async with SessionLocal() as s:
+        for i in range(3):
+            await store.write(s, tenant_id=tenant, project_id=project,
+                              name=f"batched_{i}", value=f"v{i}", kind="generic")
+
+    got = await store.read_refs(
+        tenant_id=tenant, project_id=project,
+        refs=[f"secret://proj/batched_{i}" for i in range(3)] + ["secret://proj/absent"],
+    )
+    assert got == {"batched_0": "v0", "batched_1": "v1", "batched_2": "v2"}
+    assert "absent" not in got, "a missing name is absent from the result, not an error"
+
+    async with SessionLocal() as s:
+        rows = (await s.execute(
+            select(AuditLog).where(AuditLog.tenant_id == tenant, AuditLog.action == "secret.read")
+        )).scalars().all()
+    assert {r.resource_id for r in rows} == {"batched_0", "batched_1", "batched_2"}
+
+
 async def test_unconfigured_connector_is_unavailable_and_names_the_env_key(no_apps):
     """No form, no half-working install - the card tells the operator what to register."""
     c, pid = await _editor_client()

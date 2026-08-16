@@ -90,6 +90,34 @@ class AuditService:
             log.exception("audit write failed for action=%s", action)
 
     @staticmethod
+    async def log_many(entries: list[dict[str, Any]]) -> None:
+        """Append several records in ONE session.
+
+        Same guarantees as `log` - append-only, own session, never raises - for a caller that
+        genuinely performs N audited operations at once (a batched secret read). Auditing them
+        individually would put N session round trips back on a path whose whole point was to
+        stop doing N of anything.
+        """
+        if not entries:
+            return
+        try:
+            rows = []
+            for e in entries:
+                row = AuditLog(
+                    tenant_id=e["tenant_id"], action=e["action"], actor_id=e.get("actor_id"),
+                    actor_email=e.get("actor_email"), resource_type=e.get("resource_type"),
+                    resource_id=e.get("resource_id"), project_id=e.get("project_id"),
+                    ip=e.get("ip"), status=e.get("status", "ok"), meta=e.get("meta") or {},
+                )
+                _truncate_string_columns(row)
+                rows.append(row)
+            async with SessionLocal() as s:
+                s.add_all(rows)
+                await s.commit()
+        except Exception:  # noqa: BLE001 - auditing must never break the request
+            log.exception("audit batch write failed for %d record(s)", len(entries))
+
+    @staticmethod
     async def recent(session, tenant_id: str, *, project_id: str | None = None, limit: int = 200) -> list[AuditLog]:
         q = select(AuditLog).where(AuditLog.tenant_id == tenant_id)
         if project_id:
