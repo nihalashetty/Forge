@@ -99,14 +99,16 @@ async def build_authorize_url(
     # that reject unknown parameters.
     if cfg.get("resource"):
         q["resource"] = cfg["resource"]
-    # Providers that only return a refresh_token when explicitly asked (Google, and anything
-    # modeled on it). Harmless elsewhere - it is only sent when the manifest opts in.
-    for key in ("access_type", "prompt"):
-        if cfg.get(key):
-            q[key] = cfg[key]
-    # Anything else a specific vendor requires on the authorize URL. Applied last but never over
-    # the protocol parameters above - a manifest must not be able to redirect the callback or
-    # weaken PKCE by declaring `redirect_uri` or `code_challenge_method` as an "extra".
+    # Vendor-specific authorize parameters - Google's `access_type`/`prompt` for a refresh token,
+    # Slack's `user_scope`, HubSpot's optional scopes. `authorize_params` is the ONE mechanism;
+    # there is deliberately no top-level special case for individual keys. There used to be one
+    # for `access_type`/`prompt`, and because nothing ever wrote them at the top level it was
+    # dead on the connector path - which is precisely how four Google manifests came to ship
+    # without asking for offline access while a block of code appeared to be handling it.
+    #
+    # Applied last but never over the protocol parameters above: a manifest must not be able to
+    # redirect the callback or weaken PKCE by declaring `redirect_uri` or `code_challenge_method`
+    # as an "extra".
     for key, value in (cfg.get("authorize_params") or {}).items():
         if key not in q:
             q[key] = str(value)
