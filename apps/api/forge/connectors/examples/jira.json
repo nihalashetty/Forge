@@ -1,0 +1,94 @@
+{
+  "format": "forge.connector/1",
+  "slug": "jira",
+  "name": "Jira (API token)",
+  "version": "1.0.0",
+  "publisher": "forge",
+  "summary": "Search, read, create, and comment on Jira issues with a site API token.",
+  "categories": ["project-management"],
+  "roles": ["Software Engineer", "Product Manager", "Engineering Manager", "Support"],
+  "icon": "validate",
+  "docs_url": "https://developer.atlassian.com/cloud/jira/platform/rest/v3/",
+  "setup_url": "https://id.atlassian.com/manage-profile/security/api-tokens",
+  "auth": {
+    "kind": "basic",
+    "per_user": "optional",
+    "setup_help": "Use this when you want a direct REST connection with an API token rather than the OAuth Atlassian connector - for a service account, or a Data Center site. Username is your Atlassian account email; password is an API token.",
+    "setup": [
+      { "key": "site", "label": "Jira site host", "secret": false, "required": true, "placeholder": "acme.atlassian.net" },
+      { "key": "username", "label": "Account email", "secret": true, "required": true },
+      { "key": "password", "label": "API token", "secret": true, "required": true }
+    ]
+  },
+  "egress_hosts": ["atlassian.net"],
+  "backend": {
+    "type": "rest",
+    "base_url": "https://{setup.site}/rest/api/3",
+    "actions": [
+      {
+        "name": "jira_search_issues",
+        "display_name": "Search issues",
+        "description": "Search issues with JQL, e.g. 'project = ENG AND status = \"In Progress\" ORDER BY updated DESC'.",
+        "request": {
+          "method": "GET",
+          "url_template": "/search",
+          "fields": [
+            { "path": "jql", "in": "query", "type": "string", "required": true, "llm_visible": true, "description": "JQL query." },
+            { "path": "maxResults", "in": "query", "type": "integer", "required": false, "llm_visible": true, "default": 15 },
+            { "path": "fields", "in": "query", "type": "string", "required": false, "llm_visible": false, "default": "summary,status,assignee,priority,updated" }
+          ]
+        },
+        "response": { "projection_jmespath": "issues[].{key: key, summary: fields.summary, status: fields.status.name, assignee: fields.assignee.displayName, priority: fields.priority.name, updated: fields.updated}" }
+      },
+      {
+        "name": "jira_get_issue",
+        "display_name": "Read issue",
+        "description": "Fetch one issue by key (e.g. ENG-1234).",
+        "request": {
+          "method": "GET",
+          "url_template": "/issue/{issue_key}",
+          "fields": [
+            { "path": "issue_key", "in": "path", "type": "string", "required": true, "llm_visible": true, "description": "Issue key, e.g. ENG-1234." },
+            { "path": "fields", "in": "query", "type": "string", "required": false, "llm_visible": false, "default": "summary,description,status,assignee,priority,labels" }
+          ]
+        },
+        "response": { "projection_jmespath": "{key: key, summary: fields.summary, status: fields.status.name, assignee: fields.assignee.displayName, labels: fields.labels}" }
+      },
+      {
+        "name": "jira_create_issue",
+        "display_name": "Create issue",
+        "description": "Create an issue in a project. `issue_type` is the name, e.g. 'Task' or 'Bug'.",
+        "request": {
+          "method": "POST",
+          "url_template": "/issue",
+          "fields": [
+            { "path": "project_key", "in": "body", "type": "string", "required": true, "llm_visible": true, "description": "Project key, e.g. ENG." },
+            { "path": "summary", "in": "body", "type": "string", "required": true, "llm_visible": true, "description": "Issue title." },
+            { "path": "description", "in": "body", "type": "string", "required": false, "llm_visible": true, "description": "Issue description (plain text)." },
+            { "path": "issue_type", "in": "body", "type": "string", "required": false, "llm_visible": true, "default": "Task", "description": "Issue type name." }
+          ],
+          "body_template": "{\"fields\":{\"project\":{\"key\":\"{{input.project_key}}\"},\"summary\":\"{{input.summary}}\",\"issuetype\":{\"name\":\"{{input.issue_type}}\"},\"description\":{\"type\":\"doc\",\"version\":1,\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"{{input.description}}\"}]}]}}}"
+        },
+        "response": { "projection_jmespath": "{key: key, id: id}" }
+      },
+      {
+        "name": "jira_add_comment",
+        "display_name": "Comment on issue",
+        "description": "Add a comment to an issue.",
+        "request": {
+          "method": "POST",
+          "url_template": "/issue/{issue_key}/comment",
+          "fields": [
+            { "path": "issue_key", "in": "path", "type": "string", "required": true, "llm_visible": true },
+            { "path": "body", "in": "body", "type": "string", "required": true, "llm_visible": true, "description": "Comment text." }
+          ],
+          "body_template": "{\"body\":{\"type\":\"doc\",\"version\":1,\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"{{input.body}}\"}]}]}}"
+        },
+        "response": { "projection_jmespath": "{id: id, created: created}" }
+      }
+    ]
+  },
+  "toolset": {
+    "description": "Jira: search issues with JQL, read an issue, create issues, and comment."
+  }
+}

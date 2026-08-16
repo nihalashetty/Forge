@@ -15,7 +15,7 @@ import { TracesScreen } from "@/components/screens/traces";
 import { AuthProvidersScreen } from "@/components/screens/auth";
 import { SettingsScreen } from "@/components/screens/settings";
 import { ConnectScreen } from "@/components/screens/deploy";
-import { McpClientsScreen } from "@/components/screens/mcp";
+import { ConnectorsScreen } from "@/components/screens/connectors";
 import { ChannelsScreen, TriggersScreen, DatasetsScreen, HandoffScreen } from "@/components/screens/platform";
 import { Icon } from "@/components/icons";
 import { api, Agent, ComponentT, DashboardStats, Project, Tool, Workflow } from "@/lib/api";
@@ -29,7 +29,7 @@ const SCREEN_LABEL: Record<string, string> = {
   overview: "Overview", workflows: "Workflows", "workflow-canvas": "Support Router",
   agents: "Agents", "agent-config": "billing_agent", tools: "Tools", "tool-builder": "Tool", components: "Components", "component-builder": "Component",
   auth: "Auth Providers", knowledge: "Knowledge", playground: "Playground", traces: "Traces",
-  connect: "Connect", mcp: "External MCP", settings: "Settings",
+  connect: "Connect", connectors: "Connectors", settings: "Settings",
   channels: "Channels", triggers: "Triggers", datasets: "Evaluations", handoff: "Agent inbox", embed: "Embed",
 };
 const PARENT: Record<string, [string, string]> = {
@@ -44,6 +44,8 @@ function App() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [selTool, setSelTool] = useState<Tool | null>(null);
+  // Tool set to focus when the Tools screen opens (set by "Open in Tools" on a connector).
+  const [focusToolSet, setFocusToolSet] = useState<string | null>(null);
   const [selWorkflow, setSelWorkflow] = useState<Workflow | null>(null);
   const [selAgent, setSelAgent] = useState<Agent | null>(null);
   const [selComponent, setSelComponent] = useState<ComponentT | null>(null);
@@ -81,7 +83,12 @@ function App() {
 
   const project = view.project ? cards.find((c) => c.id === view.project) || projects.find((p) => p.id === view.project) : null;
   const go = (v: View) => setView(v);
-  const navScreen = (screen: string) => setView((v) => ({ ...v, name: "project", screen }));
+  const navScreen = (screen: string) => {
+    // The connector -> tool-set focus is a one-shot hand-off; clear it on any OTHER navigation
+    // so returning to Tools later shows the whole list rather than a stale filter.
+    if (screen !== "tools") setFocusToolSet(null);
+    setView((v) => ({ ...v, name: "project", screen }));
+  };
   async function deleteProject(projectToDelete: { id: string; name: string }, opts?: { skipConfirm?: boolean }) {
     if (!opts?.skipConfirm && !window.confirm(`Delete project "${projectToDelete.name}"?\n\nThis removes its workflows, agents, tools, auth providers, knowledge, secrets, runs, and traces. This cannot be undone.`)) return;
     await api.deleteProject(projectToDelete.id);
@@ -192,12 +199,14 @@ function App() {
         case "workflow-canvas": return <WorkflowCanvas project={project} workflowId={selWorkflow?.id} onWorkflowChange={setSelWorkflow} onBack={() => navScreen("workflows")} onRun={() => navScreen("playground")} onRegisterFlush={(fn) => { canvasFlushRef.current = fn; }} />;
         case "agents": return <AgentsScreen project={project} onOpen={(a) => { setSelAgent(a); navScreen("agent-config"); }} />;
         case "agent-config": return <AgentConfigScreen project={project} agentId={selAgent?.id} onBack={() => navScreen("agents")} />;
-        case "tools": return <ToolsScreen project={project} onOpen={(t) => { setSelTool(t); navScreen("tool-builder"); }} />;
+        case "tools": return <ToolsScreen key={focusToolSet || "all"} project={project} focusSetId={focusToolSet} onOpen={(t) => { setSelTool(t); navScreen("tool-builder"); }} />;
         case "tool-builder": return <ToolBuilderScreen project={project} toolId={selTool?.id} onBack={() => navScreen("tools")} />;
         case "components": return <ComponentsScreen project={project} onOpen={(c) => { setSelComponent(c); navScreen("component-builder"); }} />;
         case "component-builder": return <ComponentBuilderScreen project={project} componentId={selComponent?.id} onBack={() => navScreen("components")} />;
         case "auth": return <AuthProvidersScreen project={project} />;
-        case "mcp": return <McpClientsScreen project={project} />;
+        // "Open in Tools" from a connector jumps to the Tools screen focused on its tool set,
+        // so the actions a connector just created are one click from the canvas.
+        case "connectors": return <ConnectorsScreen project={project} onOpenToolSet={(setId) => { setFocusToolSet(setId); navScreen("tools"); }} />;
         case "knowledge": return <KnowledgeScreen project={project} />;
         case "channels": return <ChannelsScreen project={project} />;
         case "triggers": return <TriggersScreen project={project} />;

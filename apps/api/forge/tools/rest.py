@@ -26,7 +26,12 @@ import httpx
 from langchain.tools import ToolRuntime
 from pydantic import Field, create_model
 
-from forge.auth_providers.templates import has_each_directive, render_template, render_value
+from forge.auth_providers.templates import (
+    DIRECTIVES,
+    has_structural_directive,
+    render_template,
+    render_value,
+)
 from forge.config import settings
 from forge.tools.projection import cap_payload, project_response
 from forge.tracing import tool_io
@@ -224,6 +229,40 @@ def _collect(fields: list[dict], values: dict, where: str) -> dict:
     return out
 
 
+def _declared_content_type(req: dict) -> str:
+    """The Content-Type the tool config declares, if any. Read from the raw header specs (these
+    are authored values, not templated per-call ones), lowercased."""
+    for h in req.get("headers", []) or []:
+        if str(h.get("name", "")).lower() == "content-type":
+            return str(h.get("value", "")).lower()
+    return ""
+
+
+def _template_is_json(req: dict, tmpl: str) -> bool:
+    """Whether a `body_template` should have its substituted strings JSON-escaped.
+
+    This has to agree with `_resolve_body_encoding`, which decides how the body is SERIALIZED.
+    Two independent answers to "is this JSON?" can disagree - a `body_encoding: raw` template
+    that happens to open with `{` would get JSON-escaped and then sent verbatim, putting literal
+    backslashes in the payload - so both read the declared encoding first and only fall back to
+    inspecting the template when the tool declares nothing.
+
+    The fallback is a character test rather than rendering twice and seeing which parses: a JSON
+    document opens with `{` or `[`, but so does a form-encoded template whose first thing is a
+    token (`{{input.q}}=1&note={{input.n}}`), so a leading `{{` disqualifies it.
+    """
+    enc = str(req.get("body_encoding") or "").strip().lower()
+    if enc in ("json", "form", "multipart", "raw"):
+        return enc == "json"
+    ct = _declared_content_type(req)
+    if "json" in ct:
+        return True
+    if ct:
+        return False  # form-urlencoded, multipart, text/plain, xml - none of them JSON-escape
+    head = tmpl.lstrip()
+    return head[:1] in ("{", "[") and not head.startswith("{{")
+
+
 def _build_body(req: dict, fields: list[dict], values: dict, context: dict | None):
     """Request body. A free-form `body_template` takes precedence and is interpolated with two
     namespaces - `{{input.*}}` (the validated tool args + defaults) and `{{ctx.*}}` (run
@@ -234,20 +273,26 @@ def _build_body(req: dict, fields: list[dict], values: dict, context: dict | Non
     tmpl = req.get("body_template")
     if tmpl:
         tvars = {"input": values, "ctx": context or {}, "env": settings.tool_vars}
-        # A `$each` loop directive needs STRUCTURAL rendering (parse the JSON, then walk it with
-        # render_value) so the produced array is always valid JSON with native types - plain string
-        # substitution can't build a variable-length array without trailing-comma/quoting bugs.
-        # Gate on an ACTUAL parsed `$each` directive (a dict key), NOT a substring of the raw text:
-        # a template that merely mentions "$each" inside a string value must keep the exact
+        # A `$each` loop (or a `$mime` message) needs STRUCTURAL rendering (parse the JSON, then
+        # walk it with render_value) so the produced value is always valid JSON with native types
+        # - plain string substitution can't build a variable-length array without trailing-comma/
+        # quoting bugs, nor base64-encode a MIME message.
+        # Gate on an ACTUAL parsed directive (a dict key), NOT a substring of the raw text: a
+        # template that merely mentions "$each" inside a string value must keep the exact
         # string-substitution behavior (structural rendering coerces token types differently).
-        if "$each" in tmpl:
+        if any(d in tmpl for d in DIRECTIVES):
             try:
                 parsed = _json.loads(tmpl)
             except ValueError:
                 parsed = None
-            if parsed is not None and has_each_directive(parsed):
+            if parsed is not None and has_structural_directive(parsed):
                 return render_value(parsed, tvars, allow_each=True, strict_ns=_STRICT_NS)
-        rendered = render_template(tmpl, tvars, strict_ns=_STRICT_NS)
+        # Substituted strings are JSON-escaped when the template IS a JSON document, so that
+        # model-written text containing a newline or a quote can't terminate a JSON string early
+        # - which is what silently turned a note body into an unparseable body, and then into raw
+        # text the API rejected. A form-encoded or plain-text template must NOT be escaped.
+        rendered = render_template(tmpl, tvars, strict_ns=_STRICT_NS,
+                                   escape_json=_template_is_json(req, tmpl))
         if isinstance(rendered, (dict, list)):
             return rendered
         if isinstance(rendered, str):
@@ -494,6 +539,23 @@ async def execute_rest(
                 # change the value's type - leave it as the original string instead.
                 if isinstance(parsed, (list, dict)):
                     values[f["path"]] = parsed
+
+    # A field may declare `extract`: a regex that pulls the real value out of something a PERSON
+    # would paste. Opaque ids (a Google Sheets key, a Notion page id) live inside a URL, and what
+    # a user actually says is "here's my sheet: https://docs.google.com/spreadsheets/d/1AbC…/edit".
+    # Without this the model either forwards the URL - which URL-encodes into a 404 - or, worse,
+    # invents an id from the document's NAME and gets a 404 that looks like a permissions problem.
+    # No match leaves the value untouched, so a bare id still passes straight through.
+    for f in fields:
+        pattern = f.get("extract")
+        v = values.get(f["path"])
+        if not pattern or not isinstance(v, str) or not v:
+            continue
+        # Bound the subject before matching: the pattern is authored (trusted) but the value is
+        # model-supplied, and an unbounded string is what turns a sloppy regex into a stall.
+        m = re.search(pattern, v[:4096])
+        if m:
+            values[f["path"]] = m.group(1) if m.groups() else m.group(0)
 
     # {{ctx.*}} is honored in the URL itself too (e.g. a base host, or a ?token= carried in run
     # context); {name} path params are then substituted from `values` as before.

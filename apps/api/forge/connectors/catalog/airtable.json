@@ -1,0 +1,98 @@
+{
+  "format": "forge.connector/1",
+  "slug": "airtable",
+  "name": "Airtable",
+  "version": "2.0.0",
+  "publisher": "forge",
+  "summary": "List, create, and update records in the Airtable bases you have access to.",
+  "categories": ["database", "productivity"],
+  "roles": ["Operations", "Marketing", "Product Manager"],
+  "icon": "grid",
+  "docs_url": "https://airtable.com/developers/web/api/introduction",
+  "setup_url": "https://airtable.com/create/oauth",
+  "auth": {
+    "kind": "oauth2_authorization_code",
+    "authorize_url": "https://airtable.com/oauth2/v1/authorize",
+    "token_url": "https://airtable.com/oauth2/v1/token",
+    "token_auth": "basic",
+    "scopes": ["data.records:read", "data.records:write", "schema.bases:read"],
+    "per_user": "required",
+    "credential_group": "airtable",
+    "setup_help": "Register one OAuth integration at airtable.com/create/oauth with the callback URL below, then put its Client ID and Client secret in FORGE_CONNECTOR_OAUTH_APPS under \"airtable\". Each person then grants access to their own bases.",
+    "setup": [
+      { "key": "client_id", "label": "Client ID", "secret": true, "required": true },
+      { "key": "client_secret", "label": "Client secret", "secret": true, "required": true }
+    ]
+  },
+  "egress_hosts": ["api.airtable.com"],
+  "backend": {
+    "type": "rest",
+    "base_url": "https://api.airtable.com/v0",
+    "actions": [
+      {
+        "name": "airtable_list_bases",
+        "display_name": "List bases",
+        "description": "List the Airtable bases this account can reach, with their ids. Call this first when you don't already know the base id.",
+        "request": {
+          "method": "GET",
+          "url_template": "/meta/bases",
+          "fields": []
+        },
+        "response": { "projection_jmespath": "bases[].{id: id, name: name}" }
+      },
+      {
+        "name": "airtable_list_records",
+        "display_name": "List records",
+        "description": "List records from a table, optionally filtered with an Airtable formula, e.g. {Status}='Open'.",
+        "request": {
+          "method": "GET",
+          "url_template": "/{base_id}/{table}",
+          "fields": [
+            { "path": "base_id", "in": "path", "type": "string", "required": true, "llm_visible": true, "description": "Base id (app…), from list bases." },
+            { "path": "table", "in": "path", "type": "string", "required": true, "llm_visible": true, "description": "Table name or id." },
+            { "path": "filterByFormula", "in": "query", "type": "string", "required": false, "llm_visible": true, "description": "Airtable formula filter." },
+            { "path": "maxRecords", "in": "query", "type": "integer", "required": false, "llm_visible": true, "default": 20 },
+            { "path": "view", "in": "query", "type": "string", "required": false, "llm_visible": true, "description": "Restrict to a named view." }
+          ]
+        },
+        "response": { "projection_jmespath": "records[].{id: id, fields: fields}" }
+      },
+      {
+        "name": "airtable_create_record",
+        "display_name": "Create record",
+        "description": "Create one record. `fields` is an object of column name -> value.",
+        "request": {
+          "method": "POST",
+          "url_template": "/{base_id}/{table}",
+          "fields": [
+            { "path": "base_id", "in": "path", "type": "string", "required": true, "llm_visible": true, "description": "Base id (app…)." },
+            { "path": "table", "in": "path", "type": "string", "required": true, "llm_visible": true, "description": "Table name or id." },
+            { "path": "fields", "in": "body", "type": "object", "required": true, "llm_visible": true, "description": "Column name -> value." }
+          ],
+          "body_template": "{\"fields\":{{input.fields}}}"
+        },
+        "response": { "projection_jmespath": "{id: id, fields: fields}" }
+      },
+      {
+        "name": "airtable_update_record",
+        "display_name": "Update record",
+        "description": "Update fields on an existing record. Only the fields supplied are changed.",
+        "request": {
+          "method": "PATCH",
+          "url_template": "/{base_id}/{table}/{record_id}",
+          "fields": [
+            { "path": "base_id", "in": "path", "type": "string", "required": true, "llm_visible": true, "description": "Base id (app…)." },
+            { "path": "table", "in": "path", "type": "string", "required": true, "llm_visible": true },
+            { "path": "record_id", "in": "path", "type": "string", "required": true, "llm_visible": true, "description": "Record id (rec…)." },
+            { "path": "fields", "in": "body", "type": "object", "required": true, "llm_visible": true, "description": "Column name -> new value." }
+          ],
+          "body_template": "{\"fields\":{{input.fields}}}"
+        },
+        "response": { "projection_jmespath": "{id: id, fields: fields}" }
+      }
+    ]
+  },
+  "toolset": {
+    "description": "Airtable: find bases, then list, create, and update records."
+  }
+}

@@ -1,0 +1,76 @@
+{
+  "format": "forge.connector/1",
+  "slug": "pagerduty",
+  "name": "PagerDuty",
+  "version": "1.0.0",
+  "publisher": "forge",
+  "summary": "List and acknowledge incidents, and see who is on call.",
+  "categories": ["operations", "developer"],
+  "roles": ["Software Engineer", "Engineering Manager", "Operations"],
+  "icon": "bolt",
+  "docs_url": "https://developer.pagerduty.com/api-reference/",
+  "setup_url": "https://support.pagerduty.com/docs/api-access-keys",
+  "auth": {
+    "kind": "api_key",
+    "location": "header",
+    "param_name": "Authorization",
+    "per_user": "never",
+    "setup_help": "Create a REST API key in PagerDuty. Paste it WITH the 'Token token=' prefix, e.g. 'Token token=u+abc123'.",
+    "setup": [
+      { "key": "api_key", "label": "Authorization header value", "secret": true, "required": true, "placeholder": "Token token=…" }
+    ]
+  },
+  "egress_hosts": ["api.pagerduty.com"],
+  "backend": {
+    "type": "rest",
+    "base_url": "https://api.pagerduty.com",
+    "actions": [
+      {
+        "name": "pagerduty_list_incidents",
+        "display_name": "List incidents",
+        "description": "List incidents, most urgent first. Filter by status: triggered, acknowledged, or resolved.",
+        "request": {
+          "method": "GET",
+          "url_template": "/incidents",
+          "fields": [
+            { "path": "statuses[]", "in": "query", "type": "string", "required": false, "llm_visible": true, "default": "triggered", "description": "triggered | acknowledged | resolved." },
+            { "path": "limit", "in": "query", "type": "integer", "required": false, "llm_visible": true, "default": 15 }
+          ],
+          "headers": [{ "name": "Accept", "value": "application/vnd.pagerduty+json;version=2" }]
+        },
+        "response": { "projection_jmespath": "incidents[].{id: id, number: incident_number, title: title, status: status, urgency: urgency, service: service.summary, created: created_at, url: html_url}" }
+      },
+      {
+        "name": "pagerduty_get_incident",
+        "display_name": "Read incident",
+        "description": "Fetch one incident by id, including its assignments.",
+        "request": {
+          "method": "GET",
+          "url_template": "/incidents/{incident_id}",
+          "fields": [
+            { "path": "incident_id", "in": "path", "type": "string", "required": true, "llm_visible": true, "description": "Incident id." }
+          ],
+          "headers": [{ "name": "Accept", "value": "application/vnd.pagerduty+json;version=2" }]
+        },
+        "response": { "projection_jmespath": "incident.{id: id, title: title, status: status, urgency: urgency, description: description, assignees: assignments[].assignee.summary, url: html_url}" }
+      },
+      {
+        "name": "pagerduty_list_oncalls",
+        "display_name": "Who is on call",
+        "description": "List the current on-call assignments across escalation policies.",
+        "request": {
+          "method": "GET",
+          "url_template": "/oncalls",
+          "fields": [
+            { "path": "limit", "in": "query", "type": "integer", "required": false, "llm_visible": true, "default": 20 }
+          ],
+          "headers": [{ "name": "Accept", "value": "application/vnd.pagerduty+json;version=2" }]
+        },
+        "response": { "projection_jmespath": "oncalls[].{user: user.summary, policy: escalation_policy.summary, level: escalation_level, start: start, end: end}" }
+      }
+    ]
+  },
+  "toolset": {
+    "description": "PagerDuty: list and read incidents, and check who is on call."
+  }
+}

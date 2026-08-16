@@ -225,7 +225,7 @@ export interface ProjectStats {
 // Sidebar badge counts (keys match countKey in data.ts PROJECT_NAV). One cheap call
 // replaces six full-list fetches that were only ever read for their `.length`.
 export interface ProjectCounts {
-  workflows: number; agents: number; tools: number; components: number; knowledge: number; auth: number; handoffs: number;
+  workflows: number; agents: number; tools: number; components: number; knowledge: number; auth: number; handoffs: number; connectors: number;
 }
 
 export interface DashboardStats {
@@ -326,7 +326,19 @@ async function json<T>(path: string, init?: RequestInit): Promise<T> {
       ...init,
     });
     if (res.status === 401) on401();
-    if (!res.ok) throw new Error(`${res.status} ${res.statusText} on ${path}`);
+    if (!res.ok) {
+      // Surface FastAPI's `detail` when there is one. A validation message like "Missing
+      // required setup values: Client ID" is the whole point of the error for the user; the
+      // bare status line sends them to the network tab to find out what went wrong.
+      let detail = "";
+      try {
+        const body = await res.json();
+        const d = (body as any)?.detail;
+        detail = typeof d === "string" ? d : d ? JSON.stringify(d) : "";
+      } catch { /* non-JSON error body - fall back to the status line */ }
+      throw new Error(detail || `${res.status} ${res.statusText} on ${path}`);
+    }
+    if (res.status === 204) return undefined as T;
     return res.json() as Promise<T>;
   })();
   if (key) {
@@ -466,6 +478,35 @@ export const api = {
     json<{ ok: boolean }>(`/v1/projects/${pid}/mcp-clients/${cid}`, { method: "DELETE" }),
   discoverMcpTools: (pid: string, cid: string) =>
     json<{ ok: boolean; tools?: { name: string; description?: string }[]; error?: string }>(`/v1/projects/${pid}/mcp-clients/${cid}/tools`),
+
+  // --- Connectors ---------------------------------------------------------------------
+  connectorCatalog: (pid: string) =>
+    json<{ connectors: ConnectorCatalogEntry[]; categories: string[]; roles: string[] }>(`/v1/projects/${pid}/connectors/catalog`),
+  connectorDetail: (pid: string, slug: string) =>
+    json<ConnectorCatalogEntry>(`/v1/projects/${pid}/connectors/catalog/${slug}`),
+  listConnectors: (pid: string) => json<ConnectorInstallT[]>(`/v1/projects/${pid}/connectors`),
+  connectorExamples: (pid: string) =>
+    json<ConnectorExample[]>(`/v1/projects/${pid}/connectors/examples`),
+  // Catalog connectors take no credentials and no auth mode - `connect` installs on demand, so
+  // this is only for adding one without signing in yet.
+  installConnector: (pid: string, slug: string) =>
+    notifyCounts(json<ConnectorInstallT>(`/v1/projects/${pid}/connectors/${slug}/install`, { method: "POST", body: "{}" })),
+  installCustomConnector: (pid: string, body: { manifest: any; values?: Record<string, string>; auth_mode?: string }) =>
+    notifyCounts(json<ConnectorInstallT>(`/v1/projects/${pid}/connectors/custom`, { method: "POST", body: JSON.stringify(body) })),
+  validateConnectorManifest: (pid: string, manifest: any) =>
+    json<{ ok: boolean; error?: string; connector?: ConnectorCatalogEntry; hosts?: string[] }>(`/v1/projects/${pid}/connectors/validate`, { method: "POST", body: JSON.stringify({ manifest }) }),
+  uninstallConnector: (pid: string, slug: string) =>
+    notifyCounts(json<void>(`/v1/projects/${pid}/connectors/${slug}`, { method: "DELETE" })),
+  connectorStatus: (pid: string, slug: string) =>
+    json<ConnectorInstallT>(`/v1/projects/${pid}/connectors/${slug}/status`),
+  connectConnector: (pid: string, slug: string, end_user_id?: string) =>
+    json<{ authorize_url: string; per_user: boolean }>(`/v1/projects/${pid}/connectors/${slug}/connect`, { method: "POST", body: JSON.stringify({ end_user_id: end_user_id ?? null }) }),
+  disconnectConnector: (pid: string, slug: string) =>
+    json<void>(`/v1/projects/${pid}/connectors/${slug}/disconnect`, { method: "POST", body: JSON.stringify({}) }),
+  syncConnector: (pid: string, slug: string) =>
+    notifyCounts(json<{ ok: boolean; tool_count?: number; error?: string }>(`/v1/projects/${pid}/connectors/${slug}/sync`, { method: "POST" })),
+  setConnectorCredentials: (pid: string, slug: string, values: Record<string, string>) =>
+    json<void>(`/v1/projects/${pid}/connectors/${slug}/credentials`, { method: "PUT", body: JSON.stringify({ values }) }),
   oauthStart: (pid: string, aid: string) =>
     json<{ authorize_url: string }>(`/v1/projects/${pid}/auth-providers/${aid}/oauth/start`, { method: "POST" }),
   oauthStatus: (pid: string, aid: string) =>
@@ -616,6 +657,16 @@ export const api = {
     json<{ ok: boolean }>(`/v1/projects/${pid}/channels/${cid}`, { method: "DELETE" }),
   // triggers
   listTriggers: (pid: string) => json<Trigger[]>(`/v1/projects/${pid}/triggers`),
+  /** Point a trigger at a person's connected accounts. Omit `userId` to claim it for yourself. */
+  setTriggerRunAs: (pid: string, tid: string, userId?: string) =>
+    json<{ run_as_user_id: string; run_as_email?: string | null }>(
+      `/v1/projects/${pid}/triggers/${tid}/run-as`,
+      { method: "PUT", body: JSON.stringify({ user_id: userId ?? null }) },
+    ),
+  /** Move a trigger between "the team's" ("project") and "mine" ("user"). */
+  setTriggerScope: (pid: string, tid: string, scope: "project" | "user") =>
+    json<{ scope: string }>(`/v1/projects/${pid}/triggers/${tid}/scope`,
+      { method: "PUT", body: JSON.stringify({ scope }) }),
   // datasets / eval
   listDatasets: (pid: string) => json<Dataset[]>(`/v1/projects/${pid}/datasets`),
   createDataset: (pid: string, body: { name: string; workflow_id?: string; score_mode?: string; items?: any[] }) =>
@@ -640,7 +691,21 @@ export const api = {
 
 export interface InviteResult extends TeamMember { email_sent: boolean; invite_url?: string; }
 export interface Channel { id: string; type: string; name: string; workflow_id?: string | null; enabled: boolean; config: Record<string, any>; key?: string | null; inbound_url?: string; }
-export interface Trigger { id: string; workflow_id: string; node_id: string; kind: string; enabled: boolean; config: Record<string, any>; webhook_url?: string; last_fired_at?: string | null; }
+export interface Trigger {
+  id: string; workflow_id: string; node_id: string; kind: string; enabled: boolean;
+  config: Record<string, any>; webhook_url?: string; last_fired_at?: string | null;
+  /** Whose connected accounts an unattended run uses. Nobody is signed in when a webhook or a
+   *  schedule fires, so a per-user connector has no token without this. */
+  run_as_user_id?: string | null;
+  /** null when unset OR when that user is gone - both mean "no accounts to draw on". */
+  run_as_email?: string | null;
+  run_as_is_me?: boolean;
+  /** Who the trigger belongs to: "project" (a team automation everyone sees) or "user"
+   *  (someone's own, listed only for them). Independent of run_as. */
+  scope?: "project" | "user";
+  /** You're seeing someone else's personal trigger because you're an admin. */
+  visible_via_oversight?: boolean;
+}
 export interface Dataset { id: string; name: string; workflow_id?: string | null; score_mode: string; items: any[]; n_items: number; last_pass_rate?: number | null; }
 /** One scored case. `status` is "scored" for a normal pass/fail, else an inconclusive outcome
  *  ("run_failed" / "unavailable" / "error"). tokens/cost/latency_ms are per-case run metrics
@@ -672,7 +737,105 @@ export interface ProjectVersion { id: string; version_no: number; author_email?:
 export interface MeResult { id: string; email: string | null; role: string; tenant_id: string; is_fallback: boolean; }
 export interface AuthResult { access_token: string; refresh_token: string; user: { id: string; email: string; role: string }; }
 export interface TeamMember { id: string; email: string; role: string; status: string; tenant_id: string; }
-export interface McpClientT { id: string; name: string; transport: string; url?: string | null; command?: string | null; args?: any; headers_ref?: string | null; enabled: boolean; disabled_tools?: string[]; }
+export interface McpClientT {
+  id: string; name: string; transport: string; url?: string | null; command?: string | null;
+  args?: any; headers_ref?: string | null; enabled: boolean; disabled_tools?: string[];
+  auth_provider_id?: string | null;
+  /** Set when a connector owns this server. Its actions are already offered as that connector's
+   *  tool set, so tool pickers skip it rather than showing one integration as two choices. */
+  connector_slug?: string | null;
+}
+
+/* --- Connectors --------------------------------------------------------------------------
+   A connector is a manifest that installs into ordinary Forge rows (auth provider + tool set +
+   tools). The catalog entry is what the gallery renders; the install is what the project has. */
+
+export interface ConnectorSetupField {
+  key: string;
+  label: string;
+  help?: string | null;
+  secret: boolean;
+  required: boolean;
+  placeholder?: string | null;
+  default?: string | null;
+}
+export interface ConnectorCatalogEntry {
+  slug: string;
+  name: string;
+  version: string;
+  publisher: "forge" | "community" | "custom";
+  summary: string;
+  categories: string[];
+  roles: string[];
+  icon?: string | null;
+  docs_url?: string | null;
+  setup_url?: string | null;
+  /** "MCP" (the vendor runs the tool server) or "REST" (Forge calls the API directly). */
+  type: "MCP" | "REST";
+  auth: {
+    kind: string;
+    per_user: "never" | "optional" | "required";
+    scopes: string[];
+    setup_help?: string | null;
+    setup: ConnectorSetupField[];
+  };
+  action_count?: number | null;
+  installed: boolean;
+  status?: string | null;
+  install_id?: string | null;
+  /** Connectors sharing one vendor OAuth app (all the Google ones) share a credential group. */
+  credential_group?: string;
+  /** Catalog entry: its vendor app comes from the deployment's env, so there is no form. */
+  managed?: boolean;
+  /** Connectable right now with nothing asked of the person clicking. */
+  configured?: boolean;
+  /** When not configured: the credential keys the operator still has to add to the env. */
+  missing_keys?: string[];
+  /** The env var those keys go in (FORGE_CONNECTOR_OAUTH_APPS). */
+  config_env_key?: string;
+  /** The exact redirect_uri the flow sends - derived from the API's FORGE_PUBLIC_BASE_URL, which
+   *  is not the console's origin, so this must never be guessed in the browser. */
+  redirect_uri?: string;
+  /** Only on the detail route. */
+  actions?: { name: string; description: string; method: string }[];
+  mcp_url?: string;
+}
+export interface ConnectorInstallT {
+  id: string;
+  slug: string;
+  name: string;
+  version: string;
+  source: "catalog" | "custom" | "url";
+  status: "needs_setup" | "needs_auth" | "connected" | "error";
+  status_detail?: string | null;
+  auth_mode: "shared" | "per_user";
+  auth_kind: string;
+  type: "MCP" | "REST";
+  icon?: string | null;
+  summary: string;
+  docs_url?: string | null;
+  tool_set_id?: string | null;
+  auth_provider_id?: string | null;
+  mcp_client_id?: string | null;
+  tool_count: number;
+  needs_connect: boolean;
+  /** Whether the CALLER can act through this connector - for a per-user connector, whether they
+   *  personally have signed in, which is the only status that means anything to them. */
+  connected?: boolean;
+  expires_at?: number | null;
+}
+/** A bundled manifest that needs a typed credential (an API key, a bot token, a subdomain), so
+ *  it lives in the custom-connector form as a starting point rather than in the gallery. */
+export interface ConnectorExample {
+  slug: string;
+  name: string;
+  summary: string;
+  icon?: string | null;
+  type: "MCP" | "REST";
+  auth_kind: string;
+  needs: string[];
+  manifest: any;
+}
 
 export interface SSEFrame {
   event: string;

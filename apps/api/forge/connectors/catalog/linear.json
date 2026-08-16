@@ -1,0 +1,32 @@
+{
+  "format": "forge.connector/1",
+  "slug": "linear",
+  "name": "Linear",
+  "version": "1.0.0",
+  "publisher": "forge",
+  "summary": "Create, search, and update Linear issues, projects, and cycles.",
+  "categories": ["developer", "project-management"],
+  "roles": ["Software Engineer", "Product Manager", "Engineering Manager"],
+  "icon": "bolt",
+  "docs_url": "https://linear.app/developers",
+  "setup_url": "https://linear.app/settings/api",
+  "auth": {
+    "kind": "oauth2_authorization_code",
+    "discover": true,
+    "per_user": "required",
+    "setup_help": "Linear hosts an official remote MCP server that supports dynamic client registration - connecting usually needs no setup at all.",
+    "setup": [
+      { "key": "client_id", "label": "OAuth client ID", "secret": true, "required": false, "help": "Leave blank to let Forge register automatically." },
+      { "key": "client_secret", "label": "OAuth client secret", "secret": true, "required": false }
+    ]
+  },
+  "egress_hosts": ["mcp.linear.app", "api.linear.app"],
+  "backend": {
+    "type": "mcp",
+    "url": "https://mcp.linear.app/mcp",
+    "transport": "streamable_http"
+  },
+  "toolset": {
+    "description": "Linear: search, create, and update issues, projects, and cycles."
+  }
+}

@@ -1,0 +1,162 @@
+{
+  "format": "forge.connector/1",
+  "slug": "google-drive",
+  "name": "Google Drive",
+  "version": "1.1.0",
+  "publisher": "forge",
+  "summary": "Search Drive files and read document contents as text.",
+  "categories": [
+    "docs",
+    "storage"
+  ],
+  "roles": [
+    "Operations",
+    "Product Manager",
+    "Marketing",
+    "Executive Assistant"
+  ],
+  "icon": "book-open",
+  "docs_url": "https://developers.google.com/drive/api/reference/rest/v3",
+  "setup_url": "https://console.cloud.google.com/apis/credentials",
+  "auth": {
+    "kind": "oauth2_authorization_code",
+    "authorize_url": "https://accounts.google.com/o/oauth2/v2/auth",
+    "token_url": "https://oauth2.googleapis.com/token",
+    "scopes": [
+      "https://www.googleapis.com/auth/drive.readonly"
+    ],
+    "authorize_params": {
+      "access_type": "offline",
+      "prompt": "consent"
+    },
+    "per_user": "required",
+    "setup_help": "Create an OAuth client (Web application) in Google Cloud Console, enable the Google Drive API, and add the redirect URI shown above. Read-only by default - widen the scope only if the agent needs to write.",
+    "setup": [
+      {
+        "key": "client_id",
+        "label": "Client ID",
+        "secret": true,
+        "required": true,
+        "placeholder": "....apps.googleusercontent.com"
+      },
+      {
+        "key": "client_secret",
+        "label": "Client secret",
+        "secret": true,
+        "required": true
+      }
+    ],
+    "credential_group": "google"
+  },
+  "egress_hosts": [
+    "www.googleapis.com",
+    "oauth2.googleapis.com",
+    "accounts.google.com"
+  ],
+  "backend": {
+    "type": "rest",
+    "base_url": "https://www.googleapis.com/drive/v3",
+    "actions": [
+      {
+        "name": "drive_search_files",
+        "display_name": "Search files",
+        "description": "Search Drive and return each match's ID. `q` uses Drive query syntax, e.g. \"name contains 'roadmap' and mimeType='application/vnd.google-apps.document'\". This is how you turn a document NAME into the id every other Google action needs - spreadsheets are mimeType='application/vnd.google-apps.spreadsheet'.",
+        "request": {
+          "method": "GET",
+          "url_template": "/files",
+          "fields": [
+            {
+              "path": "q",
+              "in": "query",
+              "type": "string",
+              "required": true,
+              "llm_visible": true,
+              "description": "Drive search query."
+            },
+            {
+              "path": "pageSize",
+              "in": "query",
+              "type": "integer",
+              "required": false,
+              "llm_visible": true,
+              "default": 15
+            },
+            {
+              "path": "fields",
+              "in": "query",
+              "type": "string",
+              "required": false,
+              "llm_visible": false,
+              "default": "files(id,name,mimeType,modifiedTime,webViewLink,owners(emailAddress))"
+            }
+          ]
+        },
+        "response": {
+          "projection_jmespath": "files[].{id: id, name: name, type: mimeType, modified: modifiedTime, link: webViewLink}"
+        }
+      },
+      {
+        "name": "drive_export_doc",
+        "display_name": "Read document",
+        "description": "Export a Google Doc as plain text. Use drive_search_files first to get the file id. Only works for Google-native documents.",
+        "request": {
+          "method": "GET",
+          "url_template": "/files/{file_id}/export",
+          "fields": [
+            {
+              "path": "file_id",
+              "in": "path",
+              "type": "string",
+              "required": true,
+              "llm_visible": true,
+              "description": "Drive file id, or paste the file's full URL and Forge will pull the id out. Use drive_search_files first if you only know the name.",
+              "extract": "/d/([a-zA-Z0-9_-]+)"
+            },
+            {
+              "path": "mimeType",
+              "in": "query",
+              "type": "string",
+              "required": false,
+              "llm_visible": false,
+              "default": "text/plain"
+            }
+          ]
+        }
+      },
+      {
+        "name": "drive_get_metadata",
+        "display_name": "File details",
+        "description": "Fetch one file's metadata - name, type, owners, sharing link, last modified.",
+        "request": {
+          "method": "GET",
+          "url_template": "/files/{file_id}",
+          "fields": [
+            {
+              "path": "file_id",
+              "in": "path",
+              "type": "string",
+              "required": true,
+              "llm_visible": true,
+              "extract": "/d/([a-zA-Z0-9_-]+)",
+              "description": "Drive file id, or paste the file's full URL and Forge will pull the id out. Use drive_search_files first if you only know the name."
+            },
+            {
+              "path": "fields",
+              "in": "query",
+              "type": "string",
+              "required": false,
+              "llm_visible": false,
+              "default": "id,name,mimeType,modifiedTime,size,webViewLink,owners(emailAddress)"
+            }
+          ]
+        },
+        "response": {
+          "projection_jmespath": "{id: id, name: name, type: mimeType, modified: modifiedTime, link: webViewLink, owners: owners[].emailAddress}"
+        }
+      }
+    ]
+  },
+  "toolset": {
+    "description": "Google Drive: search files, read Google Docs as text, and inspect file metadata."
+  }
+}

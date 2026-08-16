@@ -101,6 +101,58 @@ async def test_oauth_not_connected_raises():
         await AuthResolver().resolve(tenant_id="t_none", project_id="p_none", provider_id="apx", provider=_ap("apx", "t_none", "p_none"), force=True)
 
 
+class _FakeStore:
+    async def read_ref(self, **kw):
+        return "cid-123"
+
+
+async def _authorize_query(cfg: dict) -> dict[str, list[str]]:
+    from urllib.parse import parse_qs, urlparse
+
+    from forge.auth_providers.oauth_flow import build_authorize_url
+
+    ap = AuthProvider(id="ap_q", tenant_id="t", project_id="p", name="idp",
+                      kind="oauth2_authorization_code", config=cfg)
+    url = await build_authorize_url(ap, tenant_id="t", project_id="p", secrets=_FakeStore())
+    return parse_qs(urlparse(url).query)
+
+
+async def test_authorize_params_is_the_only_way_to_add_authorize_query_params():
+    """There is ONE mechanism for vendor-specific authorize parameters.
+
+    There used to be two: a generic `authorize_params` dict, and a top-level special case reading
+    `cfg["access_type"]` / `cfg["prompt"]`. Nothing ever wrote the top-level spelling, so that
+    branch was dead on every path a connector takes - while looking authoritative enough that
+    four Google manifests shipped without asking for offline access. A second spelling that
+    works in some places and not others is how that recurs, so the top-level one is gone and
+    this pins it.
+    """
+    q = await _authorize_query({**_CFG, "access_type": "offline", "prompt": "consent"})
+    assert "access_type" not in q, (
+        "top-level access_type must not be a second, undocumented spelling - use authorize_params"
+    )
+    assert "prompt" not in q
+
+    q = await _authorize_query({**_CFG, "authorize_params": {"access_type": "offline", "user_scope": "chat:write"}})
+    assert q["access_type"] == ["offline"] and q["user_scope"] == ["chat:write"]
+
+
+async def test_authorize_params_cannot_trample_the_protocol_parameters():
+    """The extras are vendor data, applied last - they must never be able to redirect the
+    callback somewhere else or drop PKCE down to plain."""
+    q = await _authorize_query({
+        **_CFG,
+        "authorize_params": {
+            "redirect_uri": "https://attacker.example/steal",
+            "code_challenge_method": "plain",
+            "state": "forged",
+        },
+    })
+    assert q["redirect_uri"] != ["https://attacker.example/steal"]
+    assert q["code_challenge_method"] == ["S256"]
+    assert q["state"] != ["forged"]
+
+
 async def test_per_user_connect_bundle_is_resolvable():
     """Item 5: the connect callback now stores the bundle under the SAME per-user secret name
     that resolve/refresh read. Before the fix it wrote the default name, so a per-user provider's

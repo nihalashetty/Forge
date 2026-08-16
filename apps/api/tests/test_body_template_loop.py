@@ -1,19 +1,22 @@
-"""`$each` loop support in JSON body templates (batch many rows in one call).
+"""Structural directives in JSON body templates - `$each` (batch rows) and `$mime` (email).
 
-Before this, one REST tool call could only build a fixed-shape body, so an agent editing N rows
-made N calls (slow, context-heavy, and prone to blowing the graph recursion limit). A body
-template can now carry a `{"$each": "{{input.rows}}", "$as": "row", "$do": {...}}` directive that
-expands one list-valued arg into a variable-length JSON array - so N edits go out in ONE request.
+Both exist for the same reason: a value the model cannot be asked to produce as text.
+
+* `{"$each": "{{input.rows}}", "$as": "row", "$do": {...}}` expands one list-valued arg into a
+  variable-length JSON array, so an agent editing N rows makes ONE call instead of N (slow,
+  context-heavy, and prone to blowing the graph recursion limit).
+* `{"$mime": {"to": …, "subject": …, "text": …}}` builds an RFC 2822 message and base64url-encodes
+  it, because Gmail's send endpoint accepts nothing else and a model cannot base64-encode by hand.
 
 Rendering is structural (parse JSON, then walk with render_value): the output is always valid
 JSON with native types preserved, unlike string-concatenating an array. The path is opt-in on the
-"$each" marker, so existing string-substitution templates are untouched.
+directive marker, so existing string-substitution templates are untouched.
 """
 from __future__ import annotations
 
 import json
 
-from forge.auth_providers.templates import has_each_directive, render_template, render_value
+from forge.auth_providers.templates import has_structural_directive, render_template, render_value
 from forge.tools.rest import _build_body
 
 
@@ -62,10 +65,10 @@ def test_render_value_each_is_opt_in_only():
     assert out == {"$each": [{"x": "a"}], "$as": "row", "$do": {"x": None}}
 
 
-def test_has_each_directive_ignores_literal_string_value():
+def test_structural_directive_detection_ignores_literal_string_values():
     # A directive is a "$each" KEY; the literal text "$each" inside a string value is not one.
-    assert has_each_directive({"note": "use $each to loop", "qty": "{{input.qty}}"}) is False
-    assert has_each_directive({"rows": {"$each": "{{x}}", "$do": {}}}) is True
+    assert has_structural_directive({"note": "use $each to loop", "qty": "{{input.qty}}"}) is False
+    assert has_structural_directive({"rows": {"$each": "{{x}}", "$do": {}}}) is True
 
 
 def test_build_body_literal_dollar_each_in_string_keeps_string_substitution():
@@ -157,3 +160,179 @@ def test_build_body_without_each_is_unchanged():
     body_template = '{ "orderId": "{{input.orderId}}", "lineNums": [ {{input.lineNum}} ] }'
     body = _build_body({"body_template": body_template}, [], {"orderId": "Q", "lineNum": 7}, {})
     assert body == {"orderId": "Q", "lineNums": [7]}
+
+
+# --- $mime: build an RFC 2822 message server-side --------------------------------------------
+#
+# Gmail's send endpoint accepts ONLY a base64url-encoded MIME message. Declaring that as a tool
+# argument means asking a model to base64-encode by hand; it can't, and the malformed result
+# comes back as an opaque HTTP 400. So the model supplies to/subject/body and this does the rest.
+
+def _decoded(body: dict):
+    import base64
+    import email
+
+    raw = body["raw"]
+    blob = base64.urlsafe_b64decode(raw)
+    return blob, email.message_from_bytes(blob)
+
+
+def test_mime_directive_builds_a_decodable_message():
+    tmpl = ('{"raw": {"$mime": {"to": "{{input.to}}", "subject": "{{input.subject}}", '
+            '"text": "{{input.body}}"}}}')
+    body = _build_body({"body_template": tmpl}, [],
+                       {"to": "a@example.com", "subject": "Hello", "body": "Line one\nLine two"}, {})
+    assert list(body) == ["raw"]
+    blob, msg = _decoded(body)
+    assert msg["To"] == "a@example.com"
+    assert msg["Subject"] == "Hello"
+    # RFC 2822 wants CRLF everywhere, headers and body alike, and the SMTP policy normalises the
+    # body's newlines to match. Mail clients render that as ordinary line breaks.
+    assert msg.get_payload(decode=True).decode().replace("\r\n", "\n").strip() == "Line one\nLine two"
+    assert b"\r\n" in blob
+
+
+def test_mime_omits_empty_headers_rather_than_sending_them_blank():
+    """A model that leaves cc out sends "" - and `Cc: ` on the wire is what makes Gmail answer
+    400 rather than simply having no Cc."""
+    tmpl = ('{"raw": {"$mime": {"to": "{{input.to}}", "cc": "{{input.cc}}", '
+            '"subject": "{{input.subject}}", "text": "{{input.body}}"}}}')
+    body = _build_body({"body_template": tmpl}, [],
+                       {"to": "a@example.com", "cc": "", "subject": "S", "body": "B"}, {})
+    _blob, msg = _decoded(body)
+    assert msg["Cc"] is None
+    assert msg["To"] == "a@example.com"
+
+
+def test_mime_handles_address_lists_and_non_ascii_subjects():
+    tmpl = ('{"raw": {"$mime": {"to": "{{input.to}}", "subject": "{{input.subject}}", '
+            '"text": "{{input.body}}"}}}')
+    body = _build_body({"body_template": tmpl}, [],
+                       {"to": ["a@example.com", "b@example.com"], "subject": "Update ✅", "body": "x"}, {})
+    _blob, msg = _decoded(body)
+    assert msg["To"] == "a@example.com, b@example.com"
+    # Non-ASCII must be RFC 2047 encoded, and must decode back to what was asked for.
+    from email.header import decode_header, make_header
+    assert str(make_header(decode_header(msg["Subject"]))) == "Update ✅"
+
+
+def test_mime_is_inert_without_the_structural_opt_in():
+    """Every other caller (auth token_fetch rules, data-node payloads) must keep treating a
+    literal "$mime" key as an ordinary key rather than executing it."""
+    from forge.auth_providers.templates import render_value
+
+    tmpl = {"raw": {"$mime": {"to": "{{input.to}}"}}}
+    out = render_value(tmpl, {"input": {"to": "a@example.com"}})
+    assert out == {"raw": {"$mime": {"to": "a@example.com"}}}
+
+
+def test_a_literal_dollar_mime_string_does_not_trigger_structural_rendering():
+    body_template = '{ "note": "use $mime for email", "qty": {{input.qty}} }'
+    body = _build_body({"body_template": body_template}, [], {"qty": 3}, {})
+    assert body == {"note": "use $mime for email", "qty": 3}
+
+
+# --- interpolating a list/dict into a JSON body ----------------------------------------------
+#
+# `str()` on a list yields Python's repr - single quotes, True/None - which is not JSON. The body
+# then fails to parse and is sent as raw text, and the API answers 400. It only ever showed up on
+# STRING data: `[[1, 2]]` is valid JSON by coincidence, `[['a', 'b']]` is not.
+
+def test_embedded_list_renders_as_json_not_python_repr():
+    body = _build_body({"body_template": '{"values":{{input.rows}}}'},
+                       [{"path": "rows", "in": "body", "type": "array"}],
+                       {"rows": [["Test Data 1", "Test Data 2"]]}, {})
+    assert body == {"values": [["Test Data 1", "Test Data 2"]]}
+
+
+def test_embedded_dict_renders_as_json():
+    body = _build_body({"body_template": '{"fields":{{input.fields}}}'},
+                       [{"path": "fields", "in": "body", "type": "object"}],
+                       {"fields": {"Name": "Ada", "Active": True, "Notes": None}}, {})
+    assert body == {"fields": {"Name": "Ada", "Active": True, "Notes": None}}
+
+
+def test_embedded_list_of_numbers_still_works():
+    """The case that accidentally passed before, which is why this went unnoticed."""
+    body = _build_body({"body_template": '{"values":{{input.rows}}}'},
+                       [{"path": "rows", "in": "body", "type": "array"}],
+                       {"rows": [[1, 2]]}, {})
+    assert body == {"values": [[1, 2]]}
+
+
+def test_embedded_scalars_keep_their_plain_string_form():
+    """Only containers change. A bare token in a query string still renders "False"/"0", which is
+    what that context wants - see test_render_template_embedded_falsy_values_are_not_dropped."""
+    assert render_template("on={{input.flag}}", {"input": {"flag": False}}) == "on=False"
+    assert render_template("qty={{input.qty}}", {"input": {"qty": 0}}) == "qty=0"
+
+
+def test_non_ascii_in_an_interpolated_list_is_not_escaped_away():
+    body = _build_body({"body_template": '{"values":{{input.rows}}}'},
+                       [{"path": "rows", "in": "body", "type": "array"}],
+                       {"rows": [["café", "naïve"]]}, {})
+    assert body == {"values": [["café", "naïve"]]}
+
+
+def test_form_encoded_template_starting_with_a_token_is_not_json_escaped():
+    """A JSON body opens with `{`, but so does a form template whose first thing is a token.
+    Escaping that one puts a literal backslash into the form body."""
+    body = _build_body({"body_template": "{{input.q}}=1&note={{input.n}}"}, [],
+                       {"q": 'a"b', "n": "x"}, {})
+    assert body == 'a"b=1&note=x'
+
+
+def test_a_json_template_is_still_escaped():
+    body = _build_body({"body_template": '{"q":"{{input.q}}"}'}, [], {"q": 'a"b'}, {})
+    assert body == {"q": 'a"b'}
+
+
+def test_a_bare_token_template_keeps_its_native_value():
+    """`{{input.payload}}` alone is a whole-string match, so it resolves to the object itself and
+    never goes near the escaping path - even though it also starts with `{`."""
+    body = _build_body({"body_template": "{{input.payload}}"}, [],
+                       {"payload": {"a": 'q"uote', "b": [1, 2]}}, {})
+    assert body == {"a": 'q"uote', "b": [1, 2]}
+
+
+def test_a_declared_body_encoding_decides_the_escaping_not_the_first_character():
+    """Escaping (`_build_body`) and serialization (`_resolve_body_encoding`) are two answers to
+    the same question - is this body JSON? - and they must not be able to disagree. A tool that
+    DECLARES its encoding has already answered; sniffing the template instead would JSON-escape
+    a raw payload that merely happens to open with `{`, then send it verbatim with the
+    backslashes in it."""
+    tmpl = '{"q":"{{input.q}}"}'
+    for enc in ("raw", "form"):
+        body = _build_body({"body_template": tmpl, "body_encoding": enc}, [], {"q": 'a"b'}, {})
+        assert body == '{"q":"a"b"}', f"body_encoding={enc} must not be JSON-escaped"
+    assert _build_body({"body_template": tmpl, "body_encoding": "json"}, [], {"q": 'a"b'}, {}) == {"q": 'a"b'}
+
+
+def test_a_declared_content_type_decides_the_escaping_too():
+    """The declared Content-Type is the other place a tool states what it is sending."""
+    form = _build_body(
+        {"body_template": "{{input.q}}=1",
+         "headers": [{"name": "Content-Type", "value": "application/x-www-form-urlencoded"}]},
+        [], {"q": 'a"b'}, {},
+    )
+    assert form == 'a"b=1'
+    js = _build_body(
+        {"body_template": '{"q":"{{input.q}}"}',
+         "headers": [{"name": "Content-Type", "value": "application/json"}]},
+        [], {"q": 'a"b'}, {},
+    )
+    assert js == {"q": 'a"b'}
+
+
+def test_escaping_and_serialization_agree_on_every_declared_encoding():
+    """A guard against the two decisions drifting apart again: whenever the tool declares an
+    encoding, `_build_body`'s escaping choice must match what `_resolve_body_encoding` will
+    actually do with the result."""
+    from forge.tools.rest import _resolve_body_encoding, _template_is_json
+
+    for enc in ("json", "form", "multipart", "raw"):
+        req = {"body_template": '{"q":"{{input.q}}"}', "body_encoding": enc}
+        body = _build_body(req, [], {"q": "ab"}, {})
+        assert _template_is_json(req, req["body_template"]) == (
+            _resolve_body_encoding(req, {}, body) == "json"
+        ), f"escaping and serialization disagree for body_encoding={enc}"

@@ -26,13 +26,15 @@ const DEFAULT_SAMPLE = {
 const STATUS = (s?: string | null): [string, string] =>
   s === "pass" ? ["var(--ok)", "Passing"] : s === "fail" ? ["var(--err)", "Failing"] : ["var(--warn)", "Untested"];
 
-export function ToolsScreen({ project, onOpen }: { project: any; onOpen: (t: Tool) => void }) {
+export function ToolsScreen({ project, onOpen, focusSetId }: { project: any; onOpen: (t: Tool) => void; focusSetId?: string | null }) {
   const [tools, setTools] = useState<Tool[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [view, setView] = useState<"grid" | "list">("grid");
   const [open, setOpen] = useState(false);
   const [toolSets, setToolSets] = useState<ToolSet[]>([]);
-  const [filterSet, setFilterSet] = useState<string>("all"); // "all" | "ungrouped" | <setId>
+  // Seeded from `focusSetId` so "Open in Tools" on a connector lands on that connector's
+  // folder instead of the full tool list.
+  const [filterSet, setFilterSet] = useState<string>(focusSetId || "all"); // "all" | "ungrouped" | <setId>
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerSel, setDrawerSel] = useState<string | null>(null); // null = create a new set
   const [selected, setSelected] = useState<Set<string>>(new Set());

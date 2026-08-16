@@ -15,6 +15,7 @@ from forge.models import (
     AuthProvider,
     Channel,
     Component,
+    ConnectorInstall,
     Dataset,
     HandoffRequest,
     KbSource,
@@ -44,6 +45,7 @@ _COUNT_MODELS: dict[str, type] = {
     "components": Component,
     "knowledge": KbSource,
     "auth": AuthProvider,
+    "connectors": ConnectorInstall,
 }
 
 
@@ -182,6 +184,7 @@ class ProjectService:
             KbSource,
             QaPair,
             McpClient,
+            ConnectorInstall,
             Channel,
             Trigger,
             Dataset,

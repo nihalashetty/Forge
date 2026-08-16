@@ -1,0 +1,77 @@
+{
+  "format": "forge.connector/1",
+  "slug": "slack-api",
+  "name": "Slack (bot token)",
+  "version": "1.0.0",
+  "publisher": "forge",
+  "summary": "Post messages and read channel history with a Slack bot token - no MCP server needed.",
+  "categories": ["messaging"],
+  "roles": ["Software Engineer", "Support", "Operations"],
+  "icon": "message-square",
+  "docs_url": "https://api.slack.com/methods",
+  "setup_url": "https://api.slack.com/apps",
+  "auth": {
+    "kind": "bearer",
+    "prefix": "Bearer ",
+    "per_user": "never",
+    "setup_help": "Use this instead of the OAuth Slack connector when you want a plain bot token, or when the hosted MCP server is not reachable from your network. Create an app at api.slack.com/apps, add the chat:write and channels:history bot scopes, install it, and paste the Bot User OAuth Token.",
+    "setup": [
+      { "key": "token", "label": "Bot user OAuth token", "secret": true, "required": true, "placeholder": "xoxb-…" }
+    ]
+  },
+  "egress_hosts": ["slack.com"],
+  "backend": {
+    "type": "rest",
+    "base_url": "https://slack.com/api",
+    "actions": [
+      {
+        "name": "slack_post_message",
+        "display_name": "Post message",
+        "description": "Post a message to a channel. Use a channel id (C…) or a #channel name the bot has joined.",
+        "request": {
+          "method": "POST",
+          "url_template": "/chat.postMessage",
+          "fields": [
+            { "path": "channel", "in": "body", "type": "string", "required": true, "llm_visible": true, "description": "Channel id or #name." },
+            { "path": "text", "in": "body", "type": "string", "required": true, "llm_visible": true, "description": "Message text (Slack mrkdwn)." },
+            { "path": "thread_ts", "in": "body", "type": "string", "required": false, "llm_visible": true, "description": "Reply in this thread instead of the channel." }
+          ],
+          "headers": [{ "name": "Content-Type", "value": "application/json; charset=utf-8" }]
+        },
+        "response": { "projection_jmespath": "{ok: ok, ts: ts, channel: channel, error: error}" }
+      },
+      {
+        "name": "slack_list_channels",
+        "display_name": "List channels",
+        "description": "List public channels in the workspace with their ids.",
+        "request": {
+          "method": "GET",
+          "url_template": "/conversations.list",
+          "fields": [
+            { "path": "limit", "in": "query", "type": "integer", "required": false, "llm_visible": true, "default": 100 },
+            { "path": "exclude_archived", "in": "query", "type": "boolean", "required": false, "llm_visible": false, "default": true },
+            { "path": "types", "in": "query", "type": "string", "required": false, "llm_visible": false, "default": "public_channel" }
+          ]
+        },
+        "response": { "projection_jmespath": "channels[].{id: id, name: name, members: num_members, topic: topic.value}" }
+      },
+      {
+        "name": "slack_channel_history",
+        "display_name": "Read channel history",
+        "description": "Read recent messages in a channel, newest first.",
+        "request": {
+          "method": "GET",
+          "url_template": "/conversations.history",
+          "fields": [
+            { "path": "channel", "in": "query", "type": "string", "required": true, "llm_visible": true, "description": "Channel id (C…)." },
+            { "path": "limit", "in": "query", "type": "integer", "required": false, "llm_visible": true, "default": 20 }
+          ]
+        },
+        "response": { "projection_jmespath": "messages[].{ts: ts, user: user, text: text, thread_ts: thread_ts}" }
+      }
+    ]
+  },
+  "toolset": {
+    "description": "Slack via bot token: post messages, list channels, read history."
+  }
+}

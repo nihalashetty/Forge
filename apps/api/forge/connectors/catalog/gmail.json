@@ -1,0 +1,233 @@
+{
+  "format": "forge.connector/1",
+  "slug": "gmail",
+  "name": "Gmail",
+  "version": "1.1.0",
+  "publisher": "forge",
+  "summary": "Read, search, label, and send email from a Gmail mailbox.",
+  "categories": [
+    "email"
+  ],
+  "roles": [
+    "Support",
+    "Sales",
+    "Operations",
+    "Executive Assistant"
+  ],
+  "icon": "mail",
+  "docs_url": "https://developers.google.com/gmail/api/reference/rest",
+  "setup_url": "https://console.cloud.google.com/apis/credentials",
+  "auth": {
+    "kind": "oauth2_authorization_code",
+    "authorize_url": "https://accounts.google.com/o/oauth2/v2/auth",
+    "token_url": "https://oauth2.googleapis.com/token",
+    "scopes": [
+      "https://www.googleapis.com/auth/gmail.readonly",
+      "https://www.googleapis.com/auth/gmail.send",
+      "https://www.googleapis.com/auth/gmail.modify"
+    ],
+    "authorize_params": {
+      "access_type": "offline",
+      "prompt": "consent"
+    },
+    "per_user": "required",
+    "setup_help": "Create an OAuth client (type: Web application) in Google Cloud Console, enable the Gmail API, and add the redirect URI shown above. Each user then connects their own mailbox - a shared Gmail credential would let every end user read one person's inbox.",
+    "setup": [
+      {
+        "key": "client_id",
+        "label": "Client ID",
+        "secret": true,
+        "required": true,
+        "placeholder": "....apps.googleusercontent.com"
+      },
+      {
+        "key": "client_secret",
+        "label": "Client secret",
+        "secret": true,
+        "required": true
+      }
+    ],
+    "credential_group": "google"
+  },
+  "egress_hosts": [
+    "gmail.googleapis.com",
+    "oauth2.googleapis.com",
+    "accounts.google.com"
+  ],
+  "backend": {
+    "type": "rest",
+    "base_url": "https://gmail.googleapis.com/gmail/v1/users/me",
+    "actions": [
+      {
+        "name": "gmail_search_messages",
+        "display_name": "Search email",
+        "description": "Search the mailbox using Gmail query syntax (e.g. 'from:acme is:unread newer_than:7d'). Returns message ids to pass to gmail_get_message.",
+        "request": {
+          "method": "GET",
+          "url_template": "/messages",
+          "fields": [
+            {
+              "path": "q",
+              "in": "query",
+              "type": "string",
+              "required": true,
+              "llm_visible": true,
+              "description": "Gmail search query, e.g. 'is:unread from:billing@acme.com'."
+            },
+            {
+              "path": "maxResults",
+              "in": "query",
+              "type": "integer",
+              "required": false,
+              "llm_visible": true,
+              "default": 10,
+              "description": "How many messages to return (1-50)."
+            }
+          ]
+        },
+        "response": {
+          "projection_jmespath": "messages[].{id: id, thread_id: threadId}"
+        }
+      },
+      {
+        "name": "gmail_get_message",
+        "display_name": "Read email",
+        "description": "Fetch one message by id: sender, recipient, subject, date and a text snippet.",
+        "request": {
+          "method": "GET",
+          "url_template": "/messages/{message_id}",
+          "fields": [
+            {
+              "path": "message_id",
+              "in": "path",
+              "type": "string",
+              "required": true,
+              "llm_visible": true,
+              "description": "Message id returned by gmail_search_messages."
+            },
+            {
+              "path": "format",
+              "in": "query",
+              "type": "string",
+              "required": false,
+              "llm_visible": false,
+              "default": "metadata"
+            }
+          ]
+        },
+        "response": {
+          "projection_jmespath": "{id: id, snippet: snippet, headers: payload.headers[?name=='From' || name=='To' || name=='Subject' || name=='Date'].{name: name, value: value}}"
+        }
+      },
+      {
+        "name": "gmail_send_message",
+        "display_name": "Send email",
+        "description": "Send an email as the connected account. Supply the recipient, subject and message text the way you would type them - Forge builds and encodes the MIME message.",
+        "request": {
+          "method": "POST",
+          "url_template": "/messages/send",
+          "fields": [
+            {
+              "path": "to",
+              "in": "body",
+              "type": "string",
+              "required": true,
+              "llm_visible": true,
+              "description": "Recipient address. Comma-separate several."
+            },
+            {
+              "path": "subject",
+              "in": "body",
+              "type": "string",
+              "required": true,
+              "llm_visible": true,
+              "description": "Subject line."
+            },
+            {
+              "path": "body",
+              "in": "body",
+              "type": "string",
+              "required": true,
+              "llm_visible": true,
+              "description": "Message text (plain text; newlines are preserved)."
+            },
+            {
+              "path": "cc",
+              "in": "body",
+              "type": "string",
+              "required": false,
+              "llm_visible": true,
+              "description": "Optional Cc address(es), comma-separated."
+            },
+            {
+              "path": "bcc",
+              "in": "body",
+              "type": "string",
+              "required": false,
+              "llm_visible": true,
+              "description": "Optional Bcc address(es), comma-separated."
+            }
+          ],
+          "body_template": "{\"raw\": {\"$mime\": {\"to\": \"{{input.to}}\", \"cc\": \"{{input.cc}}\", \"bcc\": \"{{input.bcc}}\", \"subject\": \"{{input.subject}}\", \"text\": \"{{input.body}}\"}}}"
+        },
+        "response": {
+          "projection_jmespath": "{id: id, thread_id: threadId}"
+        }
+      },
+      {
+        "name": "gmail_list_labels",
+        "display_name": "List labels",
+        "description": "List the mailbox's labels (folders) with their ids, for use with gmail_modify_message.",
+        "request": {
+          "method": "GET",
+          "url_template": "/labels",
+          "fields": []
+        },
+        "response": {
+          "projection_jmespath": "labels[].{id: id, name: name, type: type}"
+        }
+      },
+      {
+        "name": "gmail_modify_message",
+        "display_name": "Label or archive email",
+        "description": "Add or remove labels on a message. Removing 'INBOX' archives it; removing 'UNREAD' marks it read.",
+        "request": {
+          "method": "POST",
+          "url_template": "/messages/{message_id}/modify",
+          "fields": [
+            {
+              "path": "message_id",
+              "in": "path",
+              "type": "string",
+              "required": true,
+              "llm_visible": true,
+              "description": "Message id."
+            },
+            {
+              "path": "addLabelIds",
+              "in": "body",
+              "type": "array",
+              "required": false,
+              "llm_visible": true,
+              "description": "Label ids to add."
+            },
+            {
+              "path": "removeLabelIds",
+              "in": "body",
+              "type": "array",
+              "required": false,
+              "llm_visible": true,
+              "description": "Label ids to remove."
+            }
+          ]
+        },
+        "response": {
+          "projection_jmespath": "{id: id, label_ids: labelIds}"
+        }
+      }
+    ]
+  },
+  "toolset": {
+    "description": "Gmail mailbox actions: search, read, send, label and archive email."
+  }
+}

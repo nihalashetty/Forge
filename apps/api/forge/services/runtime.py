@@ -164,8 +164,11 @@ async def build_compile_context(
     # Pre-load enabled MCP servers' tools (one connect per server) so agent nodes can
     # attach them - the agent factory is sync, but MCP discovery is async.
     from forge.models import McpClient
-    from forge.tools.mcp import server_tools
+    from forge.tools.mcp import auth_context_from, server_tools
 
+    # The run's per-user dims, so a server behind a PER-USER auth provider resolves the calling
+    # end user's own credential here rather than a shared workspace token.
+    mcp_auth_context = auth_context_from(ctx)
     mcp_by_client: dict[str, list] = {}
     mcp_rows = (
         await session.execute(
@@ -178,7 +181,7 @@ async def build_compile_context(
     ).scalars()
     for m in mcp_rows:
         try:
-            mcp_by_client[m.id] = await server_tools(m, tenant_id, project_id)
+            mcp_by_client[m.id] = await server_tools(m, tenant_id, project_id, mcp_auth_context)
         except Exception as e:  # noqa: BLE001 - an unreachable server must not break the run
             log.warning("MCP server %s unavailable, skipping its tools: %s", m.name, e)
     ctx.mcp_tools_by_client = mcp_by_client

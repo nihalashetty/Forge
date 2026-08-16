@@ -1,0 +1,89 @@
+{
+  "format": "forge.connector/1",
+  "slug": "shopify",
+  "name": "Shopify",
+  "version": "1.0.0",
+  "publisher": "forge",
+  "summary": "Look up orders, customers, and products in a Shopify store.",
+  "categories": ["commerce"],
+  "roles": ["Support", "Operations", "Marketing"],
+  "icon": "credit-card",
+  "docs_url": "https://shopify.dev/docs/api/admin-rest",
+  "auth": {
+    "kind": "api_key",
+    "location": "header",
+    "param_name": "X-Shopify-Access-Token",
+    "per_user": "never",
+    "setup_help": "Create a custom app in your Shopify admin (Settings → Apps and sales channels → Develop apps), grant the read_orders / read_customers / read_products scopes, and install it to get an Admin API access token.",
+    "setup": [
+      { "key": "store", "label": "Store domain", "secret": false, "required": true, "placeholder": "acme-store.myshopify.com" },
+      { "key": "api_key", "label": "Admin API access token", "secret": true, "required": true, "placeholder": "shpat_…" }
+    ]
+  },
+  "egress_hosts": ["myshopify.com"],
+  "backend": {
+    "type": "rest",
+    "base_url": "https://{setup.store}/admin/api/2026-01",
+    "actions": [
+      {
+        "name": "shopify_list_orders",
+        "display_name": "List orders",
+        "description": "List recent orders, optionally filtered by status or customer email.",
+        "request": {
+          "method": "GET",
+          "url_template": "/orders.json",
+          "fields": [
+            { "path": "status", "in": "query", "type": "string", "required": false, "llm_visible": true, "default": "any", "description": "open | closed | cancelled | any." },
+            { "path": "email", "in": "query", "type": "string", "required": false, "llm_visible": true, "description": "Filter to one customer's email." },
+            { "path": "limit", "in": "query", "type": "integer", "required": false, "llm_visible": true, "default": 10 }
+          ]
+        },
+        "response": { "projection_jmespath": "orders[].{id: id, number: order_number, email: email, total: total_price, currency: currency, financial_status: financial_status, fulfillment_status: fulfillment_status, created: created_at}" }
+      },
+      {
+        "name": "shopify_get_order",
+        "display_name": "Read order",
+        "description": "Fetch one order by id, including its line items and shipping address.",
+        "request": {
+          "method": "GET",
+          "url_template": "/orders/{order_id}.json",
+          "fields": [
+            { "path": "order_id", "in": "path", "type": "integer", "required": true, "llm_visible": true, "description": "Shopify order id." }
+          ]
+        },
+        "response": { "projection_jmespath": "order.{id: id, number: order_number, email: email, total: total_price, financial_status: financial_status, fulfillment_status: fulfillment_status, items: line_items[].{title: title, quantity: quantity, price: price}, ship_to: shipping_address.{city: city, country: country}}" }
+      },
+      {
+        "name": "shopify_search_customers",
+        "display_name": "Find customer",
+        "description": "Search customers by email, name, or phone.",
+        "request": {
+          "method": "GET",
+          "url_template": "/customers/search.json",
+          "fields": [
+            { "path": "query", "in": "query", "type": "string", "required": true, "llm_visible": true, "description": "Search text, e.g. an email address." },
+            { "path": "limit", "in": "query", "type": "integer", "required": false, "llm_visible": true, "default": 10 }
+          ]
+        },
+        "response": { "projection_jmespath": "customers[].{id: id, email: email, name: join(' ', [first_name, last_name]), orders: orders_count, spent: total_spent}" }
+      },
+      {
+        "name": "shopify_list_products",
+        "display_name": "List products",
+        "description": "List products in the store, with their variants and prices.",
+        "request": {
+          "method": "GET",
+          "url_template": "/products.json",
+          "fields": [
+            { "path": "title", "in": "query", "type": "string", "required": false, "llm_visible": true, "description": "Filter by exact product title." },
+            { "path": "limit", "in": "query", "type": "integer", "required": false, "llm_visible": true, "default": 10 }
+          ]
+        },
+        "response": { "projection_jmespath": "products[].{id: id, title: title, status: status, variants: variants[].{sku: sku, price: price, inventory: inventory_quantity}}" }
+      }
+    ]
+  },
+  "toolset": {
+    "description": "Shopify admin: look up orders, customers, and products."
+  }
+}

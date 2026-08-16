@@ -105,6 +105,15 @@ const P: Record<string, string> = {
   sliders: '<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/>',
   download: '<path d="M12 4v12M8 12l4 4 4-4M5 20h14"/>',
   rotate: '<path d="M20 11a8 8 0 0 0-14-4M4 5v4h4"/><path d="M4 13a8 8 0 0 0 14 4M20 19v-4h-4"/>',
+  // connectors: the nav glyph plus the per-connector icons the bundled manifests name.
+  plug: '<path d="M9 2v6M15 2v6"/><path d="M6 8h12v3a6 6 0 0 1-12 0z"/><path d="M12 17v5"/>',
+  calendar: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>',
+  'credit-card': '<rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20M6 15h4"/>',
+  users: '<circle cx="9" cy="8" r="3.5"/><path d="M2 20a7 7 0 0 1 14 0"/><path d="M16 5.2a3.5 3.5 0 0 1 0 6.6M18 20a6 6 0 0 0-3-5.2"/>',
+  'git-branch': '<circle cx="6" cy="5" r="2.5"/><circle cx="6" cy="19" r="2.5"/><circle cx="18" cy="9" r="2.5"/><path d="M6 7.5v9M18 11.5c0 3-3 4-6 4.5"/>',
+  'message-square': '<path d="M21 15a2 2 0 0 1-2 2H8l-4 4V5a2 2 0 0 1 2-2h13a2 2 0 0 1 2 2z"/>',
+  chevron: '<path d="m6 9 6 6 6-6"/>',
+  'arrow-left': '<path d="M19 12H5M12 19l-7-7 7-7"/>',
 };
 
 export type IconName = keyof typeof P | string;

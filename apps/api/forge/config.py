@@ -100,6 +100,34 @@ class Settings(BaseSettings):
             raise ValueError('FORGE_TOOL_VARS must be a JSON object, e.g. {"api_base":"https://..."}')
         return {str(k): str(val) for k, val in parsed.items()}
 
+    @field_validator("connector_oauth_apps", mode="before")
+    @classmethod
+    def _parse_connector_oauth_apps(cls, v: object) -> dict[str, dict]:
+        """{"google": {"client_id": "...", "client_secret": "..."}} - one entry per credential
+        group. Fails loudly on a malformed value: a silently-empty map would send every user
+        back to pasting credentials with no indication why."""
+        if v is None:
+            return {}
+        if isinstance(v, dict):
+            return {str(k): dict(val) for k, val in v.items() if isinstance(val, dict)}
+        s = str(v).strip()
+        if not s:
+            return {}
+        import json as _json
+
+        parsed = _json.loads(s)
+        if not isinstance(parsed, dict):
+            raise ValueError(
+                'FORGE_CONNECTOR_OAUTH_APPS must be a JSON object, e.g. '
+                '{"google":{"client_id":"...","client_secret":"..."}}'
+            )
+        out: dict[str, dict] = {}
+        for group, creds in parsed.items():
+            if not isinstance(creds, dict):
+                raise ValueError(f"FORGE_CONNECTOR_OAUTH_APPS['{group}'] must be an object of credential values")
+            out[str(group)] = {str(k): str(val) for k, val in creds.items()}
+        return out
+
     # --- App ---
     app_name: str = "Forge"
     environment: str = "development"
@@ -208,6 +236,23 @@ class Settings(BaseSettings):
     # the call with a clear error (rather than silently sending a broken URL).
     # Env: FORGE_TOOL_VARS='{"api_base":"https://api.example.com"}'. Blank/unset = {}.
     tool_vars: Annotated[dict[str, str], NoDecode] = Field(default_factory=dict)
+    # --- Connector OAuth apps (deployment-wide) -------------------------------------------
+    # Pre-registered vendor OAuth apps, keyed by a connector's `credential_group`. When a group
+    # is present here, installing any connector in that family asks the operator for NOTHING:
+    # the install seeds the project's credentials from this map and the user goes straight to
+    # "Connect account" -> vendor consent screen -> done. That is the one-click experience.
+    #
+    # Register ONE app per vendor for the whole deployment (or per fleet), with
+    # <FORGE_PUBLIC_BASE_URL>/v1/oauth/callback as its redirect URI. For Google that means a
+    # "Web application" OAuth client: only that client type has an Authorized redirect URIs
+    # field, and Forge's callback is a real https path on the API's own origin, not a loopback
+    # address. (A Desktop client cannot register it at all - the sign-in then fails with
+    # redirect_uri_mismatch.) Each connector's `setup_help` says the same thing; keep them
+    # in step.
+    #
+    # Env: FORGE_CONNECTOR_OAUTH_APPS='{"google":{"client_id":"...","client_secret":"..."}}'
+    # Unset = each project registers its own app and pastes the credentials (previous behavior).
+    connector_oauth_apps: Annotated[dict[str, dict], NoDecode] = Field(default_factory=dict)
     # Code tools run RestrictedPython (AST-sandboxed) but NOT OS-isolated: no CPU/memory
     # bound and a runaway thread can't be force-killed. RestrictedPython is a hardening
     # layer, not a sandbox, so it is OFF by default. Only enable it on a trusted, single-

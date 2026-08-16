@@ -1,0 +1,44 @@
+{
+  "format": "forge.connector/1",
+  "slug": "custom-rest-api",
+  "name": "Custom REST API",
+  "version": "1.0.0",
+  "publisher": "forge",
+  "summary": "A starter connector for your own internal API - install it, then edit the actions in the Tool Builder.",
+  "categories": ["custom"],
+  "roles": ["Software Engineer"],
+  "icon": "k_rest",
+  "docs_url": "https://github.com/",
+  "auth": {
+    "kind": "bearer",
+    "prefix": "Bearer ",
+    "per_user": "optional",
+    "setup_help": "Point this at your own service. It installs one GET action you can duplicate and edit in the Tool Builder - or write a full manifest and use Add → Custom connector instead.",
+    "setup": [
+      { "key": "base_url", "label": "API base URL", "secret": false, "required": true, "placeholder": "https://api.internal.acme.com/v1" },
+      { "key": "token", "label": "API token", "secret": true, "required": true }
+    ]
+  },
+  "backend": {
+    "type": "rest",
+    "base_url": "{setup.base_url}",
+    "actions": [
+      {
+        "name": "custom_api_get",
+        "display_name": "GET request",
+        "description": "Perform a GET against a path on the configured API. Edit or duplicate this action in the Tool Builder to model your real endpoints.",
+        "request": {
+          "method": "GET",
+          "url_template": "/{path}",
+          "fields": [
+            { "path": "path", "in": "path", "type": "string", "required": true, "llm_visible": true, "description": "Path segment to request, relative to the API base URL." }
+          ],
+          "headers": [{ "name": "Accept", "value": "application/json" }]
+        }
+      }
+    ]
+  },
+  "toolset": {
+    "description": "Your own REST API - edit these actions in the Tool Builder."
+  }
+}

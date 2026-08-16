@@ -1,0 +1,257 @@
+{
+  "format": "forge.connector/1",
+  "slug": "google-calendar",
+  "name": "Google Calendar",
+  "version": "1.1.0",
+  "publisher": "forge",
+  "summary": "List, create, and update events on a Google Calendar.",
+  "categories": [
+    "calendar",
+    "productivity"
+  ],
+  "roles": [
+    "Executive Assistant",
+    "Sales",
+    "Operations",
+    "Support"
+  ],
+  "icon": "calendar",
+  "docs_url": "https://developers.google.com/calendar/api/v3/reference",
+  "setup_url": "https://console.cloud.google.com/apis/credentials",
+  "auth": {
+    "kind": "oauth2_authorization_code",
+    "authorize_url": "https://accounts.google.com/o/oauth2/v2/auth",
+    "token_url": "https://oauth2.googleapis.com/token",
+    "scopes": [
+      "https://www.googleapis.com/auth/calendar"
+    ],
+    "authorize_params": {
+      "access_type": "offline",
+      "prompt": "consent"
+    },
+    "per_user": "required",
+    "setup_help": "Create an OAuth client (Web application) in Google Cloud Console, enable the Google Calendar API, and add the redirect URI shown above.",
+    "setup": [
+      {
+        "key": "client_id",
+        "label": "Client ID",
+        "secret": true,
+        "required": true,
+        "placeholder": "....apps.googleusercontent.com"
+      },
+      {
+        "key": "client_secret",
+        "label": "Client secret",
+        "secret": true,
+        "required": true
+      }
+    ],
+    "credential_group": "google"
+  },
+  "egress_hosts": [
+    "www.googleapis.com",
+    "oauth2.googleapis.com",
+    "accounts.google.com"
+  ],
+  "backend": {
+    "type": "rest",
+    "base_url": "https://www.googleapis.com/calendar/v3",
+    "actions": [
+      {
+        "name": "gcal_list_events",
+        "display_name": "List events",
+        "description": "List events on a calendar between two RFC 3339 timestamps, soonest first.",
+        "request": {
+          "method": "GET",
+          "url_template": "/calendars/{calendar_id}/events",
+          "fields": [
+            {
+              "path": "calendar_id",
+              "in": "path",
+              "type": "string",
+              "required": false,
+              "llm_visible": true,
+              "default": "primary",
+              "description": "Calendar id, or 'primary' for the user's own calendar."
+            },
+            {
+              "path": "timeMin",
+              "in": "query",
+              "type": "string",
+              "required": true,
+              "llm_visible": true,
+              "description": "Window start, RFC 3339 (e.g. 2026-08-13T00:00:00Z)."
+            },
+            {
+              "path": "timeMax",
+              "in": "query",
+              "type": "string",
+              "required": false,
+              "llm_visible": true,
+              "description": "Window end, RFC 3339."
+            },
+            {
+              "path": "maxResults",
+              "in": "query",
+              "type": "integer",
+              "required": false,
+              "llm_visible": true,
+              "default": 20
+            },
+            {
+              "path": "singleEvents",
+              "in": "query",
+              "type": "boolean",
+              "required": false,
+              "llm_visible": false,
+              "default": true
+            },
+            {
+              "path": "orderBy",
+              "in": "query",
+              "type": "string",
+              "required": false,
+              "llm_visible": false,
+              "default": "startTime"
+            }
+          ]
+        },
+        "response": {
+          "projection_jmespath": "items[].{id: id, summary: summary, start: start.dateTime, end: end.dateTime, attendees: attendees[].email, link: htmlLink}"
+        }
+      },
+      {
+        "name": "gcal_create_event",
+        "display_name": "Create event",
+        "description": "Create a calendar event. Times are RFC 3339 with an offset (e.g. 2026-08-14T15:00:00+01:00).",
+        "request": {
+          "method": "POST",
+          "url_template": "/calendars/{calendar_id}/events",
+          "fields": [
+            {
+              "path": "calendar_id",
+              "in": "path",
+              "type": "string",
+              "required": false,
+              "llm_visible": true,
+              "default": "primary"
+            },
+            {
+              "path": "summary",
+              "in": "body",
+              "type": "string",
+              "required": true,
+              "llm_visible": true,
+              "description": "Event title."
+            },
+            {
+              "path": "description",
+              "in": "body",
+              "type": "string",
+              "required": false,
+              "llm_visible": true,
+              "description": "Event description."
+            },
+            {
+              "path": "start",
+              "in": "body",
+              "type": "string",
+              "required": true,
+              "llm_visible": true,
+              "description": "Start time, RFC3339 WITH a UTC offset, e.g. 2026-08-20T14:00:00+05:30 or 2026-08-20T08:30:00Z. A naive local time without an offset is rejected."
+            },
+            {
+              "path": "end",
+              "in": "body",
+              "type": "string",
+              "required": true,
+              "llm_visible": true,
+              "description": "End time, RFC3339 WITH a UTC offset, e.g. 2026-08-20T14:00:00+05:30 or 2026-08-20T08:30:00Z. A naive local time without an offset is rejected."
+            },
+            {
+              "path": "attendees",
+              "in": "body",
+              "type": "array",
+              "required": false,
+              "llm_visible": true,
+              "description": "Attendee email addresses."
+            }
+          ],
+          "body_template": "{\"summary\":\"{{input.summary}}\",\"description\":\"{{input.description}}\",\"start\":{\"dateTime\":\"{{input.start}}\"},\"end\":{\"dateTime\":\"{{input.end}}\"},\"attendees\":{\"$each\":\"{{input.attendees}}\",\"$as\":\"email\",\"$do\":{\"email\":\"{{email}}\"}}}"
+        },
+        "response": {
+          "projection_jmespath": "{id: id, link: htmlLink, start: start.dateTime}"
+        }
+      },
+      {
+        "name": "gcal_delete_event",
+        "display_name": "Delete event",
+        "description": "Delete an event from a calendar.",
+        "request": {
+          "method": "DELETE",
+          "url_template": "/calendars/{calendar_id}/events/{event_id}",
+          "fields": [
+            {
+              "path": "calendar_id",
+              "in": "path",
+              "type": "string",
+              "required": false,
+              "llm_visible": true,
+              "default": "primary"
+            },
+            {
+              "path": "event_id",
+              "in": "path",
+              "type": "string",
+              "required": true,
+              "llm_visible": true,
+              "description": "Event id from gcal_list_events."
+            }
+          ]
+        }
+      },
+      {
+        "name": "gcal_freebusy",
+        "display_name": "Check availability",
+        "description": "Check when one or more calendars are busy in a time window - use this before proposing a meeting slot.",
+        "request": {
+          "method": "POST",
+          "url_template": "/freeBusy",
+          "fields": [
+            {
+              "path": "timeMin",
+              "in": "body",
+              "type": "string",
+              "required": true,
+              "llm_visible": true,
+              "description": "Window start, RFC 3339."
+            },
+            {
+              "path": "timeMax",
+              "in": "body",
+              "type": "string",
+              "required": true,
+              "llm_visible": true,
+              "description": "Window end, RFC 3339."
+            },
+            {
+              "path": "calendars",
+              "in": "body",
+              "type": "array",
+              "required": true,
+              "llm_visible": true,
+              "description": "Calendar ids / email addresses to check."
+            }
+          ],
+          "body_template": "{\"timeMin\":\"{{input.timeMin}}\",\"timeMax\":\"{{input.timeMax}}\",\"items\":{\"$each\":\"{{input.calendars}}\",\"$as\":\"cal\",\"$do\":{\"id\":\"{{cal}}\"}}}"
+        },
+        "response": {
+          "projection_jmespath": "calendars"
+        }
+      }
+    ]
+  },
+  "toolset": {
+    "description": "Google Calendar: list and create events, delete events, and check free/busy availability."
+  }
+}

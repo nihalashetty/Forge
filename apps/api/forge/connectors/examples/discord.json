@@ -1,0 +1,62 @@
+{
+  "format": "forge.connector/1",
+  "slug": "discord",
+  "name": "Discord",
+  "version": "1.0.0",
+  "publisher": "forge",
+  "summary": "Post messages and read channel history in a Discord server.",
+  "categories": ["messaging"],
+  "roles": ["Software Engineer", "Marketing", "Support"],
+  "icon": "message-square",
+  "docs_url": "https://discord.com/developers/docs/reference",
+  "setup_url": "https://discord.com/developers/applications",
+  "auth": {
+    "kind": "bearer",
+    "header_name": "Authorization",
+    "prefix": "Bot ",
+    "per_user": "never",
+    "setup_help": "Create an application at discord.com/developers/applications, add a Bot, copy its token, and invite the bot to your server with the Send Messages and Read Message History permissions.",
+    "setup": [
+      { "key": "token", "label": "Bot token", "secret": true, "required": true }
+    ]
+  },
+  "egress_hosts": ["discord.com"],
+  "backend": {
+    "type": "rest",
+    "base_url": "https://discord.com/api/v10",
+    "actions": [
+      {
+        "name": "discord_send_message",
+        "display_name": "Post message",
+        "description": "Post a message to a Discord channel.",
+        "request": {
+          "method": "POST",
+          "url_template": "/channels/{channel_id}/messages",
+          "fields": [
+            { "path": "channel_id", "in": "path", "type": "string", "required": true, "llm_visible": true, "description": "Channel id (right-click a channel with developer mode on)." },
+            { "path": "content", "in": "body", "type": "string", "required": true, "llm_visible": true, "description": "Message text (max 2000 characters)." }
+          ],
+          "headers": [{ "name": "Content-Type", "value": "application/json" }]
+        },
+        "response": { "projection_jmespath": "{id: id, channel_id: channel_id}" }
+      },
+      {
+        "name": "discord_channel_messages",
+        "display_name": "Read channel history",
+        "description": "Read the most recent messages in a channel, newest first.",
+        "request": {
+          "method": "GET",
+          "url_template": "/channels/{channel_id}/messages",
+          "fields": [
+            { "path": "channel_id", "in": "path", "type": "string", "required": true, "llm_visible": true },
+            { "path": "limit", "in": "query", "type": "integer", "required": false, "llm_visible": true, "default": 20 }
+          ]
+        },
+        "response": { "projection_jmespath": "[].{id: id, author: author.username, content: content, timestamp: timestamp}" }
+      }
+    ]
+  },
+  "toolset": {
+    "description": "Discord: post messages and read channel history."
+  }
+}

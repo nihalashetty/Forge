@@ -8,11 +8,7 @@ and stores them as a secret. The AuthResolver then auto-refreshes on expiry.
 
 from __future__ import annotations
 
-import base64
-import hashlib
-import secrets as _secrets
 from html import escape
-from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import HTMLResponse
@@ -20,12 +16,17 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from forge.auth_providers.oauth_flow import (
+    OAuthNotConfigured,
+    build_authorize_url,
+    redirect_uri,
+    token_request,
+)
 from forge.auth_providers.resolver import AuthResolver
-from forge.config import settings
 from forge.deps import CurrentUser, current_tenant_id, get_session, require_role
 from forge.models import AuthProvider
 from forge.secrets.store import SecretNotFound, SecretStore
-from forge.security import TokenError, create_state_token, decode_token
+from forge.security import TokenError, decode_token
 from forge.util.http import shared_async_client
 from forge.util.ssrf import guarded_request
 
@@ -40,10 +41,6 @@ class OAuthStartIn(BaseModel):
     # (signed) state to the callback, which then stores the bundle under the SAME per-user
     # secret name that resolve/refresh read. Omit for a shared, single-account provider.
     context: dict | None = None
-
-
-def _redirect_uri(cfg: dict) -> str:
-    return cfg.get("redirect_uri") or f"{settings.public_base_url.rstrip('/')}/v1/oauth/callback"
 
 
 async def _load(session, tenant_id: str, project_id: str, ap_id: str) -> AuthProvider:
@@ -70,37 +67,16 @@ async def oauth_start(
     _: CurrentUser = Depends(require_role("editor")),
 ):
     ap = await _load(session, tenant_id, project_id, ap_id)
-    cfg = ap.config or {}
-    client_id = await SecretStore().read_ref(tenant_id=tenant_id, project_id=project_id, ref=cfg["client_id_ref"]) if cfg.get("client_id_ref") else None
-    if not client_id:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "client_id secret not configured")
-    # PKCE (finding i): bind the authorization code to a per-request verifier so an intercepted
-    # code can't be redeemed without it. The verifier rides in the SIGNED state (tamper-proof)
-    # and is echoed back to us in the callback. NOTE: the signed state is readable by the
-    # browser; for a PUBLIC client (no client_secret) store the verifier server-side instead.
-    verifier = _secrets.token_urlsafe(64)
-    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
-    state_claims = {"tid": tenant_id, "pid": project_id, "ap": ap_id, "cv": verifier}
-    # Per-user connect: carry ONLY the dims that key this provider's per-user bundle, so the
-    # callback stores the token under the same per-user name resolve/refresh look up. Absent (or
-    # a non-per-user provider) => the default single-account name, preserving prior behavior.
-    per_user = cfg.get("per_user_context_keys") or []
-    ctx = (body.context if body else None) or {}
-    user_ctx = {k: ctx[k] for k in per_user if k in ctx}
-    if user_ctx:
-        state_claims["ctx"] = user_ctx
-    state = create_state_token(state_claims)
-    q = {
-        "response_type": "code",
-        "client_id": str(client_id),
-        "redirect_uri": _redirect_uri(cfg),
-        "state": state,
-        "code_challenge": challenge,
-        "code_challenge_method": "S256",
-    }
-    if cfg.get("scope"):
-        q["scope"] = cfg["scope"]
-    return {"authorize_url": f"{cfg['authorize_url']}?{urlencode(q)}"}
+    # PKCE + signed state live in auth_providers.oauth_flow, shared with the Connectors screen
+    # so both connect paths have identical security properties (finding i).
+    try:
+        url = await build_authorize_url(
+            ap, tenant_id=tenant_id, project_id=project_id,
+            context=(body.context if body else None) or {},
+        )
+    except OAuthNotConfigured as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
+    return {"authorize_url": url}
 
 
 @router.get("/v1/oauth/callback", response_class=HTMLResponse)
@@ -131,7 +107,10 @@ async def oauth_callback(
     data = {
         "grant_type": "authorization_code",
         "code": code,
-        "redirect_uri": _redirect_uri(cfg),
+        # The SAME helper build_authorize_url used. OAuth requires the redirect_uri sent at
+        # /authorize and at the exchange to match exactly, so the two legs must never be able to
+        # compute it differently.
+        "redirect_uri": redirect_uri(cfg),
         "client_id": str(client_id) if client_id else None,
         "client_secret": str(client_secret) if client_secret else None,
         # PKCE proof matching the code_challenge sent at /start (finding i).
@@ -140,9 +119,10 @@ async def oauth_callback(
     # Fetch the token through the SSRF guard (validates the host pre-connect AND re-validates
     # any redirect hop, with httpx's cross-origin credential stripping) rather than a raw POST
     # that would follow a redirect to an internal host (audit S8).
+    form, headers = token_request(cfg, data)
     r = await guarded_request(
         shared_async_client(), "POST", cfg["token_url"],
-        data={k: v for k, v in data.items() if v is not None}, timeout=30, follow_redirects=True,
+        data=form, headers=headers, timeout=30, follow_redirects=True,
     )
     if r.status_code >= 400:
         return HTMLResponse(
@@ -165,7 +145,49 @@ async def oauth_callback(
     # provider's token was stored where resolve never looked (finding i / item 5).
     bundle_name = AuthResolver.bundle_secret_name(ap_id, claims.get("ctx"), cfg.get("per_user_context_keys"))
     await AuthResolver()._store_bundle(tenant_id, project_id, ap_id, bundle, name=bundle_name)
-    return HTMLResponse("<h3>✅ Connected</h3><p>You can close this window and return to Forge.</p>")
+    # The per-user dims this consent was for, carried through the signed state. Discovery below
+    # has to ask the server AS THAT USER - it is the only credential that exists.
+    note = await _finish_connector_connect(session, tenant_id, project_id, ap_id, claims.get("ctx"))
+    return HTMLResponse(f"<h3>✅ Connected</h3><p>You can close this window and return to Forge.{note}</p>")
+
+
+async def _finish_connector_connect(session, tenant_id: str, project_id: str, ap_id: str,
+                                    context: dict | None = None) -> str:
+    """If this provider belongs to an installed connector, mark it connected and (for an
+    MCP-backed one) discover its tools now that credentials exist.
+
+    An MCP connector cannot list its tools before consent - the server answers 401 - so install
+    deliberately leaves the tool set empty and this is where it gets filled. `context` is the end
+    user whose token was just stored; without it the discovery call would resolve a shared bundle
+    that a per-user connector never writes and get a second 401, leaving the connector connected
+    with zero actions. Failures here are reported in the page text but never fail the callback:
+    the token IS stored, and a user can always re-sync from the Connectors screen.
+    """
+    from forge.connectors.install import ConnectorInstaller
+    from forge.models import ConnectorInstall
+
+    install = (await session.execute(
+        select(ConnectorInstall).where(
+            ConnectorInstall.tenant_id == tenant_id,
+            ConnectorInstall.project_id == project_id,
+            ConnectorInstall.auth_provider_id == ap_id,
+        )
+    )).scalar_one_or_none()
+    if install is None:
+        return ""
+    install.status = "connected"
+    install.status_detail = None
+    await session.commit()
+    if not install.mcp_client_id:
+        return ""
+    try:
+        count = await ConnectorInstaller().sync_tools(session, install, context=context)
+    except Exception as e:  # noqa: BLE001 - the connection succeeded; discovery is recoverable
+        from forge.tools.mcp import describe_mcp_error
+
+        return (" (Connected, but listing actions failed: "
+                f"{escape(describe_mcp_error(e)[:200])}. Use “Refresh actions”.)")
+    return f" {count} action(s) are now available." if count else ""
 
 
 @router.get(_PREFIX + "/status")

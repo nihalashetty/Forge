@@ -61,13 +61,13 @@ async def test_project_counts_are_scoped_to_project():
         counts = await ProjectService.counts(session, tenant_id, proj.id)
         assert counts == {
             "workflows": 2, "agents": 1, "tools": 3 + len(BUILTIN_DEFAULTS),
-            "components": 1, "knowledge": 1, "auth": 1, "handoffs": 1,
+            "components": 1, "knowledge": 1, "auth": 1, "handoffs": 1, "connectors": 0,
         }
         # A fresh project is all zeros except the auto-provisioned platform built-ins (never None).
         empty = await ProjectService.create(session, tenant_id, name="Empty", slug="empty")
         assert await ProjectService.counts(session, tenant_id, empty.id) == {
             "workflows": 0, "agents": 0, "tools": len(BUILTIN_DEFAULTS), "components": 0, "knowledge": 0, "auth": 0,
-            "handoffs": 0,
+            "handoffs": 0, "connectors": 0,
         }
 
 

@@ -97,3 +97,52 @@ class SecretStore:
             meta={"scheme": scheme},
         )
         return value
+
+    async def read_refs(self, *, tenant_id: str, project_id: str, refs: list[str]) -> dict[str, Any]:
+        """Read several refs at once, returning `{name: value}` for the ones that EXIST.
+
+        Same choke point, same audit trail, one round trip. A caller resolving one secret per row
+        of a list - the connectors screen reads a token bundle per installed connector - otherwise
+        pays a SELECT, a decrypt and an audit session each, sequentially, on every paint.
+
+        A missing name is simply absent from the result rather than raising, because a batch
+        caller is asking about several independent things and one of them being absent is an
+        answer, not an error. Callers that need "missing" to be fatal should use `read_ref`.
+        """
+        names: list[str] = []
+        for ref in refs:
+            scheme, name = self.parse_ref(ref)
+            if scheme == "vault":  # pragma: no cover - enterprise path
+                raise NotImplementedError("vault:// refs require the Vault adapter (enterprise).")
+            if name not in names:
+                names.append(name)
+        if not names:
+            return {}
+        out: dict[str, Any] = {}
+        async with self._sf() as session:
+            rows = list((await session.execute(
+                select(Secret).where(
+                    Secret.tenant_id == tenant_id, Secret.project_id == project_id,
+                    Secret.name.in_(names),
+                )
+            )).scalars())
+            now = datetime.utcnow()
+            touched = False
+            for secret in rows:
+                if secret.last_used_at is None or now - secret.last_used_at > self._LAST_USED_WRITE_WINDOW:
+                    secret.last_used_at = now
+                    touched = True
+                try:
+                    out[secret.name] = json.loads(decrypt(secret.encrypted_value))
+                except Exception:  # noqa: BLE001 - an undecodable secret reads as absent, not a 500
+                    continue
+            if touched:
+                await session.commit()
+        await AuditService.log_many([
+            {
+                "tenant_id": tenant_id, "action": "secret.read", "project_id": project_id,
+                "resource_type": "secret", "resource_id": name, "meta": {"scheme": "secret"},
+            }
+            for name in out
+        ])
+        return out

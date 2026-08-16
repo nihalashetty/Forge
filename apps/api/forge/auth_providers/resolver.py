@@ -274,9 +274,14 @@ class AuthResolver:
             "client_secret": await read(cfg.get("client_secret_ref")),
         }
         client = client or shared_async_client()
+        # Same client-auth method and Accept header the initial exchange used - a provider that
+        # only speaks client_secret_basic rejects the refresh just as readily as the exchange.
+        from forge.auth_providers.oauth_flow import token_request
+
+        form, headers = token_request(cfg, data)
         r = await guarded_request(
             client, "POST", cfg["token_url"],
-            data={k: v for k, v in data.items() if v is not None}, timeout=30, follow_redirects=True,
+            data=form, headers=headers, timeout=30, follow_redirects=True,
         )
         r.raise_for_status()
         body = r.json()

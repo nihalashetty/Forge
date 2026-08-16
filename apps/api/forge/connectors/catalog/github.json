@@ -1,0 +1,120 @@
+{
+  "format": "forge.connector/1",
+  "slug": "github",
+  "name": "GitHub",
+  "version": "1.0.0",
+  "publisher": "forge",
+  "summary": "Search code, manage issues and pull requests, and read repository activity.",
+  "categories": ["developer"],
+  "roles": ["Software Engineer", "Product Manager", "Engineering Manager"],
+  "icon": "git-branch",
+  "docs_url": "https://docs.github.com/rest",
+  "setup_url": "https://github.com/settings/developers",
+  "auth": {
+    "kind": "oauth2_authorization_code",
+    "authorize_url": "https://github.com/login/oauth/authorize",
+    "token_url": "https://github.com/login/oauth/access_token",
+    "scopes": ["repo", "read:org", "read:user"],
+    "per_user": "required",
+    "credential_group": "github",
+    "setup_help": "Register one OAuth App at github.com/settings/developers with the callback URL below, then put its Client ID and Client secret in FORGE_CONNECTOR_OAUTH_APPS under \"github\". Everyone signs in as themselves against that one app.",
+    "setup": [
+      { "key": "client_id", "label": "Client ID", "secret": true, "required": true },
+      { "key": "client_secret", "label": "Client secret", "secret": true, "required": true }
+    ]
+  },
+  "egress_hosts": ["api.github.com"],
+  "backend": {
+    "type": "rest",
+    "base_url": "https://api.github.com",
+    "actions": [
+      {
+        "name": "github_search_issues",
+        "display_name": "Search issues & PRs",
+        "description": "Search issues and pull requests with GitHub search syntax, e.g. 'repo:acme/api is:open label:bug'.",
+        "request": {
+          "method": "GET",
+          "url_template": "/search/issues",
+          "fields": [
+            { "path": "q", "in": "query", "type": "string", "required": true, "llm_visible": true, "description": "GitHub issue search query." },
+            { "path": "per_page", "in": "query", "type": "integer", "required": false, "llm_visible": true, "default": 10 }
+          ],
+          "headers": [{ "name": "Accept", "value": "application/vnd.github+json" }]
+        },
+        "response": { "projection_jmespath": "items[].{number: number, title: title, state: state, url: html_url, author: user.login, labels: labels[].name}" }
+      },
+      {
+        "name": "github_get_issue",
+        "display_name": "Read issue",
+        "description": "Fetch one issue or pull request, including its body.",
+        "request": {
+          "method": "GET",
+          "url_template": "/repos/{owner}/{repo}/issues/{number}",
+          "fields": [
+            { "path": "owner", "in": "path", "type": "string", "required": true, "llm_visible": true, "description": "Repository owner or organisation." },
+            { "path": "repo", "in": "path", "type": "string", "required": true, "llm_visible": true, "description": "Repository name." },
+            { "path": "number", "in": "path", "type": "integer", "required": true, "llm_visible": true, "description": "Issue or PR number." }
+          ],
+          "headers": [{ "name": "Accept", "value": "application/vnd.github+json" }]
+        },
+        "response": { "projection_jmespath": "{number: number, title: title, state: state, body: body, author: user.login, url: html_url, labels: labels[].name}" }
+      },
+      {
+        "name": "github_create_issue",
+        "display_name": "Create issue",
+        "description": "Open a new issue in a repository.",
+        "request": {
+          "method": "POST",
+          "url_template": "/repos/{owner}/{repo}/issues",
+          "fields": [
+            { "path": "owner", "in": "path", "type": "string", "required": true, "llm_visible": true },
+            { "path": "repo", "in": "path", "type": "string", "required": true, "llm_visible": true },
+            { "path": "title", "in": "body", "type": "string", "required": true, "llm_visible": true, "description": "Issue title." },
+            { "path": "body", "in": "body", "type": "string", "required": false, "llm_visible": true, "description": "Issue description (markdown)." },
+            { "path": "labels", "in": "body", "type": "array", "required": false, "llm_visible": true, "description": "Label names to apply." }
+          ],
+          "headers": [{ "name": "Accept", "value": "application/vnd.github+json" }]
+        },
+        "response": { "projection_jmespath": "{number: number, url: html_url}" }
+      },
+      {
+        "name": "github_comment_on_issue",
+        "display_name": "Comment on issue",
+        "description": "Add a comment to an issue or pull request.",
+        "request": {
+          "method": "POST",
+          "url_template": "/repos/{owner}/{repo}/issues/{number}/comments",
+          "fields": [
+            { "path": "owner", "in": "path", "type": "string", "required": true, "llm_visible": true },
+            { "path": "repo", "in": "path", "type": "string", "required": true, "llm_visible": true },
+            { "path": "number", "in": "path", "type": "integer", "required": true, "llm_visible": true },
+            { "path": "body", "in": "body", "type": "string", "required": true, "llm_visible": true, "description": "Comment text (markdown)." }
+          ],
+          "headers": [{ "name": "Accept", "value": "application/vnd.github+json" }]
+        },
+        "response": { "projection_jmespath": "{id: id, url: html_url}" }
+      },
+      {
+        "name": "github_list_pull_requests",
+        "display_name": "List pull requests",
+        "description": "List a repository's pull requests, most recently updated first.",
+        "request": {
+          "method": "GET",
+          "url_template": "/repos/{owner}/{repo}/pulls",
+          "fields": [
+            { "path": "owner", "in": "path", "type": "string", "required": true, "llm_visible": true },
+            { "path": "repo", "in": "path", "type": "string", "required": true, "llm_visible": true },
+            { "path": "state", "in": "query", "type": "string", "required": false, "llm_visible": true, "default": "open", "description": "open | closed | all." },
+            { "path": "sort", "in": "query", "type": "string", "required": false, "llm_visible": false, "default": "updated" },
+            { "path": "per_page", "in": "query", "type": "integer", "required": false, "llm_visible": true, "default": 10 }
+          ],
+          "headers": [{ "name": "Accept", "value": "application/vnd.github+json" }]
+        },
+        "response": { "projection_jmespath": "[].{number: number, title: title, state: state, author: user.login, url: html_url, draft: draft}" }
+      }
+    ]
+  },
+  "toolset": {
+    "description": "GitHub: search and read issues and pull requests, open issues, and comment."
+  }
+}

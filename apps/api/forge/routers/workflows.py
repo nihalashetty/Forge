@@ -18,6 +18,7 @@ from forge.schemas.dto import (
     WorkflowUpdate,
 )
 from forge.services.portability import PortabilityService
+from forge.services.triggers import default_scope_for
 from forge.services.versions import safe_snapshot
 from forge.services.workflows import WorkflowService
 
@@ -120,7 +121,10 @@ async def update_executable(
     wf = await WorkflowService.get(session, tenant_id, workflow_id)
     if wf is None:
         raise HTTPException(404, "Workflow not found")
-    result = await WorkflowService.update_executable(session, wf, body.executable, require_valid=True)
+    result = await WorkflowService.update_executable(
+        session, wf, body.executable, require_valid=True,
+        owner=str(user.id), scope=default_scope_for(user.role),
+    )
     if result.valid:
         await safe_snapshot(session, "workflow", wf, author=user)
     return ValidateOut(valid=result.valid, errors=result.errors, warnings=result.warnings)
@@ -162,7 +166,12 @@ async def publish_workflow(
     wf.active_version = (wf.active_version or 1) + 1
     await session.commit()
     await session.refresh(wf)
-    await WorkflowService._sync_triggers(session, wf)  # (re)register webhook/schedule/etc.
+    # (Re)register webhook/schedule/etc. The publisher becomes the identity an unattended run
+    # acts as, and (for a NEW trigger) whether it is the team's or their own - unless the
+    # trigger already has those, which an edit never overwrites.
+    await WorkflowService._sync_triggers(
+        session, wf, owner=str(user.id), scope=default_scope_for(user.role),
+    )
     await safe_snapshot(session, "workflow", wf, author=user)
     return wf
 
@@ -193,6 +202,9 @@ async def save_canvas(
     wf = await WorkflowService.get(session, tenant_id, workflow_id)
     if wf is None:
         raise HTTPException(404, "Workflow not found")
-    result = await WorkflowService.save_canvas(session, wf, body.canvas, body.executable)
+    result = await WorkflowService.save_canvas(
+        session, wf, body.canvas, body.executable,
+        owner=str(user.id), scope=default_scope_for(user.role),
+    )
     await safe_snapshot(session, "workflow", wf, author=user)
     return ValidateOut(valid=result.valid, errors=result.errors, warnings=result.warnings)
