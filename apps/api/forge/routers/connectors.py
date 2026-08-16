@@ -145,7 +145,26 @@ def _manifest_out(m: ConnectorManifest, installed: ConnectorInstall | None = Non
     }
 
 
-def _install_out(row: ConnectorInstall, *, tool_count: int | None = None) -> dict:
+async def _live_tool_counts(session: AsyncSession, tenant_id: str, project_id: str,
+                            rows: list[ConnectorInstall]) -> dict[str, int]:
+    """How many of each install's actions STILL EXIST, keyed by install id.
+
+    A user may have deleted an action from the Tools screen; reporting the install's original
+    count would then be a lie. Every route that reports a count uses this one - when only the
+    list route did, deleting two of Gmail's five actions left the gallery correctly showing 3
+    while the detail panel (which polls `/{slug}/status`) insisted on 5.
+    """
+    ids = [tid for r in rows for tid in (r.created_tool_ids or [])]
+    if not ids:
+        return {r.id: 0 for r in rows}
+    found = await session.execute(
+        select(Tool.id).where(Tool.tenant_id == tenant_id, Tool.project_id == project_id, Tool.id.in_(ids))
+    )
+    alive = {r[0] for r in found.all()}
+    return {r.id: len([t for t in (r.created_tool_ids or []) if t in alive]) for r in rows}
+
+
+def _install_out(row: ConnectorInstall, *, tool_count: int) -> dict:
     manifest = row.manifest or {}
     backend = manifest.get("backend") or {}
     return {
@@ -165,7 +184,9 @@ def _install_out(row: ConnectorInstall, *, tool_count: int | None = None) -> dic
         "tool_set_id": row.tool_set_id,
         "auth_provider_id": row.auth_provider_id,
         "mcp_client_id": row.mcp_client_id,
-        "tool_count": tool_count if tool_count is not None else len(row.created_tool_ids or []),
+        # Required, deliberately: the old default counted `created_tool_ids`, so a caller that
+        # forgot to pass one silently reported actions the user had deleted.
+        "tool_count": tool_count,
         "needs_connect": row.status == "needs_auth",
     }
 
@@ -238,15 +259,7 @@ async def list_installed(project_id: str, session: AsyncSession = Depends(get_se
     rows = await ConnectorInstaller.list_installs(session, tenant_id, project_id)
     if not rows:
         return []
-    # Count only tools that still exist - a user may have deleted one from the Tools screen,
-    # and reporting the install's original count would then be a lie.
-    ids = [tid for r in rows for tid in (r.created_tool_ids or [])]
-    alive: set[str] = set()
-    if ids:
-        found = await session.execute(
-            select(Tool.id).where(Tool.tenant_id == tenant_id, Tool.project_id == project_id, Tool.id.in_(ids))
-        )
-        alive = {r[0] for r in found.all()}
+    counts = await _live_tool_counts(session, tenant_id, project_id, rows)
     # One query for every provider rather than one per install: painting this screen for a
     # project with the full catalog installed was a dozen sequential SELECTs before the secret
     # reads even started.
@@ -264,7 +277,7 @@ async def list_installed(project_id: str, session: AsyncSession = Depends(get_se
 
     out = []
     for r in rows:
-        item = _install_out(r, tool_count=len([t for t in (r.created_tool_ids or []) if t in alive]))
+        item = _install_out(r, tool_count=counts[r.id])
         # Per-user connectors have no single "connected" answer, so the list resolves it for the
         # CALLER. Without this the gallery would show a green tick to everyone the moment one
         # colleague connected their own account, and the person clicking Connect would be told
@@ -393,7 +406,8 @@ async def install_connector(project_id: str, slug: str, body: InstallIn | None =
         )
     except InstallError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
-    return _install_out(row)
+    # Just created: nothing has had a chance to be deleted, so the receipt IS the live count.
+    return _install_out(row, tool_count=len(row.created_tool_ids or []))
 
 
 @router.post("/custom", status_code=201)
@@ -414,7 +428,7 @@ async def install_custom(project_id: str, body: CustomInstallIn,
         )
     except InstallError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
-    return _install_out(row)
+    return _install_out(row, tool_count=len(row.created_tool_ids or []))
 
 
 @router.get("/examples")
@@ -686,7 +700,8 @@ async def connector_status(project_id: str, slug: str, session: AsyncSession = D
     """Whether this connector is usable right now - and for a per-user connector, whether the
     CALLER personally has connected it (which is the only status that matters to them)."""
     row = await _load_install(session, tenant_id, project_id, slug)
-    out = _install_out(row)
+    counts = await _live_tool_counts(session, tenant_id, project_id, [row])
+    out = _install_out(row, tool_count=counts[row.id])
     if not row.auth_provider_id:
         out["connected"] = True
         return out

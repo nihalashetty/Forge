@@ -963,6 +963,39 @@ async def test_connect_adds_the_connector_on_the_first_click(google_app):
         assert installed[0]["connected"] is False
 
 
+async def test_the_gallery_and_the_detail_panel_agree_on_the_action_count(google_app):
+    """Deleting an action from the Tools screen must show up everywhere that reports a count.
+
+    `list_installed` counted tools that still exist; `/{slug}/status` fell back to
+    `len(created_tool_ids)` and happily reported the deleted ones. Delete two of Gmail's actions
+    and the gallery said 3 while the detail panel - which is what polls `/status` - said 5.
+    """
+    c, pid = await _editor_client()
+    async with aclosing(c):
+        await c.post(f"/v1/projects/{pid}/connectors/gmail/connect", json={})
+
+        listed = (await c.get(f"/v1/projects/{pid}/connectors")).json()[0]
+        status_out = (await c.get(f"/v1/projects/{pid}/connectors/gmail/status")).json()
+        original = listed["tool_count"]
+        assert original >= 3 and status_out["tool_count"] == original
+
+        from forge.services.tools import ToolService
+
+        me = (await c.get("/v1/auth/me")).json()
+        async with SessionLocal() as s:
+            install = await ConnectorInstaller.get_install(s, me["tenant_id"], pid, "gmail")
+            for tool_id in list(install.created_tool_ids)[:2]:
+                tool = await s.get(Tool, tool_id)
+                await ToolService.delete(s, tool)
+
+        listed = (await c.get(f"/v1/projects/{pid}/connectors")).json()[0]
+        status_out = (await c.get(f"/v1/projects/{pid}/connectors/gmail/status")).json()
+        assert listed["tool_count"] == original - 2
+        assert status_out["tool_count"] == listed["tool_count"], (
+            "the detail panel is still counting actions the user deleted"
+        )
+
+
 async def test_the_installed_list_reads_every_bundle_in_one_go(google_app, monkeypatch):
     """One secret read for the whole screen, not one per connector.
 
