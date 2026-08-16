@@ -157,6 +157,65 @@ def test_every_catalog_connector_is_one_click():
                 )
 
 
+#: Vendors that only issue a refresh_token when the authorize URL explicitly asks for one, keyed
+#: by the authorize host that identifies them. Anything not listed here either refreshes by
+#: default (Airtable, HubSpot), never expires (GitHub), or asks via a scope (Microsoft's
+#: `offline_access`) - so this is a list of the vendors where SILENCE means a one-hour connector.
+_OFFLINE_ACCESS_REQUIRED = {"accounts.google.com": {"access_type": "offline", "prompt": "consent"}}
+
+
+def test_connectors_that_need_offline_access_ask_for_it():
+    """Google issues a refresh_token ONLY when `access_type=offline` is on the authorize URL, and
+    re-issues it reliably only with `prompt=consent`.
+
+    Without them the stored bundle has `refresh_token=None`, and `AuthResolver._oauth2_auth_code`
+    gates refresh on that key - so it silently keeps handing out an access token that expired.
+    Every Gmail / Calendar / Drive / Sheets call 401s about an hour after someone connects, and
+    the only cure is Disconnect + reconnect. Nothing else in the suite would notice.
+    """
+    checked = 0
+    for m in list_manifests():
+        host = (m.auth.authorize_url or "").split("/")[2] if "://" in (m.auth.authorize_url or "") else ""
+        expected = _OFFLINE_ACCESS_REQUIRED.get(host)
+        if not expected:
+            continue
+        checked += 1
+        for key, value in expected.items():
+            assert m.auth.authorize_params.get(key) == value, (
+                f"{m.slug}: {host} only returns a refresh_token when the authorize URL carries "
+                f"{key}={value}; without it every tool 401s an hour after sign-in"
+            )
+    assert checked >= 4, "the four Google connectors should all be covered by this sweep"
+
+
+async def test_the_google_authorize_url_actually_carries_access_type():
+    """The manifest assertion above is necessary but not sufficient - it would still pass if
+    `_auth_config` stopped copying `authorize_params` onto the provider, or `build_authorize_url`
+    stopped applying it. So walk the real chain the Connect button walks, and read the query
+    string that Google would actually receive.
+    """
+    from urllib.parse import parse_qs, urlparse
+
+    from forge.auth_providers.oauth_flow import build_authorize_url
+    from forge.connectors.install import _auth_config
+
+    manifest = get_manifest("gmail")
+    cfg = _auth_config(manifest, {}, per_user=True)
+    ap = AuthProvider(id="ap_gmail_test", tenant_id="t", project_id="p",
+                      name="Gmail", kind=manifest.auth.kind, config=cfg)
+
+    class _Store:
+        async def read_ref(self, **kw):
+            return "client-id.apps.googleusercontent.com"
+
+    url = await build_authorize_url(ap, tenant_id="t", project_id="p", secrets=_Store())
+    q = parse_qs(urlparse(url).query)
+    assert q.get("access_type") == ["offline"], f"authorize URL omits access_type: {sorted(q)}"
+    assert q.get("prompt") == ["consent"], f"authorize URL omits prompt: {sorted(q)}"
+    # And the extras must not have been able to trample the protocol parameters.
+    assert q["code_challenge_method"] == ["S256"]
+
+
 def test_no_catalog_action_asks_the_model_to_encode_something():
     """A model cannot base64-encode by hand. It will emit plausible-looking garbage, the API
     answers an opaque 400, and the user has no way to tell whose fault it is.

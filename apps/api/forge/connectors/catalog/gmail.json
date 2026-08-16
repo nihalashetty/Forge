@@ -26,6 +26,10 @@
       "https://www.googleapis.com/auth/gmail.send",
       "https://www.googleapis.com/auth/gmail.modify"
     ],
+    "authorize_params": {
+      "access_type": "offline",
+      "prompt": "consent"
+    },
     "per_user": "required",
     "setup_help": "Create an OAuth client (type: Web application) in Google Cloud Console, enable the Gmail API, and add the redirect URI shown above. Each user then connects their own mailbox - a shared Gmail credential would let every end user read one person's inbox.",
     "setup": [

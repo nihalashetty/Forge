@@ -25,6 +25,10 @@
     "scopes": [
       "https://www.googleapis.com/auth/drive.readonly"
     ],
+    "authorize_params": {
+      "access_type": "offline",
+      "prompt": "consent"
+    },
     "per_user": "required",
     "setup_help": "Create an OAuth client (Web application) in Google Cloud Console, enable the Google Drive API, and add the redirect URI shown above. Read-only by default - widen the scope only if the agent needs to write.",
     "setup": [

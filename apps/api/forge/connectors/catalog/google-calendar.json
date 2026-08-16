@@ -25,6 +25,10 @@
     "scopes": [
       "https://www.googleapis.com/auth/calendar"
     ],
+    "authorize_params": {
+      "access_type": "offline",
+      "prompt": "consent"
+    },
     "per_user": "required",
     "setup_help": "Create an OAuth client (Web application) in Google Cloud Console, enable the Google Calendar API, and add the redirect URI shown above.",
     "setup": [
