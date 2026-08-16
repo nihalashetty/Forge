@@ -80,12 +80,15 @@ _CACHE_MAX = 64
 # A connection leaving the cache is NOT torn down on the spot. `_client_and_tools` hands the
 # client back to its caller and `load_mcp_tool` binds agent tools to it, so a client can still
 # be in use long after the cache stops tracking it - closing it there aborts a call that is
-# already in flight. Retired clients wait out this grace period and are closed by `_reap` on a
-# later cache operation. Deferring through a background task instead would be worse: `spawn`
-# REJECTS (and closes) the coroutine at its in-flight ceiling, which would strand the transport
-# with nothing holding a reference to it.
+# already in flight. Retired clients wait out this grace period and are then closed by the
+# reaper below.
 _CLOSE_GRACE = 30.0
 _RETIRED: list[tuple[float, Any]] = []
+# How often the reaper wakes. Short relative to `_CLOSE_GRACE` so a transport is closed near its
+# deadline rather than a whole interval past it.
+_REAP_INTERVAL = 10.0
+#: The single background reaper task, or None when nothing is waiting to be closed.
+_REAPER: asyncio.Task | None = None
 
 
 async def _aclose(client: Any) -> None:
@@ -99,13 +102,52 @@ def _retire(client: Any, now: float) -> None:
     """Hand a client over for closing once its grace period expires."""
     if client is not None:
         _RETIRED.append((now + _CLOSE_GRACE, client))
+        _ensure_reaper()
+
+
+def _ensure_reaper() -> None:
+    """Make sure the background reaper is running.
+
+    Retirement used to be drained only by `_evict`, which runs only inside a cache BUILD. So a
+    shedding round that retired ten transports was closed promptly only if traffic happened to
+    miss the cache again: once it settled into a steady state where every call hit a live entry,
+    those transports stayed open until some key expired or the process shut down - far past the
+    30s grace they were given.
+
+    ONE long-lived task, not a task per retirement. Per-retirement deferral is what the earlier
+    implementation did, and `spawn` REJECTS (and closes) its coroutine at an in-flight ceiling,
+    which stranded the transport with nothing holding a reference to it.
+    """
+    global _REAPER
+    if _REAPER is not None and not _REAPER.done():
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # Retired with no running loop. Nothing is holding the transport open in that case
+        # either, and the next retirement inside a loop starts the reaper.
+        _REAPER = None
+        return
+    _REAPER = loop.create_task(_reap_loop())
+
+
+async def _reap_loop() -> None:
+    """Close retired transports near their deadline - off the request path, and off the per-key
+    build lock that `_evict` runs under.
+
+    Exits once the queue drains so an idle process isn't holding a timer open; `_retire` starts
+    it again. `close_all` cancels it and force-drains whatever is left.
+    """
+    while _RETIRED:
+        await asyncio.sleep(_REAP_INTERVAL)
+        await _reap(time.monotonic())
 
 
 async def _reap(now: float, *, force: bool = False) -> None:
     """Close retired clients whose grace period has passed (all of them when `force`).
 
-    Bounded by construction: entries are only ever added while evicting, which happens inside a
-    cache build, and every build reaps first - so the list holds at most one shedding round.
+    Called by `_reap_loop` on a timer and by `close_all` at shutdown - NOT from the eviction
+    path, which must not do network I/O while holding a build lock.
     """
     if not _RETIRED:
         return
@@ -125,12 +167,15 @@ def _evictable() -> list[str]:
     return [k for k, e in _CLIENT_CACHE.items() if e.client is not None and not e.lock.locked()]
 
 
-async def _evict(now: float) -> None:
+def _evict(now: float) -> None:
     """Release connections nobody is coming back for: anything past its TTL, then the
     least-recently-USED entries once the cache is over its ceiling.
 
-    Removal from the dict is synchronous, so the ceiling is honoured immediately; the closes go
-    through `_retire`/`_reap` so shedding a connection can never abort an in-flight call.
+    Deliberately SYNCHRONOUS. It runs while `_client_and_tools` holds the entry's build lock, so
+    anything awaited here blocks a concurrent caller for that same key - and closing a transport
+    is an unbounded network await. Eviction is bookkeeping: it pops entries and hands the clients
+    to `_retire`, and the background reaper closes them. That also keeps the grace period
+    meaningful, since shedding a connection must never abort an in-flight call.
     """
     shed = 0
     for key in [k for k in _evictable() if now - _CLIENT_CACHE[k].created > _CACHE_TTL]:
@@ -145,7 +190,6 @@ async def _evict(now: float) -> None:
         shed += 1
     if shed:
         log.debug("mcp cache: retired %d idle connection(s)", shed)
-    await _reap(now)
 
 
 async def invalidate_client(client_id: str) -> None:
@@ -164,9 +208,17 @@ async def invalidate_client(client_id: str) -> None:
 
 async def close_all() -> None:
     """Best-effort close of every cached MCP client (transports/subprocesses) on shutdown."""
+    global _REAPER
+    if _REAPER is not None:
+        _REAPER.cancel()
+        with contextlib.suppress(BaseException):
+            await _REAPER
+        _REAPER = None
     for entry in list(_CLIENT_CACHE.values()):
         await _aclose(entry.client)
     _CLIENT_CACHE.clear()
+    # `force` ignores the grace period: the process is going away, so there is no in-flight call
+    # left to protect and an unclosed transport would just leak into shutdown.
     await _reap(time.monotonic(), force=True)
 
 
@@ -407,7 +459,7 @@ async def _client_and_tools(client_row: McpClient, tenant_id: str, project_id: s
                     # the detached transport is still closed rather than orphaned.
                     _retire(entry.client, now)
                 else:
-                    await _evict(now)
+                    _evict(now)
     client = entry.client
     tools = await client.get_tools()
     return client, tools

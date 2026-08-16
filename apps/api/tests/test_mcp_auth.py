@@ -12,6 +12,9 @@ The properties that matter, and are easy to get wrong:
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+
 import httpx
 import pytest
 
@@ -232,18 +235,26 @@ def _seed(key: str, client, *, created: float, used: float | None = None) -> Non
     )
 
 
-def _reset_cache() -> None:
+async def _reset_cache() -> None:
     mcp_mod._CLIENT_CACHE.clear()
     mcp_mod._RETIRED.clear()
+    # Retiring a client starts the background reaper. Leaving it sleeping on a loop that pytest
+    # is about to close produces a "Task was destroyed but it is pending" warning and lets one
+    # test's reaper drain the next test's queue.
+    if mcp_mod._REAPER is not None:
+        mcp_mod._REAPER.cancel()
+        with contextlib.suppress(BaseException):
+            await mcp_mod._REAPER
+        mcp_mod._REAPER = None
 
 
 @pytest.fixture(autouse=True)
-def _clean_cache():
-    """The cache and the retirement queue are module globals; a test that leaves entries in
-    either one changes what the next test's eviction sees."""
-    _reset_cache()
+async def _clean_cache():
+    """The cache, the retirement queue and the reaper task are module globals; a test that
+    leaves entries in any of them changes what the next test's eviction sees."""
+    await _reset_cache()
     yield
-    _reset_cache()
+    await _reset_cache()
 
 
 async def test_invalidate_client_drops_and_closes_every_per_user_variant():
@@ -279,7 +290,7 @@ async def test_cache_is_bounded_so_per_user_keys_cannot_grow_without_limit():
         # Ascending `used` so "least recently used" is unambiguous.
         _seed(f"cid::{i:04d}", c, created=now, used=now + i)
 
-    await mcp_mod._evict(now + 1)
+    mcp_mod._evict(now + 1)
 
     assert len(mcp_mod._CLIENT_CACHE) == mcp_mod._CACHE_MAX, "the ceiling is honoured immediately"
     # Shed connections are NOT closed on the spot - a caller may still be running against one.
@@ -305,7 +316,7 @@ async def test_eviction_is_least_recently_used_not_oldest_connection():
         idle.append(c)
         _seed(f"cid::{i:04d}", c, created=now + 1 + i, used=now + i)
 
-    await mcp_mod._evict(now + 1)
+    mcp_mod._evict(now + 1)
 
     assert "shared" in mcp_mod._CLIENT_CACHE, "the busiest connection must not be evicted first"
     assert "cid::0000" not in mcp_mod._CLIENT_CACHE
@@ -320,7 +331,7 @@ async def test_expired_entries_are_retired_and_then_closed():
     _seed("a", stale, created=now - mcp_mod._CACHE_TTL - 1)
     _seed("b", fresh, created=now)
 
-    await mcp_mod._evict(now)
+    mcp_mod._evict(now)
 
     assert set(mcp_mod._CLIENT_CACHE) == {"b"}
     assert not stale.closed, "the grace period lets an in-flight call finish"
@@ -341,7 +352,7 @@ async def test_a_connection_being_rebuilt_is_never_evicted():
         for i in range(mcp_mod._CACHE_MAX + 5):
             _seed(f"cid::{i:04d}", _FakeClient(), created=now, used=now + i)
 
-        await mcp_mod._evict(now + 1)
+        mcp_mod._evict(now + 1)
 
         assert mcp_mod._CLIENT_CACHE.get("mid-build") is building
     finally:
@@ -401,6 +412,100 @@ async def test_close_all_drains_retired_connections_too():
 
     assert live.closed and retired.closed, "shutdown must not leave a retired transport open"
     assert not mcp_mod._CLIENT_CACHE and not mcp_mod._RETIRED
+
+
+async def test_retired_transports_are_closed_without_a_second_cache_miss(monkeypatch):
+    """Retirement used to be drained only by `_evict`, which runs only inside a cache BUILD.
+
+    So a burst that pushed the cache over its ceiling retired N transports, and then - if traffic
+    settled into a steady state where every call hit a live entry - nothing ever built again and
+    those transports stayed open until a key expired or the process shut down, far past the 30s
+    grace they were given. Reaping must not depend on someone missing the cache.
+
+    No cache operation of any kind happens after the eviction here: the only thing that can close
+    these is the background reaper.
+    """
+    import time
+
+    monkeypatch.setattr(mcp_mod, "_REAP_INTERVAL", 0.01)
+    now = time.monotonic()
+    shed = []
+    for i in range(mcp_mod._CACHE_MAX + 5):
+        c = _FakeClient()
+        shed.append(c)
+        _seed(f"cid::{i:04d}", c, created=now, used=now + i)
+
+    mcp_mod._evict(now)
+    retired = [c for c in shed if c in [client for _, client in mcp_mod._RETIRED]]
+    assert len(retired) == 5, "the ceiling should have shed five connections"
+    assert not any(c.closed for c in retired), "the grace period lets in-flight calls finish"
+
+    # Nothing touches the cache from here on. Advance past the grace period and let the reaper
+    # run on its own.
+    monkeypatch.setattr(mcp_mod, "_CLOSE_GRACE", 0.0)
+    mcp_mod._RETIRED[:] = [(0.0, c) for _, c in mcp_mod._RETIRED]
+    for _ in range(200):
+        await asyncio.sleep(0.01)
+        if all(c.closed for c in retired):
+            break
+
+    assert all(c.closed for c in retired), (
+        "retired transports must be closed on a timer, not only when the next build misses"
+    )
+    assert not mcp_mod._RETIRED
+
+
+async def test_eviction_never_closes_a_transport_while_holding_the_build_lock():
+    """`_evict` runs inside `_client_and_tools`'s per-key build lock. Closing a transport there
+    is an unbounded network await performed while a concurrent caller for that same key is
+    blocked, which is exactly the cost the retirement queue exists to avoid.
+
+    Enforced structurally rather than by timing: `_evict` is synchronous, so it CANNOT await a
+    close no matter how it is later edited.
+    """
+    import inspect
+
+    assert not inspect.iscoroutinefunction(mcp_mod._evict), (
+        "_evict must stay synchronous - an await here happens under the build lock"
+    )
+
+    # And it really does only shed, never close.
+    import time
+
+    now = time.monotonic()
+    stale = _FakeClient()
+    _seed("a", stale, created=now - mcp_mod._CACHE_TTL - 1)
+    mcp_mod._evict(now)
+    assert "a" not in mcp_mod._CLIENT_CACHE and not stale.closed
+
+
+async def test_the_reaper_stops_itself_once_the_queue_drains(monkeypatch):
+    """One long-lived task, and only while there is something to close - an idle process must not
+    hold a timer open forever, and a retirement after that must start it again."""
+    import time
+
+    monkeypatch.setattr(mcp_mod, "_REAP_INTERVAL", 0.01)
+    monkeypatch.setattr(mcp_mod, "_CLOSE_GRACE", 0.0)
+
+    first = _FakeClient()
+    mcp_mod._retire(first, time.monotonic())
+    assert mcp_mod._REAPER is not None and not mcp_mod._REAPER.done()
+
+    for _ in range(200):
+        await asyncio.sleep(0.01)
+        if mcp_mod._REAPER.done():
+            break
+    assert first.closed
+    assert mcp_mod._REAPER.done(), "the reaper must exit once nothing is waiting to be closed"
+
+    second = _FakeClient()
+    mcp_mod._retire(second, time.monotonic())
+    assert not mcp_mod._REAPER.done(), "a later retirement must start a new reaper"
+    for _ in range(200):
+        await asyncio.sleep(0.01)
+        if second.closed:
+            break
+    assert second.closed
 
 
 def test_auth_context_from_puts_end_user_last():
