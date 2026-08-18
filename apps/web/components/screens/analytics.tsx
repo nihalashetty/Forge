@@ -21,6 +21,14 @@ const fmtCompact = (n: number) => {
   return `${Math.round(n)}`;
 };
 const fmtInt = (n: number) => Math.round(n).toLocaleString();
+// Span names arrive as "tool · gmail_get_message". In a chart already titled "Top tool
+// calls" the prefix is noise, and its space is the only thing recharts can wrap on - which
+// pushed the unbreakable second line out past the axis. Strip it, then clip to what the
+// axis band can hold (~11px sans -> a hair under 6px/char). Tooltips keep the full name.
+const fmtToolTick = (name: string) => {
+  const short = String(name).replace(/^\s*tool\s*[-·:]\s*/i, "");
+  return short.length > 22 ? short.slice(0, 21) + "…" : short;
+};
 // "2026-07-24" -> "Jul 24"
 const fmtAxisDate = (iso: string) => {
   const d = new Date(iso + "T00:00:00");
@@ -113,8 +121,9 @@ function KpiTile({ label, value, sub, spark, sparkColor, delta }: {
   );
 }
 
-function ChartCard({ title, sub, right, children, height = 232 }: {
-  title: string; sub?: string; right?: React.ReactNode; children: React.ReactNode; height?: number;
+function ChartCard({ title, sub, right, children, footer, height = 232 }: {
+  title: string; sub?: string; right?: React.ReactNode; children: React.ReactNode;
+  footer?: React.ReactNode; height?: number;
 }) {
   return (
     <div className="card" style={{ padding: 16, display: "flex", flexDirection: "column" }}>
@@ -125,7 +134,12 @@ function ChartCard({ title, sub, right, children, height = 232 }: {
         </div>
         {right}
       </div>
-      <div style={{ width: "100%", height }}>{children}</div>
+      {/* The height prop is a floor, not a cap: anything rendered under the chart (the
+         pie's legend) is a sibling of this box, so the card grows to contain it rather
+         than those rows spilling out past the card's bottom edge. Grid stretch then
+         levels the row, and flex:1 hands the slack back to the plot area. */}
+      <div style={{ width: "100%", flex: 1, minHeight: height }}>{children}</div>
+      {footer}
     </div>
   );
 }
@@ -300,7 +314,7 @@ export function AnalyticsScreen({ project, onNav }: { project: any; onNav: (s: s
 
             {/* breakdowns: cost by source (pie) + tool calls (bar) + latency distribution (bar) */}
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1.2fr 1fr", gap: 16, marginBottom: 16 }}>
-              <ChartCard title="Cost by source">
+              <ChartCard title="Cost by source" footer={<PieLegend items={sourcePie} colors={pieColors} />}>
                 {sourcePie.length === 0 ? <NoData /> : (
                   <ResponsiveContainer>
                     <PieChart>
@@ -311,16 +325,15 @@ export function AnalyticsScreen({ project, onNav }: { project: any; onNav: (s: s
                     </PieChart>
                   </ResponsiveContainer>
                 )}
-                <PieLegend items={sourcePie} colors={pieColors} />
               </ChartCard>
 
               <ChartCard title="Top tool calls" sub="Calls in the selected window">
                 {(data?.tools?.length || 0) === 0 ? <NoData label="No tool calls recorded" /> : (
                   <ResponsiveContainer>
-                    <BarChart layout="vertical" data={data!.tools.slice(0, 6)} margin={{ top: 0, right: 12, left: 8, bottom: 0 }}>
+                    <BarChart layout="vertical" data={data!.tools.slice(0, 6)} margin={{ top: 0, right: 12, left: 0, bottom: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke={pal.line} horizontal={false} />
                       <XAxis type="number" allowDecimals={false} {...axisProps(pal)} />
-                      <YAxis type="category" dataKey="name" width={104} tick={{ fill: pal.fg1, fontSize: 11 }} tickLine={false} axisLine={{ stroke: pal.line }} />
+                      <YAxis type="category" dataKey="name" width={140} tickFormatter={fmtToolTick} tick={{ fill: pal.fg1, fontSize: 11 }} tickLine={false} axisLine={{ stroke: pal.line }} />
                       <Tooltip cursor={{ fill: pal.bg3, opacity: 0.5 }} content={<ChartTooltip pal={pal} valueFmt={(v: number, k: string) => (k === "calls" ? fmtInt(v) : v)} />} />
                       <Bar dataKey="calls" name="Calls" fill={pal.teal} radius={[0, 3, 3, 0]} maxBarSize={22} />
                     </BarChart>
@@ -330,10 +343,10 @@ export function AnalyticsScreen({ project, onNav }: { project: any; onNav: (s: s
 
               <ChartCard title="Latency distribution" sub="Runs by response time">
                 <ResponsiveContainer>
-                  <BarChart data={data?.latency_histogram || []} margin={{ top: 4, right: 8, left: -18, bottom: 0 }}>
+                  <BarChart data={data?.latency_histogram || []} margin={{ top: 4, right: 8, left: -4, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke={pal.line} vertical={false} />
                     <XAxis dataKey="label" interval={0} angle={-30} textAnchor="end" height={48} tick={{ fill: pal.fg2, fontSize: 9.5 }} tickLine={false} axisLine={{ stroke: pal.line }} />
-                    <YAxis allowDecimals={false} width={34} {...axisProps(pal)} />
+                    <YAxis allowDecimals={false} width={40} {...axisProps(pal)} />
                     <Tooltip cursor={{ fill: pal.bg3, opacity: 0.5 }} content={<ChartTooltip pal={pal} valueFmt={(v: number) => `${fmtInt(v)} runs`} />} />
                     <Bar dataKey="count" name="Runs" fill={pal.accent} radius={[3, 3, 0, 0]} maxBarSize={40} />
                   </BarChart>

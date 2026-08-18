@@ -186,6 +186,29 @@ input[type="checkbox"]:disabled, input[type="radio"]:disabled { cursor:not-allow
 .card-hover { transition:transform var(--dur) var(--ease), border-color var(--dur), box-shadow var(--dur); cursor:pointer; }
 .card-hover:hover { transform:translateY(-2px); border-color:var(--accent); box-shadow:var(--sh-2); }
 
+/* ---------- auth screens (sign in / accept invite) ----------
+   Indigo/violet wash behind the centered card: two off-canvas blooms on a flat
+   base, dimmer in dark so it reads as depth rather than glow. */
+.auth-bg {
+  /* Tints live on the class, not on --accent-glow: the wash needs more color than a
+     focus ring does. Radii are vw-based (with a px floor for narrow screens) so the
+     blooms scale with the viewport instead of hugging the corners of a wide monitor. */
+  --auth-tint-a:rgba(79,70,229,0.32);   --auth-tint-a-mid:rgba(79,70,229,0.13);
+  --auth-tint-b:rgba(124,58,237,0.26);  --auth-tint-b-mid:rgba(124,58,237,0.10);
+  /* Flat base, no linear fade: --bg-1 -> --bg-0 -> --bg-3 spans ~15 of 255 levels,
+     too few to interpolate smoothly, so it banded into hard diagonal edges. The
+     blooms carry a mid stop each for the same reason - it spreads the falloff. */
+  background-color:var(--bg-0);
+  background-image:
+    radial-gradient(circle max(640px, 62vw) at 6% -8%, var(--auth-tint-a), var(--auth-tint-a-mid) 45%, transparent 78%),
+    radial-gradient(circle max(580px, 56vw) at 100% 112%, var(--auth-tint-b), var(--auth-tint-b-mid) 45%, transparent 78%);
+}
+
+:root[data-theme="dark"] .auth-bg {
+  --auth-tint-a:rgba(129,140,248,0.30);  --auth-tint-a-mid:rgba(129,140,248,0.12);
+  --auth-tint-b:rgba(167,139,250,0.22);  --auth-tint-b-mid:rgba(167,139,250,0.09);
+}
+
 /* ---------- table ---------- */
 .tbl { width:100%; border-collapse:collapse; }
 .tbl th { font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--fg-2); font-weight:600; text-align:left; padding:0 var(--s3); height:34px; border-bottom:1px solid var(--line); white-space:nowrap; }

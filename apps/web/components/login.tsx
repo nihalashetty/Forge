@@ -37,7 +37,7 @@ function AcceptInviteScreen({ token, onAuthed, onCancel }: { token: string; onAu
   }
 
   return (
-    <div style={{ display: "flex", height: "100vh", alignItems: "center", justifyContent: "center", background: "var(--bg-0)" }}>
+    <div className="auth-bg" style={{ display: "flex", height: "100vh", alignItems: "center", justifyContent: "center" }}>
       <form onSubmit={submit} className="card" style={{ width: 380, padding: 28, boxShadow: "var(--sh-pop)" }}>
         <div className="t-display" style={{ marginBottom: 4 }}>Forge</div>
         {loadErr ? (
@@ -95,7 +95,7 @@ function LoginScreen({ onAuthed }: { onAuthed: () => void }) {
   }
 
   return (
-    <div style={{ display: "flex", height: "100vh", alignItems: "center", justifyContent: "center", background: "var(--bg-0)" }}>
+    <div className="auth-bg" style={{ display: "flex", height: "100vh", alignItems: "center", justifyContent: "center" }}>
       <form onSubmit={submit} className="card" style={{ width: 380, padding: 28, boxShadow: "var(--sh-pop)" }}>
         <div className="t-display" style={{ marginBottom: 4 }}>Forge</div>
         <div className="fg-1" style={{ marginBottom: 20 }}>
