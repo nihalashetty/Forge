@@ -582,7 +582,7 @@ function CustomConnectorModal({ project, onClose, onInstalled }: { project: any;
           shared service account for the whole project.
         </div>
         {examples.length > 0 && (
-          <Field label="Start from an example" help="Bundled manifests for services that need a key rather than a sign-in. Load one, then fill in its credential below.">
+          <Field label="Start from an example" help="Bundled manifests for custom connections, including keyless services. Load one, then fill in any required credentials below.">
             <select className="select" value="" onChange={(e) => {
               const ex = examples.find((x) => x.slug === e.target.value);
               if (ex) { setText(JSON.stringify(ex.manifest, null, 2)); setChecked(null); }
