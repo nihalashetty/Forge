@@ -18,7 +18,9 @@ Wire agents, tools, knowledge, and logic on a canvas - ground them in your data,
 <div align="center">
   <video src="https://github.com/user-attachments/assets/cc7d6edc-9f14-49fd-9c92-372452df3f2a" controls width="85%"></video>
 </div>
+
 ---
+
 Forge is built directly on the **MIT-licensed LangChain + LangGraph** framework - and **never** depends on `langgraph-api` (Elastic 2.0) or LangSmith (commercial). Everything you orchestrate runs on your own infrastructure; nothing is sent to a third-party orchestration service.
 
 - **Fully open source (MIT).** No proprietary core, no usage caps, no vendor lock-in.
