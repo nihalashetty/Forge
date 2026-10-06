@@ -589,7 +589,7 @@ function CustomConnectorModal({ project, onClose, onInstalled }: { project: any;
             }}>
               <option value="">Choose an example…</option>
               {examples.map((ex) => (
-                <option key={ex.slug} value={ex.slug}>{ex.name} — needs {ex.needs.join(", ").toLowerCase()}</option>
+                <option key={ex.slug} value={ex.slug}>{ex.name} — {ex.needs.length ? `needs ${ex.needs.join(", ").toLowerCase()}` : "no credentials"}</option>
               ))}
             </select>
           </Field>
