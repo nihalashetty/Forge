@@ -12,8 +12,9 @@ from forge.connectors.catalog import list_examples, list_manifests
 from forge.connectors.install import ConnectorInstaller
 from forge.db.base import SessionLocal
 from forge.models import McpClient, Tool
+from forge.nodes.data import tool_call_factory
 from forge.secrets.store import SecretStore
-from forge.services.runtime import make_runtime_ctx
+from forge.services.runtime import build_compile_context
 from forge.tools import mcp as mcp_mod
 
 
@@ -65,12 +66,18 @@ async def test_parallel_example_installs_and_executes_without_credentials(monkey
                 Tool.id.in_(installed.created_tool_ids)
             ))).scalars())
         assert {t.config["remote_tool_name"] for t in tools} == {"web_search", "web_fetch"}
+        async with SessionLocal() as session:
+            ctx = await build_compile_context(session, tenant_id=tenant, project_id=project)
+        granted = ctx.tools_for(ctx.resolve_tool_ids([], [installed.tool_set_id]))
+        assert {tool.name for tool in granted} == {"web_search", "web_fetch"}
         for row in tools:
-            tool = await mcp_mod.load_mcp_tool(row.config, make_runtime_ctx(tenant, project))
+            tool = ctx.tool_registry[row.id]
             args = {"search_queries": ["Python docs"]} if tool.name == "web_search" else {
                 "urls": ["https://docs.python.org/3/"]
             }
-            assert "docs.python.org" in str(await tool.ainvoke(args))
+            node = tool_call_factory({"tool_id": row.id, "input_mapping": {k: k for k in args},
+                                      "output_key": "result"}, ctx)
+            assert "docs.python.org" in str(await node(args))
         assert seen
         assert all(r.headers["User-Agent"].startswith("Forge/") for r in seen)
         assert all("Authorization" not in r.headers for r in seen)
