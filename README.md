@@ -15,12 +15,11 @@ Wire agents, tools, knowledge, and logic on a canvas - ground them in your data,
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#contributing)
 
 </div>
-
----
 <div align="center">
-  <video src="https://github.com/user-attachments/assets/ac064ef7-2a0b-4852-8360-82494c6471a" controls muted width="85%"></video>
+  <video src="https://github.com/user-attachments/assets/ac064ef7-2a0b-4852-8360-82494c6471a" controls width="85%"></video>
 </div>
-Forge is built directly on the **MIT-licensed LangChain v1 + LangGraph v1** framework - and **never** depends on `langgraph-api` (Elastic 2.0) or LangSmith (commercial). Everything you orchestrate runs on your own infrastructure; nothing is sent to a third-party orchestration service.
+---
+Forge is built directly on the **MIT-licensed LangChain + LangGraph** framework - and **never** depends on `langgraph-api` (Elastic 2.0) or LangSmith (commercial). Everything you orchestrate runs on your own infrastructure; nothing is sent to a third-party orchestration service.
 
 - **Fully open source (MIT).** No proprietary core, no usage caps, no vendor lock-in.
 - **Zero-infra local dev.** Boots on SQLite + embedded Chroma + an in-process scheduler - no Docker, Postgres, or Redis required to start.
@@ -41,7 +40,7 @@ Forge is built directly on the **MIT-licensed LangChain v1 + LangGraph v1** fram
 ## Features
 
 <div align="center">
-  <video src="https://github.com/user-attachments/assets/798a6872-0a47-455f-81be-4566184e3e9c" controls muted width="85%"></video>
+  <video src="https://github.com/user-attachments/assets/cc7d6edc-9f14-49fd-9c92-372452df3f2a" controls muted width="85%"></video>
 </div>
 
 > **[Watch the demo](docs/media/Forge_demo.mp4)** - the in-product **Forge Assistant** builds and runs a workflow end to end. *(If the player doesn't load inline, click the link to play.)*
