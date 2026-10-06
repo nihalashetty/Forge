@@ -404,6 +404,10 @@ async def _connection_for(client_row: McpClient, tenant_id: str, project_id: str
     # stdio has no HTTP layer to attach auth to; a provider on a stdio server is a config
     # mistake rather than something to silently half-apply.
     if transport != "stdio":
+        # Identify Forge on discovery and execution while keeping saved headers authoritative.
+        headers = conn.setdefault("headers", {})
+        if not any(key.lower() == "user-agent" for key in headers):
+            headers["User-Agent"] = "Forge/0.1.0 (+https://github.com/nihalashetty/Forge)"
         if auth is None:
             auth, _suffix = await _auth_for(client_row, tenant_id, project_id, context)
         if auth is not None:

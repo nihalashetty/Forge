@@ -191,6 +191,25 @@ tool in it will fail - claim it, or give that workflow a shared‑account custom
 
 **Add > MCP server** registers a raw MCP server by URL (the old *External MCP* screen).
 
+#### Keyless web search with Parallel
+
+Under **Add > Custom connector**, choose the **Parallel Search** example and install it
+with no credentials. The [bundled manifest](../apps/api/forge/connectors/examples/parallel-search.json)
+uses `https://search.parallel.ai/mcp` over Streamable HTTP and exposes `web_search` and
+`web_fetch` in a **Parallel Search** tool set. Grant that set to an agent, or select one of
+its tools in a workflow tool node. This is opt-in; Forge's built-in web search stays as it is.
+
+Test `web_search` with an `objective` such as `Find the official Python asyncio documentation`
+and `search_queries` such as `["Python asyncio documentation"]`. Then test `web_fetch` with
+`urls` such as `["https://docs.python.org/3/library/asyncio.html"]`. Both return source excerpts.
+If the installed set has no actions, use **Refresh actions** and check the reported connection
+error. Outbound discovery and tool calls identify Forge in the HTTP User-Agent; a saved
+User-Agent header overrides the default.
+
+The [anonymous endpoint](https://docs.parallel.ai/integrations/mcp/search-mcp) is free for
+exploration and light use, with lower rate limits and capped excerpts. It requires no Parallel
+API key or OAuth login. Agent model inference still uses your configured model provider.
+
 **Keeping a connector current.** An installed connector keeps a copy of its manifest, so a fix
 shipped in a later Forge release doesn't reach it automatically. Open it and click **Refresh
 actions**: MCP connectors re-ask the vendor what they expose, REST connectors re-apply the

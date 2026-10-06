@@ -7,6 +7,13 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Parallel Search custom connector example**: opt-in, keyless web search and page fetching
+  through the existing Streamable HTTP MCP client. MCP HTTP requests now identify Forge with
+  a default User-Agent while preserving saved header overrides.
+- **Fixed:** saved MCP tools are loaded asynchronously into the runtime tool registry, so
+  connector tool sets and workflow tool nodes can execute them.
+
 ### Deep agents on canvas, live observability & multi-environment tools
 - **Deep-agent sub-agents on the canvas** (new): a Deep Agent node gains a third **subagents** handle —
   drag it to any specialist agent node to fold that node in as a callable sub-agent (rendered as a

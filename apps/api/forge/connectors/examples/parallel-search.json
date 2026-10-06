@@ -1,0 +1,26 @@
+{
+  "format": "forge.connector/1",
+  "slug": "parallel-search",
+  "name": "Parallel Search",
+  "version": "1.0.0",
+  "publisher": "community",
+  "summary": "Search the web and fetch page excerpts without a Parallel API key. Anonymous access is rate limited.",
+  "categories": ["search"],
+  "icon": "search",
+  "docs_url": "https://docs.parallel.ai/integrations/mcp/search-mcp",
+  "auth": {
+    "kind": "none",
+    "per_user": "never",
+    "setup_help": "No credentials required. Anonymous access is intended for exploration and light use; model inference is separate."
+  },
+  "egress_hosts": ["search.parallel.ai"],
+  "backend": {
+    "type": "mcp",
+    "url": "https://search.parallel.ai/mcp",
+    "transport": "streamable_http",
+    "allow": ["web_search", "web_fetch"]
+  },
+  "toolset": {
+    "description": "Parallel web search and page excerpts for grounding agents in public sources."
+  }
+}

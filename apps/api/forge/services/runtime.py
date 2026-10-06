@@ -108,7 +108,12 @@ async def build_compile_context(
         cfg = _tool_cfg(t)
         display_names[t.name] = (cfg.get("display_name") or "").strip() or t.name
         try:
-            tool = materialize_tool(cfg, ctx)
+            if t.kind == "mcp":
+                from forge.tools.mcp import load_mcp_tool
+
+                tool = await load_mcp_tool(cfg, ctx)
+            else:
+                tool = materialize_tool(cfg, ctx)
             registry[t.id] = tool
             specs[t.id] = {"kind": t.kind, "config": cfg, "tool": tool}
         except Exception as e:  # noqa: BLE001 - skip unimplemented/broken tools
