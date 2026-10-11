@@ -62,7 +62,7 @@ providers = [
   "langchain-google-genai>=4.2.2,<5",
 ]
 # MCP: consume external servers + expose projects as MCP servers.
-mcp = ["langchain-mcp-adapters>=0.2,<1", "mcp>=1.9", "fastmcp>=3,<4"]
+mcp = ["langchain-mcp-adapters>=0.2,<1", "mcp>=1.9", "fastmcp>=3,<5"]
 # Background workers + cache (prod). Local default uses in-process fakes.
 # croniter powers cron `schedule` triggers (interval schedules need nothing extra).
 workers = ["redis>=5,<9", "arq>=0.26,<1", "croniter>=2,<7"]
@@ -87,7 +87,7 @@ dev = [
   "anyio>=4.6",
   # Pin the minor so CI lint is reproducible (an unbounded ruff pulls new rule sets that
   # can turn CI red without a code change). Bump deliberately.
-  "ruff>=0.15,<0.16",
+  "ruff>=0.15,<0.17",
   "mypy>=1.13,<3",
 ]
 
